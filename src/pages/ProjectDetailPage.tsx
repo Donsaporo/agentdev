@@ -5,6 +5,7 @@ import {
   CheckCircle2, Circle, AlertCircle, Clock, Loader2, MessageSquare,
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import { useToast } from '../contexts/ToastContext';
 import type { Project, ProjectTask, Integration, Brief } from '../lib/types';
 import StatusBadge from '../components/StatusBadge';
 import AgentStatusIndicator from '../components/AgentStatusIndicator';
@@ -15,6 +16,7 @@ import { formatDistanceToNow } from 'date-fns';
 export default function ProjectDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const toast = useToast();
   const [project, setProject] = useState<Project | null>(null);
   const [tasks, setTasks] = useState<ProjectTask[]>([]);
   const [integrations, setIntegrations] = useState<Integration[]>([]);
@@ -66,7 +68,12 @@ export default function ProjectDetailPage() {
 
   async function handleDelete() {
     if (!confirm('Delete this project and all its data?')) return;
-    await supabase.from('projects').delete().eq('id', id!);
+    const { error } = await supabase.from('projects').delete().eq('id', id!);
+    if (error) {
+      toast.error('Failed to delete project: ' + error.message);
+      return;
+    }
+    toast.success('Project deleted');
     navigate('/projects');
   }
 
@@ -80,8 +87,17 @@ export default function ProjectDetailPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="w-8 h-8 border-2 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin" />
+      <div className="animate-fade-in space-y-6">
+        <div className="flex items-center gap-3">
+          <div className="skeleton w-5 h-5 rounded" />
+          <div className="flex-1"><div className="skeleton h-7 w-48 mb-2" /><div className="skeleton h-4 w-64" /></div>
+        </div>
+        <div className="skeleton h-16 rounded-xl" />
+        <div className="grid grid-cols-3 gap-4">
+          {[1, 2, 3].map(i => <div key={i} className="skeleton h-20 rounded-xl" />)}
+        </div>
+        <div className="skeleton h-32 rounded-xl" />
+        <div className="skeleton h-48 rounded-xl" />
       </div>
     );
   }

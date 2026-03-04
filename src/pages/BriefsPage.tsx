@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { FileText, Search, MessageSquareMore, Send, Rocket } from 'lucide-react';
+import { FileText, Search, MessageSquareMore, Send, Rocket, Loader2 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import { useToast } from '../contexts/ToastContext';
 import type { Brief, Project, Client } from '../lib/types';
 import Modal from '../components/Modal';
 import StatusBadge from '../components/StatusBadge';
@@ -9,11 +10,13 @@ import { formatDistanceToNow } from 'date-fns';
 import BriefWizard, { type BriefFormData } from './briefs/BriefWizard';
 
 export default function BriefsPage() {
+  const toast = useToast();
   const [briefs, setBriefs] = useState<(Brief & { projects: Project & { clients: Client } })[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [showModal, setShowModal] = useState(false);
+  const [sendingId, setSendingId] = useState<string | null>(null);
 
   useEffect(() => {
     loadData();
@@ -24,6 +27,7 @@ export default function BriefsPage() {
       supabase.from('briefs').select('*, projects(*, clients(name))').order('created_at', { ascending: false }),
       supabase.from('projects').select('*').order('name'),
     ]);
+    if (briefsRes.error) toast.error('Failed to load briefs: ' + briefsRes.error.message);
     setBriefs((briefsRes.data || []) as never[]);
     setProjects(projRes.data || []);
     setLoading(false);
@@ -35,18 +39,29 @@ export default function BriefsPage() {
       data.design_notes ? `\n\nDesign Notes:\n${data.design_notes}` : '',
     ].join('');
 
-    await supabase.from('briefs').insert({
+    const { error } = await supabase.from('briefs').insert({
       project_id: data.project_id,
       original_content: fullContent,
       pages_screens: data.pages_screens,
       features: data.features,
     });
+    if (error) {
+      toast.error('Failed to submit brief: ' + error.message);
+      return;
+    }
+    toast.success('Brief submitted');
     setShowModal(false);
     loadData();
   }
 
   async function handleSendToAgent(briefId: string, projectId: string) {
-    await supabase.from('briefs').update({ status: 'in_progress' }).eq('id', briefId);
+    setSendingId(briefId);
+    const { error: updateError } = await supabase.from('briefs').update({ status: 'in_progress' }).eq('id', briefId);
+    if (updateError) {
+      toast.error('Failed to send brief: ' + updateError.message);
+      setSendingId(null);
+      return;
+    }
 
     const { data: existingConv } = await supabase
       .from('agent_conversations')
@@ -73,6 +88,8 @@ export default function BriefsPage() {
       });
     }
 
+    toast.success('Brief sent to agent');
+    setSendingId(null);
     loadData();
   }
 
@@ -83,20 +100,27 @@ export default function BriefsPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="w-8 h-8 border-2 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin" />
+      <div className="animate-fade-in space-y-6">
+        <div className="flex justify-between items-center">
+          <div><div className="skeleton h-7 w-20 mb-2" /><div className="skeleton h-4 w-44" /></div>
+          <div className="skeleton h-10 w-32 rounded-lg" />
+        </div>
+        <div className="skeleton h-11 rounded-lg" />
+        <div className="space-y-3">
+          {[1, 2, 3].map(i => <div key={i} className="skeleton h-32 rounded-xl" />)}
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 animate-fade-in">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-white">Briefs</h1>
           <p className="text-slate-400 mt-1">Client requirements and project briefs</p>
         </div>
-        <button onClick={() => setShowModal(true)} className="inline-flex items-center gap-2 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white text-sm font-medium rounded-lg px-4 py-2.5 transition-all">
+        <button onClick={() => setShowModal(true)} className="inline-flex items-center gap-2 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white text-sm font-medium rounded-lg px-4 py-2.5 transition-all active:scale-[0.97]">
           <Send className="w-4 h-4" />
           Submit Brief
         </button>
@@ -114,16 +138,21 @@ export default function BriefsPage() {
       </div>
 
       {filtered.length === 0 ? (
-        <div className="bg-slate-900/60 border border-slate-800/60 rounded-xl p-12 text-center">
-          <FileText className="w-10 h-10 text-slate-600 mx-auto mb-3" />
-          <p className="text-slate-400">No briefs submitted yet</p>
+        <div className="bg-slate-900/40 border border-slate-800/40 border-dashed rounded-2xl p-16 text-center animate-fade-in-up">
+          <div className="w-14 h-14 rounded-2xl bg-slate-800/50 flex items-center justify-center mx-auto mb-4">
+            <FileText className="w-7 h-7 text-slate-600" />
+          </div>
+          <p className="text-slate-300 font-medium">No briefs submitted yet</p>
+          <button onClick={() => setShowModal(true)} className="mt-3 text-sm text-emerald-400 hover:text-emerald-300 transition-colors">
+            Submit your first brief
+          </button>
         </div>
       ) : (
         <div className="space-y-3">
-          {filtered.map(brief => (
+          {filtered.map((brief, i) => (
             <div
               key={brief.id}
-              className="bg-slate-900/60 border border-slate-800/60 rounded-xl p-5 hover:border-slate-700/60 transition-all"
+              className={`bg-slate-900/60 border border-slate-800/60 rounded-xl p-5 hover:border-slate-700/60 transition-all animate-fade-in-up stagger-${Math.min(i % 4 + 1, 5)}`}
             >
               <div className="flex items-start justify-between gap-4">
                 <Link to={`/projects/${brief.project_id}`} className="min-w-0 flex-1">
@@ -154,9 +183,11 @@ export default function BriefsPage() {
                 {brief.status === 'approved' && (
                   <button
                     onClick={() => handleSendToAgent(brief.id, brief.project_id)}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500/10 text-emerald-400 text-xs font-medium rounded-lg hover:bg-emerald-500/20 transition-colors flex-shrink-0"
+                    disabled={sendingId === brief.id}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-500/10 text-emerald-400 text-xs font-medium rounded-lg hover:bg-emerald-500/20 transition-colors flex-shrink-0 disabled:opacity-50"
                   >
-                    <Rocket className="w-3.5 h-3.5" /> Send to Agent
+                    {sendingId === brief.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Rocket className="w-3.5 h-3.5" />}
+                    Send to Agent
                   </button>
                 )}
               </div>

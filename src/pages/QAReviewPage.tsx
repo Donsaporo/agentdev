@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { MonitorCheck, Filter, Rocket, X } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import { useToast } from '../contexts/ToastContext';
 import type { Project, QAScreenshot, QAScreenshotStatus } from '../lib/types';
 import { useRealtimeSubscription } from '../hooks/useRealtimeSubscription';
 import QAScreenshotCard from './qa/QAScreenshotCard';
@@ -11,6 +12,7 @@ type FilterType = 'all' | QAScreenshotStatus;
 export default function QAReviewPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
+  const toast = useToast();
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string>(projectId || '');
   const [screenshots, setScreenshots] = useState<QAScreenshot[]>([]);
@@ -29,7 +31,8 @@ export default function QAReviewPage() {
   }, [selectedProjectId]);
 
   async function loadProjects() {
-    const { data } = await supabase.from('projects').select('*, clients(name)').order('updated_at', { ascending: false });
+    const { data, error } = await supabase.from('projects').select('*, clients(name)').order('updated_at', { ascending: false });
+    if (error) toast.error('Failed to load projects');
     setProjects(data || []);
     if (!selectedProjectId && data && data.length > 0) {
       setSelectedProjectId(data[0].id);
@@ -38,12 +41,13 @@ export default function QAReviewPage() {
   }
 
   async function loadScreenshots(pid: string) {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('qa_screenshots')
       .select('*')
       .eq('project_id', pid)
       .order('page_name')
       .order('version_number', { ascending: false });
+    if (error) toast.error('Failed to load screenshots');
     setScreenshots(data || []);
   }
 
@@ -56,12 +60,22 @@ export default function QAReviewPage() {
   });
 
   async function handleApprove(id: string) {
-    await supabase.from('qa_screenshots').update({ status: 'approved' }).eq('id', id);
+    const { error } = await supabase.from('qa_screenshots').update({ status: 'approved' }).eq('id', id);
+    if (error) {
+      toast.error('Failed to approve screenshot');
+      return;
+    }
+    toast.success('Screenshot approved');
     setScreenshots(prev => prev.map(s => s.id === id ? { ...s, status: 'approved' as const } : s));
   }
 
   async function handleReject(id: string, notes: string) {
-    await supabase.from('qa_screenshots').update({ status: 'rejected', rejection_notes: notes }).eq('id', id);
+    const { error } = await supabase.from('qa_screenshots').update({ status: 'rejected', rejection_notes: notes }).eq('id', id);
+    if (error) {
+      toast.error('Failed to reject screenshot');
+      return;
+    }
+    toast.success('Screenshot rejected -- agent will fix it');
     setScreenshots(prev => prev.map(s => s.id === id ? { ...s, status: 'rejected' as const, rejection_notes: notes } : s));
   }
 
@@ -84,21 +98,30 @@ export default function QAReviewPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="w-8 h-8 border-2 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin" />
+      <div className="animate-fade-in space-y-6">
+        <div className="flex justify-between items-center">
+          <div><div className="skeleton h-7 w-28 mb-2" /><div className="skeleton h-4 w-52" /></div>
+        </div>
+        <div className="flex gap-4">
+          <div className="skeleton h-11 w-64 rounded-lg" />
+          <div className="skeleton h-9 w-56 rounded-lg" />
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {[1, 2, 3, 4].map(i => <div key={i} className="skeleton h-64 rounded-xl" />)}
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 animate-fade-in">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-white">QA Review</h1>
           <p className="text-slate-400 mt-1">Review screenshots and approve pages for deployment</p>
         </div>
         {allApproved && (
-          <button className="inline-flex items-center gap-2 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white text-sm font-medium rounded-lg px-5 py-2.5 transition-all shadow-lg shadow-emerald-500/20">
+          <button className="inline-flex items-center gap-2 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white text-sm font-medium rounded-lg px-5 py-2.5 transition-all shadow-lg shadow-emerald-500/20 active:scale-[0.97]">
             <Rocket className="w-4 h-4" />
             Approve All & Deploy
           </button>
@@ -136,9 +159,11 @@ export default function QAReviewPage() {
       </div>
 
       {filtered.length === 0 ? (
-        <div className="bg-slate-900/60 border border-slate-800/60 rounded-xl p-12 text-center">
-          <MonitorCheck className="w-10 h-10 text-slate-600 mx-auto mb-3" />
-          <p className="text-slate-400">
+        <div className="bg-slate-900/40 border border-slate-800/40 border-dashed rounded-2xl p-16 text-center animate-fade-in-up">
+          <div className="w-14 h-14 rounded-2xl bg-slate-800/50 flex items-center justify-center mx-auto mb-4">
+            <MonitorCheck className="w-7 h-7 text-slate-600" />
+          </div>
+          <p className="text-slate-300 font-medium">
             {screenshots.length === 0
               ? 'No screenshots yet. The agent will capture them during QA.'
               : 'No screenshots match this filter.'}

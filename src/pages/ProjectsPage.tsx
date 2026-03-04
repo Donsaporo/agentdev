@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, Search, FolderKanban, ExternalLink, GitBranch } from 'lucide-react';
+import { Plus, Search, FolderKanban, ExternalLink, GitBranch, Loader2 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
+import { useToast } from '../contexts/ToastContext';
 import type { Project, Client, ProjectType, ProjectStatus } from '../lib/types';
 import Modal from '../components/Modal';
 import StatusBadge from '../components/StatusBadge';
+import AgentStatusIndicator from '../components/AgentStatusIndicator';
 import { formatDistanceToNow } from 'date-fns';
 
 const projectTypes: { value: ProjectType; label: string }[] = [
@@ -28,12 +30,14 @@ const projectStatuses: { value: ProjectStatus; label: string }[] = [
 
 export default function ProjectsPage() {
   const { user } = useAuth();
+  const toast = useToast();
   const [projects, setProjects] = useState<Project[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
   const [showModal, setShowModal] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState({
     name: '',
     client_id: '',
@@ -50,6 +54,8 @@ export default function ProjectsPage() {
       supabase.from('projects').select('*, clients(name)').order('updated_at', { ascending: false }),
       supabase.from('clients').select('*').order('name'),
     ]);
+    if (projRes.error) toast.error('Failed to load projects: ' + projRes.error.message);
+    if (clientRes.error) toast.error('Failed to load clients: ' + clientRes.error.message);
     setProjects(projRes.data || []);
     setClients(clientRes.data || []);
     setLoading(false);
@@ -57,10 +63,18 @@ export default function ProjectsPage() {
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
-    await supabase.from('projects').insert({
+    setSubmitting(true);
+    const { error } = await supabase.from('projects').insert({
       ...form,
       created_by: user?.id,
     });
+    if (error) {
+      toast.error('Failed to create project: ' + error.message);
+      setSubmitting(false);
+      return;
+    }
+    toast.success('Project created');
+    setSubmitting(false);
     setShowModal(false);
     setForm({ name: '', client_id: '', type: 'website', description: '' });
     loadData();
@@ -75,20 +89,27 @@ export default function ProjectsPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="w-8 h-8 border-2 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin" />
+      <div className="animate-fade-in space-y-6">
+        <div className="flex justify-between items-center">
+          <div><div className="skeleton h-7 w-28 mb-2" /><div className="skeleton h-4 w-36" /></div>
+          <div className="skeleton h-10 w-32 rounded-lg" />
+        </div>
+        <div className="flex gap-3"><div className="skeleton h-11 flex-1 rounded-lg" /><div className="skeleton h-11 w-40 rounded-lg" /></div>
+        <div className="space-y-3">
+          {[1, 2, 3, 4].map(i => <div key={i} className="skeleton h-20 rounded-xl" />)}
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 animate-fade-in">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-white">Projects</h1>
           <p className="text-slate-400 mt-1">{projects.length} total projects</p>
         </div>
-        <button onClick={() => setShowModal(true)} className="inline-flex items-center gap-2 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white text-sm font-medium rounded-lg px-4 py-2.5 transition-all">
+        <button onClick={() => setShowModal(true)} className="inline-flex items-center gap-2 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white text-sm font-medium rounded-lg px-4 py-2.5 transition-all active:scale-[0.97]">
           <Plus className="w-4 h-4" />
           New Project
         </button>
@@ -118,24 +139,32 @@ export default function ProjectsPage() {
       </div>
 
       {filtered.length === 0 ? (
-        <div className="bg-slate-900/60 border border-slate-800/60 rounded-xl p-12 text-center">
-          <FolderKanban className="w-10 h-10 text-slate-600 mx-auto mb-3" />
-          <p className="text-slate-400">{search || filterStatus ? 'No projects match your filters' : 'No projects yet'}</p>
+        <div className="bg-slate-900/40 border border-slate-800/40 border-dashed rounded-2xl p-16 text-center animate-fade-in-up">
+          <div className="w-14 h-14 rounded-2xl bg-slate-800/50 flex items-center justify-center mx-auto mb-4">
+            <FolderKanban className="w-7 h-7 text-slate-600" />
+          </div>
+          <p className="text-slate-300 font-medium">{search || filterStatus ? 'No projects match your filters' : 'No projects yet'}</p>
+          {!search && !filterStatus && (
+            <button onClick={() => setShowModal(true)} className="mt-3 text-sm text-emerald-400 hover:text-emerald-300 transition-colors">
+              Create your first project
+            </button>
+          )}
         </div>
       ) : (
         <div className="space-y-3">
-          {filtered.map(project => (
+          {filtered.map((project, i) => (
             <Link
               key={project.id}
               to={`/projects/${project.id}`}
-              className="block bg-slate-900/60 border border-slate-800/60 rounded-xl p-5 hover:border-slate-700/60 transition-all group"
+              className={`block bg-slate-900/60 border border-slate-800/60 rounded-xl p-5 hover:border-slate-700/60 transition-all group animate-fade-in-up stagger-${Math.min(i % 4 + 1, 5)}`}
             >
               <div className="flex flex-col sm:flex-row sm:items-center gap-4">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-3">
+                    <AgentStatusIndicator status={project.agent_status} />
                     <h3 className="text-sm font-semibold text-white truncate group-hover:text-emerald-400 transition-colors">{project.name}</h3>
                     <StatusBadge status={project.status} />
-                    <span className="text-xs text-slate-600 bg-slate-800/50 px-2 py-0.5 rounded capitalize">{project.type.replace('_', ' ')}</span>
+                    <span className="text-xs text-slate-600 bg-slate-800/50 px-2 py-0.5 rounded capitalize hidden sm:inline">{project.type.replace('_', ' ')}</span>
                   </div>
                   <p className="text-xs text-slate-500 mt-1.5 truncate">
                     {project.clients?.name || 'No client'} &middot; Updated {formatDistanceToNow(new Date(project.updated_at), { addSuffix: true })}
@@ -227,7 +256,12 @@ export default function ProjectsPage() {
             <button type="button" onClick={() => setShowModal(false)} className="px-4 py-2.5 text-sm text-slate-400 hover:text-slate-200 transition-colors">
               Cancel
             </button>
-            <button type="submit" className="px-6 py-2.5 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white text-sm font-medium rounded-lg transition-all">
+            <button
+              type="submit"
+              disabled={submitting}
+              className="inline-flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white text-sm font-medium rounded-lg transition-all disabled:opacity-50 active:scale-[0.97]"
+            >
+              {submitting && <Loader2 className="w-4 h-4 animate-spin" />}
               Create Project
             </button>
           </div>

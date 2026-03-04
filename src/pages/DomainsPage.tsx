@@ -1,18 +1,21 @@
 import { useEffect, useState } from 'react';
-import { Plus, Search, Globe, Shield, Server, ExternalLink } from 'lucide-react';
+import { Plus, Search, Globe, Shield, Server, ExternalLink, Loader2 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import { useToast } from '../contexts/ToastContext';
 import type { Domain, Client, Project } from '../lib/types';
 import Modal from '../components/Modal';
 import StatusBadge from '../components/StatusBadge';
 import { formatDistanceToNow } from 'date-fns';
 
 export default function DomainsPage() {
+  const toast = useToast();
   const [domains, setDomains] = useState<Domain[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [showModal, setShowModal] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState({
     client_id: '',
     project_id: '',
@@ -32,6 +35,7 @@ export default function DomainsPage() {
       supabase.from('clients').select('*').order('name'),
       supabase.from('projects').select('*').order('name'),
     ]);
+    if (domRes.error) toast.error('Failed to load domains: ' + domRes.error.message);
     setDomains(domRes.data || []);
     setClients(clientRes.data || []);
     setProjects(projRes.data || []);
@@ -40,6 +44,7 @@ export default function DomainsPage() {
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
+    setSubmitting(true);
     const data: Record<string, unknown> = {
       client_id: form.client_id,
       domain_name: form.is_demo ? `${form.subdomain}.obzide.com` : form.domain_name,
@@ -48,7 +53,14 @@ export default function DomainsPage() {
       registrar: form.registrar,
     };
     if (form.project_id) data.project_id = form.project_id;
-    await supabase.from('domains').insert(data);
+    const { error } = await supabase.from('domains').insert(data);
+    if (error) {
+      toast.error('Failed to add domain: ' + error.message);
+      setSubmitting(false);
+      return;
+    }
+    toast.success('Domain added');
+    setSubmitting(false);
     setShowModal(false);
     setForm({ client_id: '', project_id: '', domain_name: '', subdomain: '', is_demo: true, registrar: 'namecheap' });
     loadData();
@@ -64,8 +76,15 @@ export default function DomainsPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="w-8 h-8 border-2 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin" />
+      <div className="animate-fade-in space-y-6">
+        <div className="flex justify-between items-center">
+          <div><div className="skeleton h-7 w-24 mb-2" /><div className="skeleton h-4 w-36" /></div>
+          <div className="skeleton h-10 w-32 rounded-lg" />
+        </div>
+        <div className="skeleton h-11 rounded-lg" />
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          {[1, 2, 3].map(i => <div key={i} className="skeleton h-44 rounded-xl" />)}
+        </div>
       </div>
     );
   }
@@ -121,13 +140,13 @@ export default function DomainsPage() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 animate-fade-in">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-white">Domains</h1>
           <p className="text-slate-400 mt-1">{domains.length} domains managed</p>
         </div>
-        <button onClick={() => setShowModal(true)} className="inline-flex items-center gap-2 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white text-sm font-medium rounded-lg px-4 py-2.5 transition-all">
+        <button onClick={() => setShowModal(true)} className="inline-flex items-center gap-2 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white text-sm font-medium rounded-lg px-4 py-2.5 transition-all active:scale-[0.97]">
           <Plus className="w-4 h-4" />
           Add Domain
         </button>
@@ -145,9 +164,14 @@ export default function DomainsPage() {
       </div>
 
       {filtered.length === 0 ? (
-        <div className="bg-slate-900/60 border border-slate-800/60 rounded-xl p-12 text-center">
-          <Globe className="w-10 h-10 text-slate-600 mx-auto mb-3" />
-          <p className="text-slate-400">No domains configured yet</p>
+        <div className="bg-slate-900/40 border border-slate-800/40 border-dashed rounded-2xl p-16 text-center animate-fade-in-up">
+          <div className="w-14 h-14 rounded-2xl bg-slate-800/50 flex items-center justify-center mx-auto mb-4">
+            <Globe className="w-7 h-7 text-slate-600" />
+          </div>
+          <p className="text-slate-300 font-medium">No domains configured yet</p>
+          <button onClick={() => setShowModal(true)} className="mt-3 text-sm text-emerald-400 hover:text-emerald-300 transition-colors">
+            Add your first domain
+          </button>
         </div>
       ) : (
         <div className="space-y-6">
@@ -246,7 +270,12 @@ export default function DomainsPage() {
             <button type="button" onClick={() => setShowModal(false)} className="px-4 py-2.5 text-sm text-slate-400 hover:text-slate-200 transition-colors">
               Cancel
             </button>
-            <button type="submit" className="px-6 py-2.5 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white text-sm font-medium rounded-lg transition-all">
+            <button
+              type="submit"
+              disabled={submitting}
+              className="inline-flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white text-sm font-medium rounded-lg transition-all disabled:opacity-50 active:scale-[0.97]"
+            >
+              {submitting && <Loader2 className="w-4 h-4 animate-spin" />}
               Add Domain
             </button>
           </div>

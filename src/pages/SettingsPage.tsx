@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { Save, User, Key, Server, Shield, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Save, User, Key, Server, Shield, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import { useToast } from '../contexts/ToastContext';
 import { supabase } from '../lib/supabase';
 import { useAgentConfig } from '../hooks/useAgentConfig';
 
@@ -38,16 +39,14 @@ const apiKeys = [
 ];
 
 export default function SettingsPage() {
-  const { teamMember, user } = useAuth();
+  const { teamMember, user, refreshProfile } = useAuth();
+  const toast = useToast();
   const { getValue, setValue, loading: configLoading } = useAgentConfig();
   const [activeSection, setActiveSection] = useState('profile');
   const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
 
   const [profile, setProfile] = useState({ full_name: '', role: '' });
-
-  const [passwords, setPasswords] = useState({ current: '', newPass: '', confirm: '' });
-  const [passError, setPassError] = useState('');
+  const [passwords, setPasswords] = useState({ newPass: '', confirm: '' });
 
   useEffect(() => {
     if (teamMember) {
@@ -58,45 +57,49 @@ export default function SettingsPage() {
   async function handleSaveProfile(e: React.FormEvent) {
     e.preventDefault();
     setSaving(true);
-    await supabase.from('team_members').update({ full_name: profile.full_name }).eq('id', user!.id);
+    const { error } = await supabase.from('team_members').update({ full_name: profile.full_name }).eq('id', user!.id);
+    if (error) {
+      toast.error('Failed to save profile: ' + error.message);
+      setSaving(false);
+      return;
+    }
+    await refreshProfile();
+    toast.success('Profile saved');
     setSaving(false);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
   }
 
   async function handleChangePassword(e: React.FormEvent) {
     e.preventDefault();
-    setPassError('');
     if (passwords.newPass !== passwords.confirm) {
-      setPassError('Passwords do not match');
+      toast.error('Passwords do not match');
       return;
     }
     if (passwords.newPass.length < 6) {
-      setPassError('Password must be at least 6 characters');
+      toast.error('Password must be at least 6 characters');
       return;
     }
     setSaving(true);
     const { error } = await supabase.auth.updateUser({ password: passwords.newPass });
     setSaving(false);
     if (error) {
-      setPassError(error.message);
+      toast.error('Failed to update password: ' + error.message);
     } else {
-      setPasswords({ current: '', newPass: '', confirm: '' });
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
+      setPasswords({ newPass: '', confirm: '' });
+      toast.success('Password updated');
     }
   }
 
   async function handleSaveConfig(key: string, value: unknown) {
-    setSaving(true);
-    await setValue(key, value);
-    setSaving(false);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    const { error } = await setValue(key, value);
+    if (error) {
+      toast.error('Failed to save setting');
+    } else {
+      toast.success('Setting saved');
+    }
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 animate-fade-in">
       <div>
         <h1 className="text-2xl font-bold text-white">Settings</h1>
         <p className="text-slate-400 mt-1">Configure your profile and agent parameters</p>
@@ -143,12 +146,11 @@ export default function SettingsPage() {
                 <label className="block text-sm font-medium text-slate-300 mb-1.5">Role</label>
                 <input type="text" value={profile.role} disabled className="w-full bg-slate-800/50 border border-slate-700/50 rounded-lg px-4 py-2.5 text-slate-500 cursor-not-allowed capitalize" />
               </div>
-              <div className="flex items-center gap-3 pt-2">
-                <button type="submit" disabled={saving} className="inline-flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white text-sm font-medium rounded-lg transition-all disabled:opacity-50">
-                  <Save className="w-4 h-4" />
-                  {saving ? 'Saving...' : 'Save'}
+              <div className="pt-2">
+                <button type="submit" disabled={saving} className="inline-flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white text-sm font-medium rounded-lg transition-all disabled:opacity-50 active:scale-[0.97]">
+                  {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                  Save
                 </button>
-                {saved && <span className="text-sm text-emerald-400">Saved successfully</span>}
               </div>
             </form>
           )}
@@ -258,16 +260,12 @@ export default function SettingsPage() {
                   </div>
                 </div>
               )}
-              {saved && <span className="text-sm text-emerald-400">Settings saved</span>}
             </div>
           )}
 
           {activeSection === 'security' && (
             <form onSubmit={handleChangePassword} className="bg-slate-900/60 border border-slate-800/60 rounded-xl p-6 space-y-5">
               <h2 className="text-lg font-semibold text-white">Change Password</h2>
-              {passError && (
-                <div className="bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-3 text-red-400 text-sm">{passError}</div>
-              )}
               <div>
                 <label className="block text-sm font-medium text-slate-300 mb-1.5">New Password</label>
                 <input
@@ -289,12 +287,11 @@ export default function SettingsPage() {
                   className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-colors"
                 />
               </div>
-              <div className="flex items-center gap-3 pt-2">
-                <button type="submit" disabled={saving} className="inline-flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white text-sm font-medium rounded-lg transition-all disabled:opacity-50">
-                  <Shield className="w-4 h-4" />
+              <div className="pt-2">
+                <button type="submit" disabled={saving} className="inline-flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white text-sm font-medium rounded-lg transition-all disabled:opacity-50 active:scale-[0.97]">
+                  {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Shield className="w-4 h-4" />}
                   Update Password
                 </button>
-                {saved && <span className="text-sm text-emerald-400">Password updated</span>}
               </div>
             </form>
           )}
