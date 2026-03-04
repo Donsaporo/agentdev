@@ -1,0 +1,63 @@
+import { Check, Search, Blocks, Code2, MonitorCheck, Rocket } from 'lucide-react';
+import type { ProjectPhase } from '../lib/types';
+
+const phases: { key: ProjectPhase; label: string; icon: typeof Search }[] = [
+  { key: 'analysis', label: 'Analysis', icon: Search },
+  { key: 'scaffolding', label: 'Scaffold', icon: Blocks },
+  { key: 'development', label: 'Develop', icon: Code2 },
+  { key: 'qa', label: 'QA', icon: MonitorCheck },
+  { key: 'deployment', label: 'Deploy', icon: Rocket },
+];
+
+interface PhaseIndicatorProps {
+  currentPhase: ProjectPhase;
+  compact?: boolean;
+}
+
+export default function PhaseIndicator({ currentPhase, compact = false }: PhaseIndicatorProps) {
+  const currentIdx = phases.findIndex(p => p.key === currentPhase);
+
+  return (
+    <div className="flex items-center gap-1">
+      {phases.map((phase, i) => {
+        const isCompleted = i < currentIdx;
+        const isCurrent = i === currentIdx;
+        const Icon = phase.icon;
+
+        return (
+          <div key={phase.key} className="flex items-center">
+            <div className="flex flex-col items-center">
+              <div
+                className={`
+                  flex items-center justify-center rounded-lg transition-all
+                  ${compact ? 'w-7 h-7' : 'w-9 h-9'}
+                  ${isCompleted ? 'bg-emerald-500/20 text-emerald-400' : ''}
+                  ${isCurrent ? 'bg-cyan-500/20 text-cyan-400 ring-1 ring-cyan-500/30' : ''}
+                  ${!isCompleted && !isCurrent ? 'bg-slate-800/50 text-slate-600' : ''}
+                `}
+              >
+                {isCompleted ? (
+                  <Check className={compact ? 'w-3.5 h-3.5' : 'w-4 h-4'} />
+                ) : (
+                  <Icon className={compact ? 'w-3.5 h-3.5' : 'w-4 h-4'} />
+                )}
+              </div>
+              {!compact && (
+                <span className={`text-[10px] mt-1 font-medium ${
+                  isCompleted ? 'text-emerald-400' : isCurrent ? 'text-cyan-400' : 'text-slate-600'
+                }`}>
+                  {phase.label}
+                </span>
+              )}
+            </div>
+            {i < phases.length - 1 && (
+              <div className={`${compact ? 'w-3' : 'w-6'} h-px mx-0.5 ${
+                i < currentIdx ? 'bg-emerald-500/40' : 'bg-slate-800'
+              }`} />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
