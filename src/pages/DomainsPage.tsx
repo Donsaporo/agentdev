@@ -246,7 +246,7 @@ export default function DomainsPage() {
             <div>
               <label className="block text-sm font-medium text-slate-300 mb-1.5">Subdomain</label>
               <div className="flex items-center gap-2">
-                <input type="text" value={form.subdomain} onChange={e => setForm({ ...form, subdomain: e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '') })} required className="flex-1 glass-input" placeholder="clientname" />
+                <input type="text" value={form.subdomain} onChange={e => setForm({ ...form, subdomain: e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '') })} required className="flex-1 glass-input\" placeholder="clientname" />
                 <span className="text-sm text-slate-500">.obzide.com</span>
               </div>
             </div>
