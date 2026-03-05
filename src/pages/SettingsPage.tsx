@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { Save, User, Key, Server, Shield, Loader2, Wifi, WifiOff } from 'lucide-react';
+import { useEffect, useState, useRef } from 'react';
+import { Save, User, Key, Server, Shield, Loader2, Wifi, WifiOff, Clock } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { supabase } from '../lib/supabase';
@@ -14,9 +14,9 @@ interface SettingsSection {
 }
 
 const sections: SettingsSection[] = [
-  { id: 'profile', label: 'Profile', icon: User },
   { id: 'api-keys', label: 'API Keys', icon: Key },
   { id: 'agent', label: 'Agent Config', icon: Server },
+  { id: 'profile', label: 'Profile', icon: User },
   { id: 'security', label: 'Security', icon: Shield },
 ];
 
@@ -36,12 +36,14 @@ export default function SettingsPage() {
   const { teamMember, user, refreshProfile } = useAuth();
   const toast = useToast();
   const { getValue, setValue, loading: configLoading } = useAgentConfig();
-  const [activeSection, setActiveSection] = useState('profile');
+  const [activeSection, setActiveSection] = useState('api-keys');
   const [saving, setSaving] = useState(false);
 
   const [profile, setProfile] = useState({ full_name: '', role: '' });
   const [passwords, setPasswords] = useState({ newPass: '', confirm: '' });
-  const [agentStatus, setAgentStatus] = useState<{ online: boolean; lastSeen: string | null }>({ online: false, lastSeen: null });
+  const [agentStatus, setAgentStatus] = useState<{ online: boolean; lastSeen: string | null; version: string }>({ online: false, lastSeen: null, version: '1.0.0' });
+  const [notifEmail, setNotifEmail] = useState('');
+  const notifTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (teamMember) {
@@ -52,21 +54,43 @@ export default function SettingsPage() {
   useEffect(() => {
     async function checkAgentHeartbeat() {
       const { data } = await supabase
-        .from('agent_logs')
-        .select('created_at')
-        .order('created_at', { ascending: false })
-        .limit(1)
+        .from('agent_heartbeat')
+        .select('last_seen, status, version')
+        .eq('id', 1)
         .maybeSingle();
+
       if (data) {
-        const lastSeen = new Date(data.created_at);
+        const lastSeen = new Date(data.last_seen);
         const diffMs = Date.now() - lastSeen.getTime();
-        setAgentStatus({ online: diffMs < 120_000, lastSeen: data.created_at });
+        setAgentStatus({
+          online: diffMs < 180000 && data.status === 'online',
+          lastSeen: data.last_seen,
+          version: data.version || '1.0.0',
+        });
+      } else {
+        const { data: logData } = await supabase
+          .from('agent_logs')
+          .select('created_at')
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (logData) {
+          const lastSeen = new Date(logData.created_at);
+          const diffMs = Date.now() - lastSeen.getTime();
+          setAgentStatus({ online: diffMs < 120000, lastSeen: logData.created_at, version: '1.0.0' });
+        }
       }
     }
     checkAgentHeartbeat();
-    const interval = setInterval(checkAgentHeartbeat, 30_000);
+    const interval = setInterval(checkAgentHeartbeat, 30000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    if (!configLoading) {
+      setNotifEmail(getValue('notification_email', '') as string);
+    }
+  }, [configLoading, getValue]);
 
   async function handleSaveProfile(e: React.FormEvent) {
     e.preventDefault();
@@ -110,6 +134,14 @@ export default function SettingsPage() {
     } else {
       toast.success('Setting saved');
     }
+  }
+
+  function handleNotifEmailChange(val: string) {
+    setNotifEmail(val);
+    if (notifTimer.current) clearTimeout(notifTimer.current);
+    notifTimer.current = setTimeout(() => {
+      handleSaveConfig('notification_email', val);
+    }, 1500);
   }
 
   return (
@@ -171,22 +203,39 @@ export default function SettingsPage() {
 
           {activeSection === 'api-keys' && (
             <div className="space-y-5">
-              <div className={`flex items-center gap-3 p-4 rounded-lg border ${agentStatus.online ? 'bg-emerald-500/5 border-emerald-500/20' : 'bg-slate-800/30 border-slate-700/30'}`}>
+              <div className={`flex items-center gap-3 p-4 rounded-xl border transition-all ${
+                agentStatus.online
+                  ? 'bg-emerald-500/5 border-emerald-500/20'
+                  : 'bg-slate-800/30 border-slate-700/30'
+              }`}>
                 {agentStatus.online ? (
-                  <Wifi className="w-5 h-5 text-emerald-400" />
+                  <div className="w-10 h-10 rounded-xl bg-emerald-500/10 flex items-center justify-center flex-shrink-0">
+                    <Wifi className="w-5 h-5 text-emerald-400" />
+                  </div>
                 ) : (
-                  <WifiOff className="w-5 h-5 text-slate-500" />
+                  <div className="w-10 h-10 rounded-xl bg-slate-800/50 flex items-center justify-center flex-shrink-0">
+                    <WifiOff className="w-5 h-5 text-slate-500" />
+                  </div>
                 )}
-                <div>
-                  <p className={`text-sm font-medium ${agentStatus.online ? 'text-emerald-400' : 'text-slate-400'}`}>
+                <div className="flex-1 min-w-0">
+                  <p className={`text-sm font-semibold ${agentStatus.online ? 'text-emerald-400' : 'text-slate-400'}`}>
                     Agent {agentStatus.online ? 'Online' : 'Offline'}
                   </p>
-                  <p className="text-xs text-slate-500">
-                    {agentStatus.lastSeen
-                      ? `Last seen ${formatDistanceToNow(new Date(agentStatus.lastSeen), { addSuffix: true })}`
-                      : 'No activity recorded'}
-                  </p>
+                  <div className="flex items-center gap-3">
+                    <p className="text-xs text-slate-500 flex items-center gap-1">
+                      <Clock className="w-3 h-3" />
+                      {agentStatus.lastSeen
+                        ? `Last seen ${formatDistanceToNow(new Date(agentStatus.lastSeen), { addSuffix: true })}`
+                        : 'No activity recorded'}
+                    </p>
+                    <span className="text-xs text-slate-600">v{agentStatus.version}</span>
+                  </div>
                 </div>
+                {!agentStatus.online && (
+                  <span className="text-xs text-slate-500 bg-slate-800/50 px-2.5 py-1 rounded-md flex-shrink-0">
+                    Check VPS
+                  </span>
+                )}
               </div>
 
               <SecretsManager />
@@ -253,11 +302,13 @@ export default function SettingsPage() {
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-slate-300 mb-1.5">Notification Email</label>
+                    <p className="text-xs text-slate-500 mb-2">Where to send build/deploy notifications</p>
                     <input
                       type="email"
-                      value={(getValue('notification_email', 'team@obzide.com') as string)}
-                      onChange={e => handleSaveConfig('notification_email', e.target.value)}
-                      className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-colors"
+                      value={notifEmail}
+                      onChange={e => handleNotifEmailChange(e.target.value)}
+                      placeholder="team@yourcompany.com"
+                      className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-2.5 text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-colors"
                     />
                   </div>
                 </div>

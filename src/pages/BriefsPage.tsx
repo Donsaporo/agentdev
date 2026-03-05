@@ -15,6 +15,7 @@ export default function BriefsPage() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [filterStatus, setFilterStatus] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [sendingId, setSendingId] = useState<string | null>(null);
 
@@ -108,10 +109,12 @@ export default function BriefsPage() {
     loadData();
   }
 
-  const filtered = briefs.filter(b =>
-    b.projects?.name?.toLowerCase().includes(search.toLowerCase()) ||
-    b.original_content?.toLowerCase().includes(search.toLowerCase())
-  );
+  const filtered = briefs.filter(b => {
+    const matchesSearch = b.projects?.name?.toLowerCase().includes(search.toLowerCase()) ||
+      b.original_content?.toLowerCase().includes(search.toLowerCase());
+    const matchesStatus = !filterStatus || b.status === filterStatus;
+    return matchesSearch && matchesStatus;
+  });
 
   if (loading) {
     return (
@@ -141,15 +144,29 @@ export default function BriefsPage() {
         </button>
       </div>
 
-      <div className="relative">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-        <input
-          type="text"
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          placeholder="Search briefs..."
-          className="w-full bg-slate-900/60 border border-slate-800/60 rounded-lg pl-10 pr-4 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-colors"
-        />
+      <div className="flex flex-col sm:flex-row gap-3">
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+          <input
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search briefs..."
+            className="w-full bg-slate-900/60 border border-slate-800/60 rounded-lg pl-10 pr-4 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-colors"
+          />
+        </div>
+        <select
+          value={filterStatus}
+          onChange={e => setFilterStatus(e.target.value)}
+          className="bg-slate-900/60 border border-slate-800/60 rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-colors sm:w-48"
+        >
+          <option value="">All statuses</option>
+          <option value="draft">Draft</option>
+          <option value="pending_review">Pending Review</option>
+          <option value="approved">Approved</option>
+          <option value="in_progress">In Progress</option>
+          <option value="completed">Completed</option>
+        </select>
       </div>
 
       {filtered.length === 0 ? (

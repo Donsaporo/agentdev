@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Key, Eye, EyeOff, Save, CheckCircle2, AlertCircle, Clock, Loader2 } from 'lucide-react';
+import { Key, Eye, EyeOff, Save, CheckCircle2, AlertCircle, Clock, Loader2, Plus, Trash2, RefreshCw } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { useToast } from '../../contexts/ToastContext';
 import type { AgentSecret } from '../../lib/types';
@@ -23,6 +23,9 @@ export default function SecretsManager() {
   const toast = useToast();
   const [rows, setRows] = useState<SecretRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newSecret, setNewSecret] = useState({ service_name: '', service_label: '', secret_value: '' });
+  const [addingSaving, setAddingSaving] = useState(false);
 
   const fetchSecrets = useCallback(async () => {
     const { data, error } = await supabase
@@ -99,6 +102,39 @@ export default function SecretsManager() {
     await fetchSecrets();
   }
 
+  async function deleteSecret(index: number) {
+    const row = rows[index];
+    const { error } = await supabase.from('agent_secrets').delete().eq('id', row.secret.id);
+    if (error) {
+      toast.error(`Failed to delete ${row.secret.service_label}`);
+      return;
+    }
+    toast.success(`${row.secret.service_label} removed`);
+    await fetchSecrets();
+  }
+
+  async function handleAddSecret(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newSecret.service_name.trim() || !newSecret.service_label.trim()) return;
+    setAddingSaving(true);
+    const { error } = await supabase.from('agent_secrets').insert({
+      service_name: newSecret.service_name.toLowerCase().replace(/\s+/g, '_'),
+      service_label: newSecret.service_label,
+      secret_value: newSecret.secret_value,
+      status: 'untested',
+    });
+    if (error) {
+      toast.error('Failed to add secret: ' + error.message);
+      setAddingSaving(false);
+      return;
+    }
+    toast.success('Secret added');
+    setNewSecret({ service_name: '', service_label: '', secret_value: '' });
+    setShowAddForm(false);
+    setAddingSaving(false);
+    await fetchSecrets();
+  }
+
   if (loading) {
     return (
       <div className="bg-slate-900/60 border border-slate-800/60 rounded-xl p-6">
@@ -109,7 +145,7 @@ export default function SecretsManager() {
     );
   }
 
-  const configuredCount = rows.filter(r => r.secret.masked_value && r.secret.masked_value !== '****').length;
+  const configuredCount = rows.filter(r => r.secret.masked_value && r.secret.masked_value.length > 0).length;
 
   return (
     <div className="bg-slate-900/60 border border-slate-800/60 rounded-xl p-6 space-y-5">
@@ -117,16 +153,53 @@ export default function SecretsManager() {
         <div>
           <h2 className="text-lg font-semibold text-white">API Keys & Secrets</h2>
           <p className="text-sm text-slate-400 mt-0.5">
-            {configuredCount}/{rows.length} services configured. Keys are stored encrypted in the database.
+            {configuredCount}/{rows.length} services configured
           </p>
         </div>
+        <div className="flex items-center gap-2">
+          <button onClick={() => fetchSecrets()} className="p-2 text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 rounded-lg transition-all" title="Refresh">
+            <RefreshCw className="w-4 h-4" />
+          </button>
+          <button onClick={() => setShowAddForm(!showAddForm)} className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/15 rounded-lg transition-all">
+            <Plus className="w-3.5 h-3.5" />
+            Add
+          </button>
+        </div>
       </div>
+
+      {showAddForm && (
+        <form onSubmit={handleAddSecret} className="bg-slate-800/30 border border-slate-700/40 rounded-xl p-4 space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-slate-400 mb-1">Service Key</label>
+              <input type="text" value={newSecret.service_name} onChange={e => setNewSecret({ ...newSecret, service_name: e.target.value })} placeholder="e.g. openai" required className="w-full bg-slate-900/80 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-colors" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-400 mb-1">Display Label</label>
+              <input type="text" value={newSecret.service_label} onChange={e => setNewSecret({ ...newSecret, service_label: e.target.value })} placeholder="e.g. OpenAI API Key" required className="w-full bg-slate-900/80 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-colors" />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-slate-400 mb-1">Value (optional)</label>
+            <input type="password" value={newSecret.secret_value} onChange={e => setNewSecret({ ...newSecret, secret_value: e.target.value })} placeholder="Paste API key here..." className="w-full bg-slate-900/80 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white font-mono placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-colors" />
+          </div>
+          <div className="flex items-center gap-2 pt-1">
+            <button type="submit" disabled={addingSaving} className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded-lg transition-all disabled:opacity-40">
+              {addingSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+              Add Secret
+            </button>
+            <button type="button" onClick={() => { setShowAddForm(false); setNewSecret({ service_name: '', service_label: '', secret_value: '' }); }} className="px-4 py-2 text-xs text-slate-400 hover:text-slate-200 transition-colors">
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
 
       <div className="space-y-3">
         {rows.map((row, index) => {
           const statusCfg = STATUS_CONFIG[row.secret.status as keyof typeof STATUS_CONFIG] || STATUS_CONFIG.untested;
           const StatusIcon = statusCfg.icon;
-          const hasValue = row.secret.masked_value && row.secret.masked_value !== '****';
+          const hasValue = row.secret.masked_value && row.secret.masked_value.length > 0;
 
           return (
             <div
@@ -149,13 +222,19 @@ export default function SecretsManager() {
                     <StatusIcon className={`w-3.5 h-3.5 ${statusCfg.color}`} />
                     <span className={`text-xs ${statusCfg.color}`}>{statusCfg.label}</span>
                   </div>
+                  <button onClick={() => deleteSecret(index)} className="p-1.5 text-slate-600 hover:text-red-400 rounded transition-colors" title="Remove">
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
                 </div>
               </div>
 
               {hasValue && !row.editing && (
                 <div className="mt-3 flex items-center gap-2">
-                  <div className="flex-1 bg-slate-900/60 rounded-lg px-3 py-2 font-mono text-sm text-slate-400">
-                    {row.showValue ? row.secret.masked_value : row.secret.masked_value}
+                  <div className="flex-1 bg-slate-900/60 rounded-lg px-3 py-2 font-mono text-sm text-slate-400 flex items-center gap-2">
+                    {row.showValue ? row.secret.masked_value : '************************************'}
+                    <button onClick={() => toggleShowValue(index)} className="text-slate-600 hover:text-slate-400 transition-colors flex-shrink-0">
+                      {row.showValue ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    </button>
                   </div>
                   <button
                     onClick={() => startEditing(index)}

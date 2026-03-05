@@ -166,12 +166,34 @@ export function startListening(): void {
   logger.info('Realtime listeners started', 'system');
 }
 
+async function updateHeartbeat(): Promise<void> {
+  const supabase = getSupabase();
+  await supabase.from('agent_heartbeat').upsert({
+    id: 1,
+    last_seen: new Date().toISOString(),
+    status: 'online',
+    version: '1.0.0',
+  });
+}
+
 export function startHeartbeat(): NodeJS.Timeout {
+  updateHeartbeat().catch(() => console.error('Initial heartbeat failed'));
+
   return setInterval(async () => {
     try {
+      await updateHeartbeat();
       await logger.info('Agent heartbeat', 'system');
     } catch {
       console.error('Heartbeat failed');
     }
   }, 60_000);
+}
+
+export async function markOffline(): Promise<void> {
+  try {
+    const supabase = getSupabase();
+    await supabase.from('agent_heartbeat').update({ status: 'offline' }).eq('id', 1);
+  } catch {
+    // best effort
+  }
 }

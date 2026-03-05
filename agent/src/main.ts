@@ -9,7 +9,7 @@ config({ path: resolve(__dirname, '..', '.env') });
 import { logger } from './core/logger.js';
 import { getConfig } from './core/config.js';
 import { loadSecrets } from './core/secrets.js';
-import { startListening, startHeartbeat, setEventHandler } from './core/event-listener.js';
+import { startListening, startHeartbeat, setEventHandler, markOffline } from './core/event-listener.js';
 import { processBrief } from './pipelines/brief-processing.js';
 import { handleChatMessage } from './pipelines/chat-response.js';
 import { handleQARejection } from './pipelines/qa-correction.js';
@@ -97,6 +97,7 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     console.log(`\n${signal} received. Shutting down gracefully...`);
     clearInterval(heartbeatInterval);
+    await markOffline();
     await closeBrowser();
     await logger.info('Agent shutting down', 'system');
     process.exit(0);

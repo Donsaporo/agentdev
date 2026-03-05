@@ -39,20 +39,36 @@ export default function Sidebar() {
   useEffect(() => {
     loadBadges();
     checkAgentStatus();
-    const interval = setInterval(checkAgentStatus, 60_000);
-    return () => clearInterval(interval);
+    const statusInterval = setInterval(checkAgentStatus, 60000);
+    const badgeInterval = setInterval(loadBadges, 30000);
+    return () => {
+      clearInterval(statusInterval);
+      clearInterval(badgeInterval);
+    };
   }, []);
 
   async function checkAgentStatus() {
-    const twoMinutesAgo = new Date(Date.now() - 120_000).toISOString();
     const { data } = await supabase
+      .from('agent_heartbeat')
+      .select('last_seen, status')
+      .eq('id', 1)
+      .maybeSingle();
+
+    if (data) {
+      const lastSeen = new Date(data.last_seen);
+      const diffMs = Date.now() - lastSeen.getTime();
+      setAgentOnline(diffMs < 180000 && data.status === 'online');
+      return;
+    }
+
+    const twoMinutesAgo = new Date(Date.now() - 120000).toISOString();
+    const { data: logData } = await supabase
       .from('agent_logs')
       .select('id')
-      .eq('action', 'Agent heartbeat')
       .gte('created_at', twoMinutesAgo)
       .limit(1)
       .maybeSingle();
-    setAgentOnline(!!data);
+    setAgentOnline(!!logData);
   }
 
   async function loadBadges() {
@@ -102,7 +118,7 @@ export default function Sidebar() {
                 }`
               }
             >
-              <item.icon className="w-4.5 h-4.5 flex-shrink-0" />
+              <item.icon className="w-[18px] h-[18px] flex-shrink-0" />
               <span className="flex-1">{item.label}</span>
               {badge > 0 && (
                 <span className="min-w-[18px] h-[18px] flex items-center justify-center rounded-full bg-emerald-500 text-white text-[10px] font-bold px-1">
