@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { PanelRightClose, PanelRightOpen } from 'lucide-react';
+import { PanelRightClose, PanelRightOpen, Bot, MessageSquare, Rocket, Camera, Wrench } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import type { Project, AgentMessage, AgentConversation, ProjectTask, Brief } from '../lib/types';
 import { useRealtimeSubscription } from '../hooks/useRealtimeSubscription';
@@ -141,8 +141,15 @@ export default function AgentChatPage() {
     );
   }
 
+  const capabilities = [
+    { icon: MessageSquare, label: 'Chat', desc: 'Give instructions in natural language' },
+    { icon: Rocket, label: 'Deploy', desc: 'Push to demo or production' },
+    { icon: Camera, label: 'QA', desc: 'Auto-screenshot and review' },
+    { icon: Wrench, label: 'Fix', desc: 'Auto-correct rejected pages' },
+  ];
+
   return (
-    <div className="h-[calc(100vh-4rem)] lg:h-[calc(100vh-2rem)] flex rounded-xl overflow-hidden border border-slate-800/60 bg-slate-900/40 -m-4 lg:-m-8">
+    <div className="h-[calc(100vh-4rem)] lg:h-[calc(100vh-2rem)] flex rounded-2xl overflow-hidden border border-white/[0.06] bg-white/[0.01] -m-4 lg:-m-8">
       <div className="hidden lg:block w-60 flex-shrink-0">
         <ChatProjectList
           projects={projects}
@@ -151,37 +158,60 @@ export default function AgentChatPage() {
         />
       </div>
 
-      <div className="flex-1 flex flex-col min-w-0 border-x border-slate-800/40">
-        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800/40 bg-slate-950/60">
-          <div className="min-w-0">
-            <h2 className="text-sm font-semibold text-white truncate">
-              {selectedProject ? selectedProject.name : 'Agent Chat'}
-            </h2>
-            {selectedProject && (
-              <p className="text-xs text-slate-500">
-                {selectedProject.agent_status === 'working' ? 'Agent is working...' : 'Send a message to interact with the agent'}
+      <div className="flex-1 flex flex-col min-w-0 border-x border-white/[0.04]">
+        {selectedProject ? (
+          <>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-white/[0.04] bg-[#0a0e17]/60 backdrop-blur-sm">
+              <div className="min-w-0">
+                <h2 className="text-sm font-semibold text-white truncate">
+                  {selectedProject.name}
+                </h2>
+                <p className="text-xs text-slate-500">
+                  {selectedProject.agent_status === 'working' ? 'Agent is working...' : 'Send a message to interact with the agent'}
+                </p>
+              </div>
+              <button
+                onClick={() => setShowContext(!showContext)}
+                className="hidden lg:flex p-2 text-slate-400 hover:text-slate-200 hover:bg-white/[0.04] rounded-xl transition-all"
+                title={showContext ? 'Hide context' : 'Show context'}
+              >
+                {showContext ? <PanelRightClose className="w-4 h-4" /> : <PanelRightOpen className="w-4 h-4" />}
+              </button>
+            </div>
+
+            <ChatMessageList
+              messages={messages}
+              isAgentWorking={selectedProject.agent_status === 'working'}
+            />
+
+            <ChatInput
+              onSend={handleSend}
+              disabled={!selectedProject}
+              placeholder={`Message about ${selectedProject.name}...`}
+            />
+          </>
+        ) : (
+          <div className="flex-1 flex items-center justify-center p-8">
+            <div className="text-center max-w-md">
+              <div className="w-20 h-20 rounded-3xl bg-gradient-to-br from-emerald-500/20 to-teal-500/20 flex items-center justify-center mx-auto mb-6 ring-1 ring-emerald-500/10">
+                <Bot className="w-10 h-10 text-emerald-400" />
+              </div>
+              <h2 className="text-xl font-bold text-white mb-2">Agent Chat</h2>
+              <p className="text-sm text-slate-400 mb-8">
+                Select a project from the sidebar to start a conversation with the AI development agent.
               </p>
-            )}
+              <div className="grid grid-cols-2 gap-3">
+                {capabilities.map(cap => (
+                  <div key={cap.label} className="glass-card p-4 text-left">
+                    <cap.icon className="w-5 h-5 text-emerald-400 mb-2" />
+                    <p className="text-sm font-semibold text-white">{cap.label}</p>
+                    <p className="text-xs text-slate-500 mt-0.5">{cap.desc}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
-          <button
-            onClick={() => setShowContext(!showContext)}
-            className="hidden lg:flex p-2 text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 rounded-lg transition-all"
-            title={showContext ? 'Hide context' : 'Show context'}
-          >
-            {showContext ? <PanelRightClose className="w-4 h-4" /> : <PanelRightOpen className="w-4 h-4" />}
-          </button>
-        </div>
-
-        <ChatMessageList
-          messages={messages}
-          isAgentWorking={selectedProject?.agent_status === 'working'}
-        />
-
-        <ChatInput
-          onSend={handleSend}
-          disabled={!selectedProject}
-          placeholder={selectedProject ? `Message about ${selectedProject.name}...` : 'Select a project first'}
-        />
+        )}
       </div>
 
       {showContext && selectedProject && (

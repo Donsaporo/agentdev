@@ -147,8 +147,8 @@ export default function SettingsPage() {
   return (
     <div className="space-y-6 animate-fade-in">
       <div>
-        <h1 className="text-2xl font-bold text-white">Settings</h1>
-        <p className="text-slate-400 mt-1">Configure your profile and agent parameters</p>
+        <h1 className="text-2xl font-bold text-white tracking-tight">Settings</h1>
+        <p className="text-slate-400 mt-1 text-sm">Configure your profile and agent parameters</p>
       </div>
 
       <div className="flex flex-col lg:flex-row gap-6">
@@ -158,10 +158,10 @@ export default function SettingsPage() {
               <button
                 key={section.id}
                 onClick={() => setActiveSection(section.id)}
-                className={`flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-medium whitespace-nowrap transition-all ${
+                className={`flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-[13px] font-medium whitespace-nowrap transition-all ${
                   activeSection === section.id
                     ? 'bg-emerald-500/10 text-emerald-400'
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.04]'
                 }`}
               >
                 <section.icon className="w-4 h-4 flex-shrink-0" />
@@ -173,27 +173,22 @@ export default function SettingsPage() {
 
         <div className="flex-1 max-w-2xl">
           {activeSection === 'profile' && (
-            <form onSubmit={handleSaveProfile} className="bg-slate-900/60 border border-slate-800/60 rounded-xl p-6 space-y-5">
+            <form onSubmit={handleSaveProfile} className="glass-card p-6 space-y-5">
               <h2 className="text-lg font-semibold text-white">Profile</h2>
               <div>
                 <label className="block text-sm font-medium text-slate-300 mb-1.5">Full Name</label>
-                <input
-                  type="text"
-                  value={profile.full_name}
-                  onChange={e => setProfile({ ...profile, full_name: e.target.value })}
-                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-colors"
-                />
+                <input type="text" value={profile.full_name} onChange={e => setProfile({ ...profile, full_name: e.target.value })} className="w-full glass-input" />
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-300 mb-1.5">Email</label>
-                <input type="email" value={user?.email || ''} disabled className="w-full bg-slate-800/50 border border-slate-700/50 rounded-lg px-4 py-2.5 text-slate-500 cursor-not-allowed" />
+                <input type="email" value={user?.email || ''} disabled className="w-full glass-input opacity-50 cursor-not-allowed" />
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-300 mb-1.5">Role</label>
-                <input type="text" value={profile.role} disabled className="w-full bg-slate-800/50 border border-slate-700/50 rounded-lg px-4 py-2.5 text-slate-500 cursor-not-allowed capitalize" />
+                <input type="text" value={profile.role} disabled className="w-full glass-input opacity-50 cursor-not-allowed capitalize" />
               </div>
               <div className="pt-2">
-                <button type="submit" disabled={saving} className="inline-flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white text-sm font-medium rounded-lg transition-all disabled:opacity-50 active:scale-[0.97]">
+                <button type="submit" disabled={saving} className="btn-primary disabled:opacity-50">
                   {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
                   Save
                 </button>
@@ -203,17 +198,15 @@ export default function SettingsPage() {
 
           {activeSection === 'api-keys' && (
             <div className="space-y-5">
-              <div className={`flex items-center gap-3 p-4 rounded-xl border transition-all ${
-                agentStatus.online
-                  ? 'bg-emerald-500/5 border-emerald-500/20'
-                  : 'bg-slate-800/30 border-slate-700/30'
+              <div className={`glass-card flex items-center gap-3.5 p-4 transition-all ${
+                agentStatus.online ? 'bg-emerald-500/[0.03]' : ''
               }`}>
                 {agentStatus.online ? (
                   <div className="w-10 h-10 rounded-xl bg-emerald-500/10 flex items-center justify-center flex-shrink-0">
                     <Wifi className="w-5 h-5 text-emerald-400" />
                   </div>
                 ) : (
-                  <div className="w-10 h-10 rounded-xl bg-slate-800/50 flex items-center justify-center flex-shrink-0">
+                  <div className="w-10 h-10 rounded-xl bg-white/[0.04] flex items-center justify-center flex-shrink-0">
                     <WifiOff className="w-5 h-5 text-slate-500" />
                   </div>
                 )}
@@ -232,7 +225,7 @@ export default function SettingsPage() {
                   </div>
                 </div>
                 {!agentStatus.online && (
-                  <span className="text-xs text-slate-500 bg-slate-800/50 px-2.5 py-1 rounded-md flex-shrink-0">
+                  <span className="text-[11px] text-slate-500 bg-white/[0.04] px-2.5 py-1 rounded-lg flex-shrink-0">
                     Check VPS
                   </span>
                 )}
@@ -243,73 +236,51 @@ export default function SettingsPage() {
           )}
 
           {activeSection === 'agent' && (
-            <div className="bg-slate-900/60 border border-slate-800/60 rounded-xl p-6 space-y-5">
-              <h2 className="text-lg font-semibold text-white">Agent Configuration</h2>
-              <p className="text-sm text-slate-400">
-                These settings control how the AI development agent operates.
-              </p>
+            <div className="glass-card p-6 space-y-5">
+              <div>
+                <h2 className="text-lg font-semibold text-white">Agent Configuration</h2>
+                <p className="text-sm text-slate-400 mt-1">These settings control how the AI development agent operates.</p>
+              </div>
               {configLoading ? (
                 <div className="flex items-center justify-center py-8">
                   <div className="w-6 h-6 border-2 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin" />
                 </div>
               ) : (
-                <div className="space-y-4">
+                <div className="space-y-5">
                   <div>
                     <label className="block text-sm font-medium text-slate-300 mb-1.5">Default AI Model</label>
-                    <select
-                      value={(getValue('default_model', 'claude-sonnet-4-20250514') as string)}
-                      onChange={e => handleSaveConfig('default_model', e.target.value)}
-                      className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-colors"
-                    >
-                      {MODEL_OPTIONS.map(opt => (
-                        <option key={opt.value} value={opt.value}>{opt.label}</option>
-                      ))}
+                    <p className="text-xs text-slate-500 mb-2">Which Claude model to use for code generation</p>
+                    <select value={(getValue('default_model', 'claude-sonnet-4-20250514') as string)} onChange={e => handleSaveConfig('default_model', e.target.value)} className="w-full glass-select">
+                      {MODEL_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
                     </select>
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-slate-300 mb-1.5">Auto-deploy to demo</label>
-                    <select
-                      value={String(getValue('auto_deploy', false))}
-                      onChange={e => handleSaveConfig('auto_deploy', e.target.value === 'true')}
-                      className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-colors"
-                    >
+                    <p className="text-xs text-slate-500 mb-2">Automatically deploy to Vercel after QA passes</p>
+                    <select value={String(getValue('auto_deploy', false))} onChange={e => handleSaveConfig('auto_deploy', e.target.value === 'true')} className="w-full glass-select">
                       <option value="true">Yes - Deploy after QA passes</option>
                       <option value="false">No - Wait for manual approval</option>
                     </select>
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-slate-300 mb-1.5">Auto QA Screenshots</label>
-                    <select
-                      value={String(getValue('auto_qa', true))}
-                      onChange={e => handleSaveConfig('auto_qa', e.target.value === 'true')}
-                      className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-colors"
-                    >
+                    <p className="text-xs text-slate-500 mb-2">Take screenshots automatically after deploying</p>
+                    <select value={String(getValue('auto_qa', true))} onChange={e => handleSaveConfig('auto_qa', e.target.value === 'true')} className="w-full glass-select">
                       <option value="true">Yes - Auto capture after deploy</option>
                       <option value="false">No - Manual trigger only</option>
                     </select>
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-slate-300 mb-1.5">Max auto-correction attempts</label>
-                    <select
-                      value={String(getValue('max_corrections', 3))}
-                      onChange={e => handleSaveConfig('max_corrections', Number(e.target.value))}
-                      className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-colors"
-                    >
-                      {CORRECTION_OPTIONS.map(opt => (
-                        <option key={opt.value} value={opt.value}>{opt.label}</option>
-                      ))}
+                    <p className="text-xs text-slate-500 mb-2">How many times the agent will try to fix rejected QA</p>
+                    <select value={String(getValue('max_corrections', 3))} onChange={e => handleSaveConfig('max_corrections', Number(e.target.value))} className="w-full glass-select">
+                      {CORRECTION_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
                     </select>
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-slate-300 mb-1.5">Notification Email</label>
                     <p className="text-xs text-slate-500 mb-2">Where to send build/deploy notifications</p>
-                    <input
-                      type="email"
-                      value={notifEmail}
-                      onChange={e => handleNotifEmailChange(e.target.value)}
-                      placeholder="team@yourcompany.com"
-                      className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-2.5 text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-colors"
-                    />
+                    <input type="email" value={notifEmail} onChange={e => handleNotifEmailChange(e.target.value)} placeholder="team@yourcompany.com" className="w-full glass-input" />
                   </div>
                 </div>
               )}
@@ -317,31 +288,18 @@ export default function SettingsPage() {
           )}
 
           {activeSection === 'security' && (
-            <form onSubmit={handleChangePassword} className="bg-slate-900/60 border border-slate-800/60 rounded-xl p-6 space-y-5">
+            <form onSubmit={handleChangePassword} className="glass-card p-6 space-y-5">
               <h2 className="text-lg font-semibold text-white">Change Password</h2>
               <div>
                 <label className="block text-sm font-medium text-slate-300 mb-1.5">New Password</label>
-                <input
-                  type="password"
-                  value={passwords.newPass}
-                  onChange={e => setPasswords({ ...passwords, newPass: e.target.value })}
-                  required
-                  minLength={6}
-                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-colors"
-                />
+                <input type="password" value={passwords.newPass} onChange={e => setPasswords({ ...passwords, newPass: e.target.value })} required minLength={6} className="w-full glass-input" />
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-300 mb-1.5">Confirm New Password</label>
-                <input
-                  type="password"
-                  value={passwords.confirm}
-                  onChange={e => setPasswords({ ...passwords, confirm: e.target.value })}
-                  required
-                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-colors"
-                />
+                <input type="password" value={passwords.confirm} onChange={e => setPasswords({ ...passwords, confirm: e.target.value })} required className="w-full glass-input" />
               </div>
               <div className="pt-2">
-                <button type="submit" disabled={saving} className="inline-flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white text-sm font-medium rounded-lg transition-all disabled:opacity-50 active:scale-[0.97]">
+                <button type="submit" disabled={saving} className="btn-primary disabled:opacity-50">
                   {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Shield className="w-4 h-4" />}
                   Update Password
                 </button>

@@ -145,11 +145,11 @@ export default function BriefWizard({ projects, onSubmit, onClose }: BriefWizard
             <div key={s.id} className="flex items-center flex-1">
               <button
                 onClick={() => i <= step && setStep(i)}
-                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-all w-full ${
+                className={`flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium transition-all w-full ${
                   isActive
                     ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
                     : isCompleted
-                    ? 'bg-slate-800/30 text-emerald-400/60 cursor-pointer hover:bg-slate-800/50'
+                    ? 'bg-white/[0.03] text-emerald-400/60 cursor-pointer hover:bg-white/[0.05]'
                     : 'text-slate-600 cursor-default'
                 }`}
               >
@@ -172,7 +172,7 @@ export default function BriefWizard({ projects, onSubmit, onClose }: BriefWizard
             <select
               value={projectId}
               onChange={e => setProjectId(e.target.value)}
-              className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-colors"
+              className="w-full glass-select"
             >
               <option value="">Select project</option>
               {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
@@ -193,7 +193,7 @@ export default function BriefWizard({ projects, onSubmit, onClose }: BriefWizard
               onChange={e => setContent(e.target.value)}
               rows={12}
               autoFocus
-              className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-3 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-colors resize-none text-sm leading-relaxed"
+              className="w-full glass-input resize-none text-sm leading-relaxed"
               placeholder={"Describe the project in full detail:\n\n- What is it? (website, e-commerce store, dashboard, etc.)\n- Who is it for? (target audience)\n- What pages does it need?\n- What features are required?\n- Any specific integrations? (payments, email, analytics)\n- Content details (text, images, products)\n- Any reference sites to draw inspiration from?\n\nThe more detail you provide, the better the result."}
             />
             <div className="flex items-center justify-between mt-1">
@@ -219,10 +219,10 @@ export default function BriefWizard({ projects, onSubmit, onClose }: BriefWizard
                 <button
                   key={style}
                   onClick={() => setDesignStyle(designStyle === style ? '' : style)}
-                  className={`px-3 py-2.5 text-xs font-medium rounded-lg border transition-all text-left ${
+                  className={`px-3 py-2.5 text-xs font-medium rounded-xl border transition-all text-left ${
                     designStyle === style
                       ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400'
-                      : 'border-slate-700 bg-slate-800/30 text-slate-400 hover:border-slate-600 hover:text-slate-300'
+                      : 'border-white/[0.06] bg-white/[0.02] text-slate-400 hover:border-white/[0.1] hover:text-slate-300'
                   }`}
                 >
                   {style}
@@ -238,7 +238,7 @@ export default function BriefWizard({ projects, onSubmit, onClose }: BriefWizard
               value={colorNotes}
               onChange={e => setColorNotes(e.target.value)}
               placeholder="e.g., Navy blue and gold, or match the client's logo"
-              className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-2.5 text-white text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-colors"
+              className="w-full glass-input text-sm"
             />
           </div>
 
@@ -249,7 +249,7 @@ export default function BriefWizard({ projects, onSubmit, onClose }: BriefWizard
               value={fontNotes}
               onChange={e => setFontNotes(e.target.value)}
               placeholder="e.g., Modern sans-serif, or Inter/Poppins"
-              className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-2.5 text-white text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-colors"
+              className="w-full glass-input text-sm"
             />
           </div>
 
@@ -264,7 +264,7 @@ export default function BriefWizard({ projects, onSubmit, onClose }: BriefWizard
               onChange={e => setReferenceUrls(e.target.value)}
               rows={3}
               placeholder={"https://example.com\nhttps://inspiration-site.com"}
-              className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-2.5 text-white text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-colors resize-none font-mono"
+              className="w-full glass-input resize-none text-sm font-mono"
             />
           </div>
         </div>
@@ -283,10 +283,10 @@ export default function BriefWizard({ projects, onSubmit, onClose }: BriefWizard
               onDragLeave={() => setDragOver(false)}
               onDrop={handleDrop}
               onClick={() => inputRef.current?.click()}
-              className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-all ${
+              className={`border-2 border-dashed rounded-2xl p-8 text-center cursor-pointer transition-all ${
                 dragOver
-                  ? 'border-emerald-500 bg-emerald-500/5'
-                  : 'border-slate-700 hover:border-slate-600 hover:bg-slate-800/20'
+                  ? 'border-emerald-500 bg-emerald-500/[0.04]'
+                  : 'border-white/[0.08] hover:border-white/[0.12] hover:bg-white/[0.02]'
               }`}
             >
               <Upload className={`w-8 h-8 mx-auto mb-3 ${dragOver ? 'text-emerald-400' : 'text-slate-500'}`} />
@@ -305,7 +305,7 @@ export default function BriefWizard({ projects, onSubmit, onClose }: BriefWizard
             {files.length > 0 && (
               <div className="mt-3 space-y-2">
                 {files.map(file => (
-                  <div key={file.id} className="flex items-center gap-3 bg-slate-800/30 rounded-lg px-3 py-2.5">
+                  <div key={file.id} className="flex items-center gap-3 bg-white/[0.02] border border-white/[0.06] rounded-xl px-3 py-2.5">
                     {fileIcon(file.type)}
                     <div className="flex-1 min-w-0">
                       <p className="text-sm text-slate-200 truncate">{file.name}</p>
@@ -326,15 +326,15 @@ export default function BriefWizard({ projects, onSubmit, onClose }: BriefWizard
         </div>
       )}
 
-      <div className="flex items-center justify-between pt-2 border-t border-slate-800/40">
+      <div className="flex items-center justify-between pt-2 border-t border-white/[0.04]">
         {step === 0 ? (
-          <button onClick={onClose} className="px-4 py-2.5 text-sm text-slate-400 hover:text-slate-200 transition-colors">
+          <button onClick={onClose} className="btn-ghost">
             Cancel
           </button>
         ) : (
           <button
             onClick={() => setStep(s => s - 1)}
-            className="inline-flex items-center gap-1.5 px-4 py-2.5 text-sm text-slate-400 hover:text-slate-200 transition-colors"
+            className="btn-ghost"
           >
             <ChevronLeft className="w-4 h-4" /> Back
           </button>
@@ -344,7 +344,7 @@ export default function BriefWizard({ projects, onSubmit, onClose }: BriefWizard
           <button
             onClick={handleSubmit}
             disabled={!canSubmit}
-            className="inline-flex items-center gap-2 px-6 py-2.5 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white text-sm font-medium rounded-lg transition-all disabled:opacity-40 active:scale-[0.97]"
+            className="btn-primary disabled:opacity-40"
           >
             {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
             Submit Brief
@@ -353,7 +353,7 @@ export default function BriefWizard({ projects, onSubmit, onClose }: BriefWizard
           <button
             onClick={() => setStep(s => s + 1)}
             disabled={!canGoNext}
-            className="inline-flex items-center gap-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium rounded-lg transition-all disabled:opacity-40 active:scale-[0.97]"
+            className="btn-primary disabled:opacity-40"
           >
             Next <ChevronRight className="w-4 h-4" />
           </button>

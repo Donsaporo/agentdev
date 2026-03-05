@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { FolderKanban, Users, Globe, Activity, ArrowRight, Clock, Bot, Zap, DollarSign } from 'lucide-react';
+import { FolderKanban, Users, Globe, Activity, ArrowRight, Clock, Bot, Zap, DollarSign, Sparkles } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import type { Project, AgentLog } from '../lib/types';
@@ -74,23 +74,23 @@ export default function DashboardPage() {
     enabled: !loading,
   });
 
-  const severityIcon: Record<string, string> = {
-    info: 'bg-slate-500/20 text-slate-400',
-    success: 'bg-emerald-500/20 text-emerald-400',
-    warning: 'bg-amber-500/20 text-amber-400',
-    error: 'bg-red-500/20 text-red-400',
+  const severityColor: Record<string, string> = {
+    info: 'bg-slate-500/10 text-slate-400',
+    success: 'bg-emerald-500/10 text-emerald-400',
+    warning: 'bg-amber-500/10 text-amber-400',
+    error: 'bg-red-500/10 text-red-400',
   };
 
   if (loading) {
     return (
       <div className="space-y-8 animate-fade-in">
         <div><div className="skeleton h-8 w-64 mb-2" /><div className="skeleton h-4 w-48" /></div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {[1, 2, 3, 4].map(i => <div key={i} className="skeleton h-24 rounded-xl" />)}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+          {[1, 2, 3, 4, 5].map(i => <div key={i} className="skeleton h-[100px] rounded-2xl" />)}
         </div>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <div className="skeleton h-80 rounded-xl" />
-          <div className="skeleton h-80 rounded-xl" />
+          <div className="skeleton h-80 rounded-2xl" />
+          <div className="skeleton h-80 rounded-2xl" />
         </div>
       </div>
     );
@@ -102,36 +102,38 @@ export default function DashboardPage() {
     <div className="space-y-8 animate-fade-in">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white">
+          <h1 className="text-2xl font-bold text-white tracking-tight">
             {getGreeting()}{teamMember?.full_name ? `, ${teamMember.full_name.split(' ')[0]}` : ''}
           </h1>
-          <p className="text-slate-400 mt-1">Here is what is happening with your projects</p>
+          <p className="text-slate-400 mt-1 text-sm">Here is what is happening with your projects</p>
         </div>
         {workingProjects.length > 0 && (
-          <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 bg-emerald-500/10 border border-emerald-500/20 rounded-full animate-pulse-glow">
+          <div className="hidden sm:flex items-center gap-2 px-4 py-2 glass-card animate-pulse-glow">
             <Zap className="w-3.5 h-3.5 text-emerald-400" />
-            <span className="text-xs font-medium text-emerald-400">{workingProjects.length} active build{workingProjects.length > 1 ? 's' : ''}</span>
+            <span className="text-xs font-semibold text-emerald-400">{workingProjects.length} active build{workingProjects.length > 1 ? 's' : ''}</span>
           </div>
         )}
       </div>
 
       {workingProjects.length > 0 && (
-        <div className="bg-gradient-to-r from-emerald-500/5 to-cyan-500/5 border border-emerald-500/20 rounded-xl p-4">
-          <div className="flex items-center gap-2 mb-3">
-            <Bot className="w-4 h-4 text-emerald-400" />
-            <span className="text-sm font-medium text-emerald-400">Agent Working</span>
+        <div className="glass-card p-5 bg-gradient-to-r from-emerald-500/[0.04] to-teal-500/[0.04]">
+          <div className="flex items-center gap-2 mb-4">
+            <div className="w-7 h-7 rounded-lg bg-emerald-500/10 flex items-center justify-center">
+              <Bot className="w-4 h-4 text-emerald-400" />
+            </div>
+            <span className="text-sm font-semibold text-emerald-400">Agent Working</span>
           </div>
           <div className="space-y-2">
             {workingProjects.map(p => (
-              <Link key={p.id} to={`/chat/${p.id}`} className="flex items-center gap-3 p-2 rounded-lg hover:bg-slate-800/20 transition-colors">
+              <Link key={p.id} to={`/chat/${p.id}`} className="flex items-center gap-3 p-3 rounded-xl hover:bg-white/[0.03] transition-colors">
                 <AgentStatusIndicator status={p.agent_status} size="md" />
                 <span className="text-sm text-white font-medium">{p.name}</span>
                 <PhaseIndicator currentPhase={p.current_phase} compact />
-                <div className="ml-auto flex items-center gap-2">
-                  <div className="w-16 h-1.5 bg-slate-800 rounded-full overflow-hidden">
-                    <div className="h-full bg-gradient-to-r from-emerald-500 to-cyan-500 rounded-full transition-all" style={{ width: `${p.progress}%` }} />
+                <div className="ml-auto flex items-center gap-3">
+                  <div className="w-20 h-1.5 bg-white/[0.06] rounded-full overflow-hidden">
+                    <div className="h-full bg-gradient-to-r from-emerald-500 to-teal-400 rounded-full transition-all" style={{ width: `${p.progress}%` }} />
                   </div>
-                  <span className="text-xs text-slate-400">{p.progress}%</span>
+                  <span className="text-xs text-slate-400 w-8 text-right">{p.progress}%</span>
                 </div>
               </Link>
             ))}
@@ -148,39 +150,48 @@ export default function DashboardPage() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-slate-900/60 border border-slate-800/60 rounded-xl">
-          <div className="flex items-center justify-between px-5 py-4 border-b border-slate-800/40">
-            <h2 className="text-sm font-semibold text-white">Recent Projects</h2>
-            <Link to="/projects" className="text-xs text-emerald-400 hover:text-emerald-300 flex items-center gap-1 transition-colors">
+        <div className="glass-card overflow-hidden">
+          <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.04]">
+            <div className="flex items-center gap-2.5">
+              <FolderKanban className="w-4 h-4 text-slate-400" />
+              <h2 className="text-sm font-semibold text-white">Recent Projects</h2>
+            </div>
+            <Link to="/projects" className="text-xs text-emerald-400 hover:text-emerald-300 flex items-center gap-1 transition-colors font-medium">
               View all <ArrowRight className="w-3 h-3" />
             </Link>
           </div>
           {recentProjects.length === 0 ? (
-            <div className="p-8 text-center text-slate-500 text-sm">No projects yet</div>
+            <div className="p-10 text-center">
+              <div className="w-12 h-12 rounded-2xl bg-white/[0.03] flex items-center justify-center mx-auto mb-3">
+                <Sparkles className="w-5 h-5 text-slate-600" />
+              </div>
+              <p className="text-sm text-slate-400">No projects yet</p>
+              <Link to="/projects" className="text-xs text-emerald-400 hover:text-emerald-300 mt-2 inline-block">Create your first project</Link>
+            </div>
           ) : (
-            <div className="divide-y divide-slate-800/40">
+            <div className="divide-y divide-white/[0.03]">
               {recentProjects.map(project => (
                 <Link
                   key={project.id}
                   to={`/projects/${project.id}`}
-                  className="flex items-center justify-between px-5 py-3.5 hover:bg-slate-800/20 transition-colors"
+                  className="flex items-center justify-between px-6 py-3.5 hover:bg-white/[0.02] transition-colors"
                 >
                   <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2.5">
                       <AgentStatusIndicator status={project.agent_status} />
                       <p className="text-sm font-medium text-slate-200 truncate">{project.name}</p>
                     </div>
-                    <p className="text-xs text-slate-500 truncate mt-0.5 ml-3.5">{project.clients?.name || 'No client'}</p>
+                    <p className="text-xs text-slate-500 truncate mt-0.5 ml-[22px]">{project.clients?.name || 'No client'}</p>
                   </div>
                   <div className="flex items-center gap-3 flex-shrink-0 ml-4">
-                    <div className="hidden sm:flex items-center gap-1.5">
-                      <div className="w-16 h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                    <div className="hidden sm:flex items-center gap-2">
+                      <div className="w-16 h-1.5 bg-white/[0.06] rounded-full overflow-hidden">
                         <div
-                          className="h-full bg-gradient-to-r from-emerald-500 to-cyan-500 rounded-full transition-all"
+                          className="h-full bg-gradient-to-r from-emerald-500 to-teal-400 rounded-full transition-all"
                           style={{ width: `${project.progress}%` }}
                         />
                       </div>
-                      <span className="text-xs text-slate-500">{project.progress}%</span>
+                      <span className="text-xs text-slate-500 w-8 text-right">{project.progress}%</span>
                     </div>
                     <StatusBadge status={project.status} />
                   </div>
@@ -190,20 +201,29 @@ export default function DashboardPage() {
           )}
         </div>
 
-        <div className="bg-slate-900/60 border border-slate-800/60 rounded-xl">
-          <div className="flex items-center justify-between px-5 py-4 border-b border-slate-800/40">
-            <h2 className="text-sm font-semibold text-white">Agent Activity</h2>
-            <Link to="/activity" className="text-xs text-emerald-400 hover:text-emerald-300 flex items-center gap-1 transition-colors">
+        <div className="glass-card overflow-hidden">
+          <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.04]">
+            <div className="flex items-center gap-2.5">
+              <Activity className="w-4 h-4 text-slate-400" />
+              <h2 className="text-sm font-semibold text-white">Agent Activity</h2>
+            </div>
+            <Link to="/activity" className="text-xs text-emerald-400 hover:text-emerald-300 flex items-center gap-1 transition-colors font-medium">
               View all <ArrowRight className="w-3 h-3" />
             </Link>
           </div>
           {recentLogs.length === 0 ? (
-            <div className="p-8 text-center text-slate-500 text-sm">No activity yet</div>
+            <div className="p-10 text-center">
+              <div className="w-12 h-12 rounded-2xl bg-white/[0.03] flex items-center justify-center mx-auto mb-3">
+                <Bot className="w-5 h-5 text-slate-600" />
+              </div>
+              <p className="text-sm text-slate-400">No activity yet</p>
+              <p className="text-xs text-slate-500 mt-1">Activity will appear once the agent starts working</p>
+            </div>
           ) : (
-            <div className="divide-y divide-slate-800/40">
+            <div className="divide-y divide-white/[0.03]">
               {recentLogs.map(log => (
-                <div key={log.id} className="flex items-start gap-3 px-5 py-3.5">
-                  <div className={`w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5 ${severityIcon[log.severity] || severityIcon.info}`}>
+                <div key={log.id} className="flex items-start gap-3 px-6 py-3.5 hover:bg-white/[0.02] transition-colors">
+                  <div className={`w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 mt-0.5 ${severityColor[log.severity] || severityColor.info}`}>
                     <Activity className="w-3.5 h-3.5" />
                   </div>
                   <div className="min-w-0 flex-1">

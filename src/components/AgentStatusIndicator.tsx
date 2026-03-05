@@ -6,11 +6,11 @@ interface AgentStatusIndicatorProps {
   size?: 'sm' | 'md';
 }
 
-const statusConfig: Record<AgentStatus, { color: string; pulse: boolean; label: string }> = {
-  idle: { color: 'bg-slate-500', pulse: false, label: 'Idle' },
-  working: { color: 'bg-emerald-500', pulse: true, label: 'Working' },
-  waiting: { color: 'bg-amber-500', pulse: true, label: 'Waiting' },
-  error: { color: 'bg-red-500', pulse: false, label: 'Error' },
+const statusConfig: Record<AgentStatus, { color: string; glow: string; pulse: boolean; label: string }> = {
+  idle: { color: 'bg-slate-500', glow: '', pulse: false, label: 'Idle' },
+  working: { color: 'bg-emerald-500', glow: 'shadow-emerald-500/50', pulse: true, label: 'Working' },
+  waiting: { color: 'bg-amber-500', glow: 'shadow-amber-500/50', pulse: true, label: 'Waiting' },
+  error: { color: 'bg-red-500', glow: 'shadow-red-500/50', pulse: false, label: 'Error' },
 };
 
 export default function AgentStatusIndicator({ status, showLabel = false, size = 'sm' }: AgentStatusIndicatorProps) {
@@ -20,7 +20,7 @@ export default function AgentStatusIndicator({ status, showLabel = false, size =
 
   return (
     <span className="inline-flex items-center gap-1.5">
-      <span className="relative flex">
+      <span className={`relative flex ${config.glow} shadow-sm rounded-full`}>
         <span className={`${dotSize} rounded-full ${config.color}`} />
         {config.pulse && (
           <span className={`absolute inset-0 ${pulseSize} rounded-full ${config.color} animate-ping opacity-40`} />

@@ -8,7 +8,7 @@ import { formatDistanceToNow } from 'date-fns';
 const STATUS_CONFIG = {
   connected: { color: 'text-emerald-400', bg: 'bg-emerald-500/10', icon: CheckCircle2, label: 'Connected' },
   error: { color: 'text-red-400', bg: 'bg-red-500/10', icon: AlertCircle, label: 'Error' },
-  untested: { color: 'text-slate-500', bg: 'bg-slate-800/30', icon: Clock, label: 'Untested' },
+  untested: { color: 'text-slate-500', bg: 'bg-white/[0.04]', icon: Clock, label: 'Untested' },
 } as const;
 
 interface SecretRow {
@@ -137,7 +137,7 @@ export default function SecretsManager() {
 
   if (loading) {
     return (
-      <div className="bg-slate-900/60 border border-slate-800/60 rounded-xl p-6">
+      <div className="glass-card p-6">
         <div className="flex items-center justify-center py-8">
           <div className="w-6 h-6 border-2 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin" />
         </div>
@@ -148,7 +148,7 @@ export default function SecretsManager() {
   const configuredCount = rows.filter(r => r.secret.masked_value && r.secret.masked_value.length > 0).length;
 
   return (
-    <div className="bg-slate-900/60 border border-slate-800/60 rounded-xl p-6 space-y-5">
+    <div className="glass-card p-6 space-y-5">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold text-white">API Keys & Secrets</h2>
@@ -157,10 +157,10 @@ export default function SecretsManager() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={() => fetchSecrets()} className="p-2 text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 rounded-lg transition-all" title="Refresh">
+          <button onClick={() => fetchSecrets()} className="p-2 text-slate-400 hover:text-slate-200 hover:bg-white/[0.04] rounded-xl transition-all" title="Refresh">
             <RefreshCw className="w-4 h-4" />
           </button>
-          <button onClick={() => setShowAddForm(!showAddForm)} className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/15 rounded-lg transition-all">
+          <button onClick={() => setShowAddForm(!showAddForm)} className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/15 rounded-xl transition-all">
             <Plus className="w-3.5 h-3.5" />
             Add
           </button>
@@ -168,23 +168,23 @@ export default function SecretsManager() {
       </div>
 
       {showAddForm && (
-        <form onSubmit={handleAddSecret} className="bg-slate-800/30 border border-slate-700/40 rounded-xl p-4 space-y-3">
+        <form onSubmit={handleAddSecret} className="bg-white/[0.02] border border-white/[0.06] rounded-xl p-4 space-y-3">
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-medium text-slate-400 mb-1">Service Key</label>
-              <input type="text" value={newSecret.service_name} onChange={e => setNewSecret({ ...newSecret, service_name: e.target.value })} placeholder="e.g. openai" required className="w-full bg-slate-900/80 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-colors" />
+              <input type="text" value={newSecret.service_name} onChange={e => setNewSecret({ ...newSecret, service_name: e.target.value })} placeholder="e.g. openai" required className="w-full glass-input text-sm" />
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-400 mb-1">Display Label</label>
-              <input type="text" value={newSecret.service_label} onChange={e => setNewSecret({ ...newSecret, service_label: e.target.value })} placeholder="e.g. OpenAI API Key" required className="w-full bg-slate-900/80 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-colors" />
+              <input type="text" value={newSecret.service_label} onChange={e => setNewSecret({ ...newSecret, service_label: e.target.value })} placeholder="e.g. OpenAI API Key" required className="w-full glass-input text-sm" />
             </div>
           </div>
           <div>
             <label className="block text-xs font-medium text-slate-400 mb-1">Value (optional)</label>
-            <input type="password" value={newSecret.secret_value} onChange={e => setNewSecret({ ...newSecret, secret_value: e.target.value })} placeholder="Paste API key here..." className="w-full bg-slate-900/80 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white font-mono placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-colors" />
+            <input type="password" value={newSecret.secret_value} onChange={e => setNewSecret({ ...newSecret, secret_value: e.target.value })} placeholder="Paste API key here..." className="w-full glass-input text-sm font-mono" />
           </div>
           <div className="flex items-center gap-2 pt-1">
-            <button type="submit" disabled={addingSaving} className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded-lg transition-all disabled:opacity-40">
+            <button type="submit" disabled={addingSaving} className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-xl transition-all disabled:opacity-40">
               {addingSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
               Add Secret
             </button>
@@ -204,11 +204,11 @@ export default function SecretsManager() {
           return (
             <div
               key={row.secret.id}
-              className="bg-slate-800/30 border border-slate-700/40 rounded-xl p-4 transition-all hover:border-slate-600/50"
+              className="bg-white/[0.02] border border-white/[0.06] rounded-xl p-4 transition-all hover:border-white/[0.1]"
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="flex items-center gap-3 min-w-0">
-                  <div className={`p-2 rounded-lg ${statusCfg.bg}`}>
+                  <div className={`p-2 rounded-xl ${statusCfg.bg}`}>
                     <Key className={`w-4 h-4 ${statusCfg.color}`} />
                   </div>
                   <div className="min-w-0">
@@ -222,7 +222,7 @@ export default function SecretsManager() {
                     <StatusIcon className={`w-3.5 h-3.5 ${statusCfg.color}`} />
                     <span className={`text-xs ${statusCfg.color}`}>{statusCfg.label}</span>
                   </div>
-                  <button onClick={() => deleteSecret(index)} className="p-1.5 text-slate-600 hover:text-red-400 rounded transition-colors" title="Remove">
+                  <button onClick={() => deleteSecret(index)} className="p-1.5 text-slate-600 hover:text-red-400 rounded-lg transition-colors" title="Remove">
                     <Trash2 className="w-3.5 h-3.5" />
                   </button>
                 </div>
@@ -230,7 +230,7 @@ export default function SecretsManager() {
 
               {hasValue && !row.editing && (
                 <div className="mt-3 flex items-center gap-2">
-                  <div className="flex-1 bg-slate-900/60 rounded-lg px-3 py-2 font-mono text-sm text-slate-400 flex items-center gap-2">
+                  <div className="flex-1 bg-white/[0.02] border border-white/[0.04] rounded-xl px-3 py-2 font-mono text-sm text-slate-400 flex items-center gap-2">
                     {row.showValue ? row.secret.masked_value : '************************************'}
                     <button onClick={() => toggleShowValue(index)} className="text-slate-600 hover:text-slate-400 transition-colors flex-shrink-0">
                       {row.showValue ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
@@ -238,7 +238,7 @@ export default function SecretsManager() {
                   </div>
                   <button
                     onClick={() => startEditing(index)}
-                    className="px-3 py-2 text-xs font-medium text-slate-300 bg-slate-700/50 hover:bg-slate-700 rounded-lg transition-colors"
+                    className="px-3 py-2 text-xs font-medium text-slate-300 bg-white/[0.04] hover:bg-white/[0.06] rounded-xl transition-colors"
                   >
                     Update
                   </button>
@@ -249,7 +249,7 @@ export default function SecretsManager() {
                 <div className="mt-3">
                   <button
                     onClick={() => startEditing(index)}
-                    className="w-full px-3 py-2.5 border border-dashed border-slate-600 hover:border-emerald-500/40 rounded-lg text-sm text-slate-400 hover:text-emerald-400 transition-all text-center"
+                    className="w-full px-3 py-2.5 border border-dashed border-white/[0.08] hover:border-emerald-500/40 rounded-xl text-sm text-slate-400 hover:text-emerald-400 transition-all text-center"
                   >
                     Click to configure
                   </button>
@@ -265,7 +265,7 @@ export default function SecretsManager() {
                       onChange={e => updateInput(index, e.target.value)}
                       placeholder={hasValue ? 'Enter new value to replace...' : 'Paste your API key here...'}
                       autoFocus
-                      className="w-full bg-slate-900/80 border border-slate-600 rounded-lg pl-3 pr-10 py-2.5 text-sm text-white font-mono placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-colors"
+                      className="w-full glass-input pr-10 text-sm font-mono"
                     />
                     <button
                       type="button"
@@ -279,7 +279,7 @@ export default function SecretsManager() {
                     <button
                       onClick={() => saveSecret(index)}
                       disabled={!row.inputValue.trim() || row.saving}
-                      className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium rounded-lg transition-all disabled:opacity-40"
+                      className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-xl transition-all disabled:opacity-40"
                     >
                       {row.saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
                       Save

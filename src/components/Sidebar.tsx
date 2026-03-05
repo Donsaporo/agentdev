@@ -26,7 +26,7 @@ const navItems = [
   { to: '/chat', icon: MessageSquare, label: 'Agent Chat', badgeKey: 'chat' as const },
   { to: '/qa', icon: MonitorCheck, label: 'QA Review', badgeKey: 'qa' as const },
   { to: '/domains', icon: Globe, label: 'Domains' },
-  { to: '/activity', icon: Activity, label: 'Agent Activity' },
+  { to: '/activity', icon: Activity, label: 'Activity' },
   { to: '/settings', icon: Settings, label: 'Settings' },
 ];
 
@@ -86,19 +86,25 @@ export default function Sidebar() {
 
   const navContent = (
     <>
-      <div className="flex items-center gap-3 px-5 py-6">
-        <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-emerald-500 to-cyan-500 flex items-center justify-center flex-shrink-0">
-          <Bot className="w-5 h-5 text-white" />
-        </div>
-        <div className="min-w-0">
-          <h1 className="text-sm font-bold text-white truncate">Obzide Dev Agent</h1>
-          <div className="flex items-center gap-1.5">
-            <span className={`w-1.5 h-1.5 rounded-full ${agentOnline ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.5)]' : 'bg-slate-600'}`} />
-            <p className={`text-xs truncate ${agentOnline ? 'text-emerald-400' : 'text-slate-500'}`}>
+      <div className="px-5 py-6">
+        <div className="flex items-center gap-3">
+          <div className="relative">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center shadow-lg shadow-emerald-500/20">
+              <Bot className="w-5 h-5 text-white" />
+            </div>
+            <div className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-[#0d1117] ${agentOnline ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.6)]' : 'bg-slate-600'}`} />
+          </div>
+          <div className="min-w-0">
+            <h1 className="text-sm font-bold text-white tracking-tight">Obzide</h1>
+            <p className={`text-[11px] font-medium ${agentOnline ? 'text-emerald-400' : 'text-slate-500'}`}>
               {agentOnline ? 'Agent Online' : 'Agent Offline'}
             </p>
           </div>
         </div>
+      </div>
+
+      <div className="px-4 mb-2">
+        <div className="h-px bg-gradient-to-r from-transparent via-white/[0.06] to-transparent" />
       </div>
 
       <nav className="flex-1 px-3 space-y-0.5 overflow-y-auto">
@@ -111,37 +117,45 @@ export default function Sidebar() {
               end={item.to === '/'}
               onClick={() => setMobileOpen(false)}
               className={({ isActive }) =>
-                `relative flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                `relative flex items-center gap-3 px-3 py-2 rounded-xl text-[13px] font-medium transition-all duration-200 ${
                   isActive
-                    ? 'bg-emerald-500/10 text-emerald-400 before:absolute before:left-0 before:top-1/2 before:-translate-y-1/2 before:w-[3px] before:h-4 before:bg-emerald-500 before:rounded-r-full'
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
+                    ? 'bg-emerald-500/10 text-emerald-400 shadow-sm shadow-emerald-500/5'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.04]'
                 }`
               }
             >
-              <item.icon className="w-[18px] h-[18px] flex-shrink-0" />
-              <span className="flex-1">{item.label}</span>
-              {badge > 0 && (
-                <span className="min-w-[18px] h-[18px] flex items-center justify-center rounded-full bg-emerald-500 text-white text-[10px] font-bold px-1">
-                  {badge}
-                </span>
+              {({ isActive }) => (
+                <>
+                  {isActive && (
+                    <div className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-5 bg-emerald-500 rounded-r-full" />
+                  )}
+                  <item.icon className="w-[18px] h-[18px] flex-shrink-0" />
+                  <span className="flex-1">{item.label}</span>
+                  {badge > 0 && (
+                    <span className="min-w-[20px] h-5 flex items-center justify-center rounded-full bg-emerald-500 text-white text-[10px] font-bold px-1.5">
+                      {badge}
+                    </span>
+                  )}
+                </>
               )}
             </NavLink>
           );
         })}
       </nav>
 
-      <div className="p-3 border-t border-slate-800/60">
-        <div className="flex items-center gap-3 px-3 py-2.5">
-          <div className="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center flex-shrink-0 text-xs font-bold text-white uppercase">
+      <div className="p-3">
+        <div className="h-px bg-gradient-to-r from-transparent via-white/[0.06] to-transparent mb-3" />
+        <div className="flex items-center gap-3 px-3 py-2">
+          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-slate-700 to-slate-800 flex items-center justify-center flex-shrink-0 text-xs font-bold text-white uppercase ring-1 ring-white/[0.06]">
             {teamMember?.full_name?.charAt(0) || '?'}
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium text-slate-200 truncate">{teamMember?.full_name || 'Team Member'}</p>
-            <p className="text-xs text-slate-500 truncate capitalize">{teamMember?.role || 'developer'}</p>
+            <p className="text-[13px] font-medium text-slate-200 truncate">{teamMember?.full_name || 'Team Member'}</p>
+            <p className="text-[11px] text-slate-500 truncate capitalize">{teamMember?.role || 'developer'}</p>
           </div>
           <button
             onClick={signOut}
-            className="text-slate-500 hover:text-red-400 transition-colors flex-shrink-0"
+            className="text-slate-600 hover:text-red-400 transition-colors flex-shrink-0 p-1 rounded-lg hover:bg-white/[0.04]"
             title="Sign out"
           >
             <LogOut className="w-4 h-4" />
@@ -155,23 +169,23 @@ export default function Sidebar() {
     <>
       <button
         onClick={() => setMobileOpen(true)}
-        className="lg:hidden fixed top-4 left-4 z-50 p-2 bg-slate-900 border border-slate-800 rounded-lg text-slate-400"
+        className="lg:hidden fixed top-4 left-4 z-50 p-2 bg-[#0d1117] border border-white/[0.06] rounded-xl text-slate-400 shadow-lg"
       >
         <Menu className="w-5 h-5" />
       </button>
 
       {mobileOpen && (
-        <div className="lg:hidden fixed inset-0 z-40 bg-black/60" onClick={() => setMobileOpen(false)} />
+        <div className="lg:hidden fixed inset-0 z-40 bg-black/60 backdrop-blur-sm" onClick={() => setMobileOpen(false)} />
       )}
 
       <aside className={`
-        fixed lg:static inset-y-0 left-0 z-50 w-64 bg-slate-950 border-r border-slate-800/60 flex flex-col
+        fixed lg:static inset-y-0 left-0 z-50 w-[260px] bg-[#0d1117]/95 backdrop-blur-xl border-r border-white/[0.04] flex flex-col
         transition-transform lg:transition-none
         ${mobileOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
       `}>
         <button
           onClick={() => setMobileOpen(false)}
-          className="lg:hidden absolute top-4 right-4 text-slate-400"
+          className="lg:hidden absolute top-4 right-4 text-slate-400 p-1 rounded-lg hover:bg-white/[0.04]"
         >
           <X className="w-5 h-5" />
         </button>

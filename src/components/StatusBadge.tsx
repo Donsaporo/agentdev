@@ -21,6 +21,7 @@ const statusStyles: Record<string, string> = {
   active: 'bg-green-500/10 text-green-400 ring-green-500/20',
   error: 'bg-red-500/10 text-red-400 ring-red-500/20',
   verified: 'bg-green-500/10 text-green-400 ring-green-500/20',
+  rejected: 'bg-red-500/10 text-red-400 ring-red-500/20',
 };
 
 export default function StatusBadge({ status, size = 'sm' }: StatusBadgeProps) {
@@ -29,8 +30,8 @@ export default function StatusBadge({ status, size = 'sm' }: StatusBadgeProps) {
 
   return (
     <span className={`
-      inline-flex items-center capitalize ring-1 font-medium
-      ${size === 'sm' ? 'text-xs px-2 py-0.5 rounded-md' : 'text-sm px-2.5 py-1 rounded-lg'}
+      inline-flex items-center capitalize ring-1 font-semibold tracking-wide
+      ${size === 'sm' ? 'text-[11px] px-2 py-0.5 rounded-md' : 'text-xs px-2.5 py-1 rounded-lg'}
       ${style}
     `}>
       {label}

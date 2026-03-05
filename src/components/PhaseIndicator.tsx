@@ -29,11 +29,11 @@ export default function PhaseIndicator({ currentPhase, compact = false }: PhaseI
             <div className="flex flex-col items-center">
               <div
                 className={`
-                  flex items-center justify-center rounded-lg transition-all
+                  flex items-center justify-center rounded-xl transition-all
                   ${compact ? 'w-7 h-7' : 'w-9 h-9'}
-                  ${isCompleted ? 'bg-emerald-500/20 text-emerald-400' : ''}
-                  ${isCurrent ? 'bg-cyan-500/20 text-cyan-400 ring-1 ring-cyan-500/30' : ''}
-                  ${!isCompleted && !isCurrent ? 'bg-slate-800/50 text-slate-600' : ''}
+                  ${isCompleted ? 'bg-emerald-500/15 text-emerald-400 ring-1 ring-emerald-500/20' : ''}
+                  ${isCurrent ? 'bg-cyan-500/15 text-cyan-400 ring-1 ring-cyan-500/30 shadow-lg shadow-cyan-500/10' : ''}
+                  ${!isCompleted && !isCurrent ? 'bg-white/[0.03] text-slate-600' : ''}
                 `}
               >
                 {isCompleted ? (
@@ -43,16 +43,16 @@ export default function PhaseIndicator({ currentPhase, compact = false }: PhaseI
                 )}
               </div>
               {!compact && (
-                <span className={`text-[10px] mt-1 font-medium ${
-                  isCompleted ? 'text-emerald-400' : isCurrent ? 'text-cyan-400' : 'text-slate-600'
+                <span className={`text-[10px] mt-1.5 font-semibold ${
+                  isCompleted ? 'text-emerald-400/80' : isCurrent ? 'text-cyan-400' : 'text-slate-600'
                 }`}>
                   {phase.label}
                 </span>
               )}
             </div>
             {i < phases.length - 1 && (
-              <div className={`${compact ? 'w-3' : 'w-6'} h-px mx-0.5 ${
-                i < currentIdx ? 'bg-emerald-500/40' : 'bg-slate-800'
+              <div className={`${compact ? 'w-3' : 'w-6'} h-px mx-0.5 transition-colors ${
+                i < currentIdx ? 'bg-emerald-500/40' : 'bg-white/[0.06]'
               }`} />
             )}
           </div>

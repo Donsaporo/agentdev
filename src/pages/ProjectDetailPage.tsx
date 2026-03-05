@@ -137,12 +137,12 @@ export default function ProjectDetailPage() {
           <div className="skeleton w-5 h-5 rounded" />
           <div className="flex-1"><div className="skeleton h-7 w-48 mb-2" /><div className="skeleton h-4 w-64" /></div>
         </div>
-        <div className="skeleton h-16 rounded-xl" />
+        <div className="skeleton h-16 rounded-2xl" />
         <div className="grid grid-cols-3 gap-4">
-          {[1, 2, 3].map(i => <div key={i} className="skeleton h-20 rounded-xl" />)}
+          {[1, 2, 3].map(i => <div key={i} className="skeleton h-20 rounded-2xl" />)}
         </div>
-        <div className="skeleton h-32 rounded-xl" />
-        <div className="skeleton h-48 rounded-xl" />
+        <div className="skeleton h-32 rounded-2xl" />
+        <div className="skeleton h-48 rounded-2xl" />
       </div>
     );
   }
@@ -159,7 +159,7 @@ export default function ProjectDetailPage() {
   const completedTasks = tasks.filter(t => t.status === 'completed').length;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 animate-fade-in">
       <div className="flex items-center gap-3">
         <Link to="/projects" className="text-slate-400 hover:text-slate-200 transition-colors">
           <ArrowLeft className="w-5 h-5" />
@@ -177,71 +177,71 @@ export default function ProjectDetailPage() {
         <div className="flex items-center gap-2 flex-shrink-0">
           <Link
             to={`/chat/${project.id}`}
-            className="p-2 text-slate-400 hover:text-emerald-400 hover:bg-slate-800/50 rounded-lg transition-all"
+            className="p-2 text-slate-400 hover:text-emerald-400 hover:bg-white/[0.04] rounded-xl transition-all"
             title="Chat with Agent"
           >
             <MessageSquare className="w-4 h-4" />
           </Link>
-          <button onClick={openEdit} className="p-2 text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 rounded-lg transition-all">
+          <button onClick={openEdit} className="p-2 text-slate-400 hover:text-slate-200 hover:bg-white/[0.04] rounded-xl transition-all">
             <Pencil className="w-4 h-4" />
           </button>
-          <button onClick={handleDelete} className="p-2 text-slate-400 hover:text-red-400 hover:bg-slate-800/50 rounded-lg transition-all">
+          <button onClick={handleDelete} className="p-2 text-slate-400 hover:text-red-400 hover:bg-white/[0.04] rounded-xl transition-all">
             <Trash2 className="w-4 h-4" />
           </button>
         </div>
       </div>
 
-      <div className="bg-slate-900/60 border border-slate-800/60 rounded-xl p-4">
+      <div className="glass-card p-4">
         <PhaseIndicator currentPhase={project.current_phase} />
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div className="bg-slate-900/60 border border-slate-800/60 rounded-xl p-4">
-          <p className="text-xs text-slate-500 mb-1">Progress</p>
+        <div className="glass-card p-4">
+          <p className="text-xs text-slate-500 mb-1 font-medium">Progress</p>
           <div className="flex items-center gap-3">
-            <div className="flex-1 h-2 bg-slate-800 rounded-full overflow-hidden">
-              <div className="h-full bg-gradient-to-r from-emerald-500 to-cyan-500 rounded-full transition-all" style={{ width: `${project.progress}%` }} />
+            <div className="flex-1 h-2 bg-white/[0.04] rounded-full overflow-hidden">
+              <div className="h-full bg-gradient-to-r from-emerald-500 to-teal-500 rounded-full transition-all" style={{ width: `${project.progress}%` }} />
             </div>
             <span className="text-lg font-bold text-white">{project.progress}%</span>
           </div>
         </div>
-        <div className="bg-slate-900/60 border border-slate-800/60 rounded-xl p-4">
-          <p className="text-xs text-slate-500 mb-1">Tasks</p>
+        <div className="glass-card p-4">
+          <p className="text-xs text-slate-500 mb-1 font-medium">Tasks</p>
           <p className="text-lg font-bold text-white">{completedTasks} <span className="text-sm font-normal text-slate-500">/ {tasks.length}</span></p>
         </div>
-        <div className="bg-slate-900/60 border border-slate-800/60 rounded-xl p-4">
-          <p className="text-xs text-slate-500 mb-1">Integrations</p>
+        <div className="glass-card p-4">
+          <p className="text-xs text-slate-500 mb-1 font-medium">Integrations</p>
           <p className="text-lg font-bold text-white">{integrations.length}</p>
         </div>
       </div>
 
       <div className="flex flex-wrap gap-3">
         {project.demo_url && (
-          <a href={project.demo_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-emerald-400 bg-emerald-500/10 px-3 py-1.5 rounded-lg hover:bg-emerald-500/20 transition-colors">
+          <a href={project.demo_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-emerald-400 bg-emerald-500/10 px-3 py-1.5 rounded-xl hover:bg-emerald-500/20 transition-colors">
             <ExternalLink className="w-3.5 h-3.5" /> Demo
           </a>
         )}
         {project.production_url && (
-          <a href={project.production_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-cyan-400 bg-cyan-500/10 px-3 py-1.5 rounded-lg hover:bg-cyan-500/20 transition-colors">
+          <a href={project.production_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-cyan-400 bg-cyan-500/10 px-3 py-1.5 rounded-xl hover:bg-cyan-500/20 transition-colors">
             <Globe className="w-3.5 h-3.5" /> Production
           </a>
         )}
         {project.git_repo_url && (
-          <a href={project.git_repo_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-slate-400 bg-slate-800/50 px-3 py-1.5 rounded-lg hover:bg-slate-800 transition-colors">
+          <a href={project.git_repo_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 text-sm text-slate-400 bg-white/[0.04] px-3 py-1.5 rounded-xl hover:bg-white/[0.06] transition-colors">
             <GitBranch className="w-3.5 h-3.5" /> Repository
           </a>
         )}
       </div>
 
       {project.description && (
-        <div className="bg-slate-900/60 border border-slate-800/60 rounded-xl p-5">
+        <div className="glass-card p-5">
           <h2 className="text-sm font-semibold text-white mb-2">Description</h2>
           <p className="text-sm text-slate-300 leading-relaxed whitespace-pre-wrap">{project.description}</p>
         </div>
       )}
 
       {brief && (
-        <div className="bg-slate-900/60 border border-slate-800/60 rounded-xl p-5">
+        <div className="glass-card p-5">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-sm font-semibold text-white">Brief</h2>
             <StatusBadge status={brief.status} />
@@ -252,7 +252,7 @@ export default function ProjectDetailPage() {
           {brief.pages_screens.length > 0 && (
             <div className="mt-3 flex flex-wrap gap-1">
               {brief.pages_screens.map((p, i) => (
-                <span key={i} className="text-xs px-2 py-0.5 bg-slate-800 text-slate-400 rounded">{p}</span>
+                <span key={i} className="text-xs px-2 py-0.5 bg-white/[0.04] text-slate-400 rounded-lg border border-white/[0.06]">{p}</span>
               ))}
             </div>
           )}
@@ -266,16 +266,16 @@ export default function ProjectDetailPage() {
         <ArchitecturePlanDisplay architecture={brief.architecture_plan} />
       )}
 
-      <div className="bg-slate-900/60 border border-slate-800/60 rounded-xl">
-        <div className="px-5 py-4 border-b border-slate-800/40">
+      <div className="glass-card">
+        <div className="px-5 py-4 border-b border-white/[0.04]">
           <h2 className="text-sm font-semibold text-white">Tasks ({tasks.length})</h2>
         </div>
         {tasks.length === 0 ? (
           <div className="p-8 text-center text-sm text-slate-500">No tasks yet. The agent will create tasks when processing the brief.</div>
         ) : (
-          <div className="divide-y divide-slate-800/40">
+          <div className="divide-y divide-white/[0.04]">
             {tasks.map(task => (
-              <div key={task.id} className="flex items-start gap-3 px-5 py-3.5">
+              <div key={task.id} className="flex items-start gap-3 px-5 py-3.5 hover:bg-white/[0.02] transition-colors">
                 <div className="mt-0.5">{taskIcon[task.status] || taskIcon.pending}</div>
                 <div className="min-w-0 flex-1">
                   <p className={`text-sm ${task.status === 'completed' ? 'text-slate-500 line-through' : 'text-slate-200'}`}>{task.title}</p>
@@ -301,13 +301,13 @@ export default function ProjectDetailPage() {
       </div>
 
       {integrations.length > 0 && (
-        <div className="bg-slate-900/60 border border-slate-800/60 rounded-xl">
-          <div className="px-5 py-4 border-b border-slate-800/40">
+        <div className="glass-card">
+          <div className="px-5 py-4 border-b border-white/[0.04]">
             <h2 className="text-sm font-semibold text-white">Integrations</h2>
           </div>
-          <div className="divide-y divide-slate-800/40">
+          <div className="divide-y divide-white/[0.04]">
             {integrations.map(integ => (
-              <div key={integ.id} className="flex items-center justify-between px-5 py-3.5">
+              <div key={integ.id} className="flex items-center justify-between px-5 py-3.5 hover:bg-white/[0.02] transition-colors">
                 <div>
                   <p className="text-sm font-medium text-slate-200">{integ.service_name}</p>
                   <p className="text-xs text-slate-500 capitalize">{integ.service_type}</p>
@@ -323,23 +323,23 @@ export default function ProjectDetailPage() {
         <form onSubmit={handleSaveEdit} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-slate-300 mb-1.5">Name</label>
-            <input type="text" value={editForm.name} onChange={e => setEditForm({ ...editForm, name: e.target.value })} required className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-colors" />
+            <input type="text" value={editForm.name} onChange={e => setEditForm({ ...editForm, name: e.target.value })} required className="w-full glass-input" />
           </div>
           <div>
             <label className="block text-sm font-medium text-slate-300 mb-1.5">Description</label>
-            <textarea value={editForm.description} onChange={e => setEditForm({ ...editForm, description: e.target.value })} rows={3} className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-colors resize-none text-sm" />
+            <textarea value={editForm.description} onChange={e => setEditForm({ ...editForm, description: e.target.value })} rows={3} className="w-full glass-input resize-none text-sm" />
           </div>
           <div>
             <label className="block text-sm font-medium text-slate-300 mb-1.5">Demo URL</label>
-            <input type="url" value={editForm.demo_url} onChange={e => setEditForm({ ...editForm, demo_url: e.target.value })} className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-colors" />
+            <input type="url" value={editForm.demo_url} onChange={e => setEditForm({ ...editForm, demo_url: e.target.value })} className="w-full glass-input" />
           </div>
           <div>
             <label className="block text-sm font-medium text-slate-300 mb-1.5">Production URL</label>
-            <input type="url" value={editForm.production_url} onChange={e => setEditForm({ ...editForm, production_url: e.target.value })} className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-colors" />
+            <input type="url" value={editForm.production_url} onChange={e => setEditForm({ ...editForm, production_url: e.target.value })} className="w-full glass-input" />
           </div>
           <div className="flex justify-end gap-3 pt-2">
-            <button type="button" onClick={() => setShowEdit(false)} className="px-4 py-2.5 text-sm text-slate-400 hover:text-slate-200 transition-colors">Cancel</button>
-            <button type="submit" disabled={editSaving} className="inline-flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white text-sm font-medium rounded-lg transition-all disabled:opacity-50">
+            <button type="button" onClick={() => setShowEdit(false)} className="btn-ghost">Cancel</button>
+            <button type="submit" disabled={editSaving} className="btn-primary disabled:opacity-50">
               {editSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} Save
             </button>
           </div>
@@ -355,31 +355,31 @@ function BriefQuestionsUI({ brief, onAnswer }: { brief: Brief; onAnswer: (questi
 
   if (unanswered.length === 0) {
     return (
-      <div className="mt-4 pt-4 border-t border-slate-800/40">
+      <div className="mt-4 pt-4 border-t border-white/[0.04]">
         <p className="text-xs text-emerald-400">All questions answered</p>
       </div>
     );
   }
 
   return (
-    <div className="mt-4 pt-4 border-t border-slate-800/40 space-y-3">
+    <div className="mt-4 pt-4 border-t border-white/[0.04] space-y-3">
       <p className="text-xs font-medium text-amber-400">{unanswered.length} unanswered questions from the agent</p>
       {unanswered.map(q => (
-        <div key={q.id} className="bg-slate-800/30 rounded-lg p-3 space-y-2">
+        <div key={q.id} className="bg-white/[0.02] border border-white/[0.06] rounded-xl p-3 space-y-2">
           <p className="text-sm text-slate-200">{q.question}</p>
-          <span className="text-[10px] text-slate-500 uppercase tracking-wider">{q.category}</span>
+          <span className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">{q.category}</span>
           <div className="flex gap-2">
             <input
               type="text"
               value={answers[q.id] || ''}
               onChange={e => setAnswers(prev => ({ ...prev, [q.id]: e.target.value }))}
               placeholder="Type your answer..."
-              className="flex-1 bg-slate-900/60 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 transition-colors"
+              className="flex-1 glass-input text-sm"
             />
             <button
               onClick={() => { if (answers[q.id]?.trim()) { onAnswer(q.id, answers[q.id].trim()); setAnswers(prev => { const n = { ...prev }; delete n[q.id]; return n; }); } }}
               disabled={!answers[q.id]?.trim()}
-              className="px-3 py-2 bg-emerald-500/10 text-emerald-400 text-xs font-medium rounded-lg hover:bg-emerald-500/20 transition-colors disabled:opacity-40"
+              className="px-3 py-2 bg-emerald-500/10 text-emerald-400 text-xs font-semibold rounded-xl hover:bg-emerald-500/20 transition-colors disabled:opacity-40"
             >
               Answer
             </button>
@@ -401,7 +401,7 @@ function ArchitecturePlanDisplay({ architecture }: { architecture: Record<string
   };
 
   return (
-    <div className="bg-slate-900/60 border border-slate-800/60 rounded-xl p-5 space-y-5">
+    <div className="glass-card p-5 space-y-5">
       <h2 className="text-sm font-semibold text-white">Architecture Plan</h2>
 
       {arch.designSystem && (
@@ -413,8 +413,8 @@ function ArchitecturePlanDisplay({ architecture }: { architecture: Record<string
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             {[arch.designSystem.primaryColor, arch.designSystem.secondaryColor, arch.designSystem.accentColor].filter(Boolean).map((color, i) => (
-              <div key={i} className="flex items-center gap-2 bg-slate-800/50 rounded-lg px-3 py-1.5">
-                <div className="w-4 h-4 rounded-full border border-slate-600" style={{ backgroundColor: color }} />
+              <div key={i} className="flex items-center gap-2 bg-white/[0.03] border border-white/[0.06] rounded-xl px-3 py-1.5">
+                <div className="w-4 h-4 rounded-full border border-white/[0.1]" style={{ backgroundColor: color }} />
                 <span className="text-xs text-slate-300 font-mono">{color}</span>
               </div>
             ))}
@@ -437,10 +437,10 @@ function ArchitecturePlanDisplay({ architecture }: { architecture: Record<string
           </div>
           <div className="grid gap-2">
             {arch.pages.map((page, i) => (
-              <div key={i} className="bg-slate-800/30 rounded-lg px-3 py-2.5">
+              <div key={i} className="bg-white/[0.02] border border-white/[0.04] rounded-xl px-3 py-2.5">
                 <div className="flex items-center gap-2 mb-0.5">
                   <span className="text-sm font-medium text-slate-200">{page.name}</span>
-                  <span className="text-xs font-mono text-slate-500 bg-slate-800/60 px-1.5 py-0.5 rounded">{page.route}</span>
+                  <span className="text-xs font-mono text-slate-500 bg-white/[0.04] px-1.5 py-0.5 rounded">{page.route}</span>
                 </div>
                 {page.description && <p className="text-xs text-slate-400 line-clamp-2">{page.description}</p>}
               </div>
@@ -457,7 +457,7 @@ function ArchitecturePlanDisplay({ architecture }: { architecture: Record<string
           </div>
           <div className="flex flex-wrap gap-1.5">
             {arch.integrations.map((integ, i) => (
-              <span key={i} className="text-xs px-2.5 py-1 bg-cyan-500/10 text-cyan-400 rounded-md capitalize">{integ}</span>
+              <span key={i} className="text-xs px-2.5 py-1 bg-cyan-500/10 text-cyan-400 rounded-lg capitalize">{integ}</span>
             ))}
           </div>
         </div>

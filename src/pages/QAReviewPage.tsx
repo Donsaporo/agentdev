@@ -87,7 +87,7 @@ export default function QAReviewPage() {
     for (const s of pending) {
       await supabase.from('qa_screenshots').update({ status: 'approved' }).eq('id', s.id);
     }
-    setScreenshots(prev => prev.map(s => ({ ...s, status: 'approved' as const })));
+    setScreenshots(prev => prev.map(s => s.status === 'pending' ? { ...s, status: 'approved' as const } : s));
 
     await supabase.from('projects').update({ status: 'deployed' }).eq('id', selectedProjectId);
 
@@ -135,11 +135,11 @@ export default function QAReviewPage() {
           <div><div className="skeleton h-7 w-28 mb-2" /><div className="skeleton h-4 w-52" /></div>
         </div>
         <div className="flex gap-4">
-          <div className="skeleton h-11 w-64 rounded-lg" />
-          <div className="skeleton h-9 w-56 rounded-lg" />
+          <div className="skeleton h-11 w-64 rounded-xl" />
+          <div className="skeleton h-9 w-56 rounded-xl" />
         </div>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {[1, 2, 3, 4].map(i => <div key={i} className="skeleton h-64 rounded-xl" />)}
+          {[1, 2, 3, 4].map(i => <div key={i} className="skeleton h-64 rounded-2xl" />)}
         </div>
       </div>
     );
@@ -149,15 +149,11 @@ export default function QAReviewPage() {
     <div className="space-y-6 animate-fade-in">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-white">QA Review</h1>
-          <p className="text-slate-400 mt-1">Review screenshots and approve pages for deployment</p>
+          <h1 className="text-2xl font-bold text-white tracking-tight">QA Review</h1>
+          <p className="text-slate-400 mt-1 text-sm">Review screenshots and approve pages for deployment</p>
         </div>
         {allApproved && (
-          <button
-            onClick={handleApproveAllAndDeploy}
-            disabled={deploying}
-            className="inline-flex items-center gap-2 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white text-sm font-medium rounded-lg px-5 py-2.5 transition-all shadow-lg shadow-emerald-500/20 active:scale-[0.97] disabled:opacity-50"
-          >
+          <button onClick={handleApproveAllAndDeploy} disabled={deploying} className="btn-primary disabled:opacity-50">
             {deploying ? <Loader2 className="w-4 h-4 animate-spin" /> : <Rocket className="w-4 h-4" />}
             Approve All & Deploy
           </button>
@@ -165,15 +161,9 @@ export default function QAReviewPage() {
       </div>
 
       <div className="flex flex-col sm:flex-row gap-4">
-        <select
-          value={selectedProjectId}
-          onChange={e => handleSelectProject(e.target.value)}
-          className="bg-slate-900/60 border border-slate-800/60 rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-colors sm:w-64"
-        >
+        <select value={selectedProjectId} onChange={e => handleSelectProject(e.target.value)} className="glass-select sm:w-64">
           <option value="">Select project</option>
-          {projects.map(p => (
-            <option key={p.id} value={p.id}>{p.name}</option>
-          ))}
+          {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
 
         <div className="flex items-center gap-1 overflow-x-auto">
@@ -182,10 +172,10 @@ export default function QAReviewPage() {
             <button
               key={fb.key}
               onClick={() => setFilter(fb.key)}
-              className={`px-3 py-1.5 text-xs font-medium rounded-lg whitespace-nowrap transition-colors ${
+              className={`px-3 py-1.5 text-xs font-medium rounded-lg whitespace-nowrap transition-all ${
                 filter === fb.key
-                  ? 'bg-emerald-500/10 text-emerald-400'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
+                  ? 'bg-emerald-500/10 text-emerald-400 ring-1 ring-emerald-500/20'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.04]'
               }`}
             >
               {fb.label}
@@ -195,8 +185,8 @@ export default function QAReviewPage() {
       </div>
 
       {filtered.length === 0 ? (
-        <div className="bg-slate-900/40 border border-slate-800/40 border-dashed rounded-2xl p-16 text-center animate-fade-in-up">
-          <div className="w-14 h-14 rounded-2xl bg-slate-800/50 flex items-center justify-center mx-auto mb-4">
+        <div className="glass-card p-16 text-center border-dashed animate-fade-in-up">
+          <div className="w-14 h-14 rounded-2xl bg-white/[0.04] flex items-center justify-center mx-auto mb-4">
             <MonitorCheck className="w-7 h-7 text-slate-600" />
           </div>
           <p className="text-slate-300 font-medium">
@@ -220,19 +210,11 @@ export default function QAReviewPage() {
       )}
 
       {previewUrl && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm" onClick={() => setPreviewUrl(null)}>
-          <button
-            onClick={() => setPreviewUrl(null)}
-            className="absolute top-4 right-4 p-2 text-white/60 hover:text-white bg-slate-900/60 rounded-lg transition-colors"
-          >
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md" onClick={() => setPreviewUrl(null)}>
+          <button onClick={() => setPreviewUrl(null)} className="absolute top-4 right-4 p-2.5 text-white/60 hover:text-white bg-white/[0.06] rounded-xl transition-colors">
             <X className="w-6 h-6" />
           </button>
-          <img
-            src={previewUrl}
-            alt="Screenshot preview"
-            className="max-w-full max-h-[90vh] rounded-lg shadow-2xl"
-            onClick={e => e.stopPropagation()}
-          />
+          <img src={previewUrl} alt="Screenshot preview" className="max-w-full max-h-[90vh] rounded-2xl shadow-2xl" onClick={e => e.stopPropagation()} />
         </div>
       )}
     </div>
