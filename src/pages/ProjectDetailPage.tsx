@@ -3,6 +3,7 @@ import { useParams, Link, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, ExternalLink, GitBranch, Globe, Pencil, Trash2,
   CheckCircle2, Circle, AlertCircle, Clock, Loader2, MessageSquare, Save,
+  Layout, Palette, Type, Puzzle, Layers,
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useToast } from '../contexts/ToastContext';
@@ -265,6 +266,10 @@ export default function ProjectDetailPage() {
         </div>
       )}
 
+      {brief?.architecture_plan && Object.keys(brief.architecture_plan).length > 0 && (
+        <ArchitecturePlanDisplay architecture={brief.architecture_plan} />
+      )}
+
       <div className="bg-slate-900/60 border border-slate-800/60 rounded-xl">
         <div className="px-5 py-4 border-b border-slate-800/40">
           <h2 className="text-sm font-semibold text-white">Tasks ({tasks.length})</h2>
@@ -385,6 +390,90 @@ function BriefQuestionsUI({ brief, onAnswer }: { brief: Brief; onAnswer: (questi
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+function ArchitecturePlanDisplay({ architecture }: { architecture: Record<string, unknown> }) {
+  const arch = architecture as {
+    pages?: { name: string; route: string; description: string }[];
+    components?: { name: string; description: string }[];
+    designSystem?: { primaryColor?: string; secondaryColor?: string; accentColor?: string; fonts?: { heading?: string; body?: string }; style?: string };
+    integrations?: string[];
+    framework?: string;
+    styling?: string;
+  };
+
+  return (
+    <div className="bg-slate-900/60 border border-slate-800/60 rounded-xl p-5 space-y-5">
+      <h2 className="text-sm font-semibold text-white">Architecture Plan</h2>
+
+      {arch.designSystem && (
+        <div className="space-y-3">
+          <div className="flex items-center gap-2 text-xs font-medium text-slate-400">
+            <Palette className="w-3.5 h-3.5" />
+            Design System
+            {arch.designSystem.style && <span className="text-slate-500 capitalize">({arch.designSystem.style})</span>}
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            {[arch.designSystem.primaryColor, arch.designSystem.secondaryColor, arch.designSystem.accentColor].filter(Boolean).map((color, i) => (
+              <div key={i} className="flex items-center gap-2 bg-slate-800/50 rounded-lg px-3 py-1.5">
+                <div className="w-4 h-4 rounded-full border border-slate-600" style={{ backgroundColor: color }} />
+                <span className="text-xs text-slate-300 font-mono">{color}</span>
+              </div>
+            ))}
+          </div>
+          {arch.designSystem.fonts && (
+            <div className="flex items-center gap-3">
+              <Type className="w-3.5 h-3.5 text-slate-500" />
+              {arch.designSystem.fonts.heading && <span className="text-xs text-slate-400">Heading: <span className="text-slate-300">{arch.designSystem.fonts.heading}</span></span>}
+              {arch.designSystem.fonts.body && <span className="text-xs text-slate-400">Body: <span className="text-slate-300">{arch.designSystem.fonts.body}</span></span>}
+            </div>
+          )}
+        </div>
+      )}
+
+      {arch.pages && arch.pages.length > 0 && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 text-xs font-medium text-slate-400">
+            <Layout className="w-3.5 h-3.5" />
+            Pages ({arch.pages.length})
+          </div>
+          <div className="grid gap-2">
+            {arch.pages.map((page, i) => (
+              <div key={i} className="bg-slate-800/30 rounded-lg px-3 py-2.5">
+                <div className="flex items-center gap-2 mb-0.5">
+                  <span className="text-sm font-medium text-slate-200">{page.name}</span>
+                  <span className="text-xs font-mono text-slate-500 bg-slate-800/60 px-1.5 py-0.5 rounded">{page.route}</span>
+                </div>
+                {page.description && <p className="text-xs text-slate-400 line-clamp-2">{page.description}</p>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {arch.integrations && arch.integrations.length > 0 && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 text-xs font-medium text-slate-400">
+            <Puzzle className="w-3.5 h-3.5" />
+            Integrations
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {arch.integrations.map((integ, i) => (
+              <span key={i} className="text-xs px-2.5 py-1 bg-cyan-500/10 text-cyan-400 rounded-md capitalize">{integ}</span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {arch.framework && (
+        <div className="flex items-center gap-2 text-xs text-slate-500">
+          <Layers className="w-3.5 h-3.5" />
+          Stack: <span className="text-slate-400">{arch.framework}</span>
+          {arch.styling && <span className="text-slate-400">+ {arch.styling}</span>}
+        </div>
+      )}
     </div>
   );
 }

@@ -17,7 +17,7 @@ function runCommand(cmd: string, cwd: string, timeoutMs = 120_000): Promise<{ st
       resolve({
         stdout: stdout?.toString() || '',
         stderr: stderr?.toString() || '',
-        code: error?.code ?? (proc.exitCode ?? 0),
+        code: error ? (error.code ?? 1) : 0,
       });
     });
   });

@@ -1,3 +1,4 @@
+import { env } from '../core/env.js';
 import { logger } from '../core/logger.js';
 
 interface PageContent {
@@ -5,6 +6,48 @@ interface PageContent {
   title: string;
   text: string;
   links: string[];
+}
+
+interface BraveSearchResult {
+  title: string;
+  url: string;
+  description: string;
+}
+
+async function braveSearch(query: string, count = 5): Promise<BraveSearchResult[]> {
+  if (!env.BRAVE_API_KEY) return [];
+
+  try {
+    const url = new URL('https://api.search.brave.com/res/v1/web/search');
+    url.searchParams.set('q', query);
+    url.searchParams.set('count', String(count));
+
+    const res = await fetch(url.toString(), {
+      headers: {
+        'Accept': 'application/json',
+        'Accept-Encoding': 'gzip',
+        'X-Subscription-Token': env.BRAVE_API_KEY,
+      },
+      signal: AbortSignal.timeout(15_000),
+    });
+
+    if (!res.ok) return [];
+
+    const data = await res.json();
+    const results: BraveSearchResult[] = [];
+
+    for (const item of data.web?.results || []) {
+      results.push({
+        title: item.title || '',
+        url: item.url || '',
+        description: item.description || '',
+      });
+    }
+
+    return results;
+  } catch {
+    return [];
+  }
 }
 
 export async function fetchPageContent(url: string, projectId?: string): Promise<PageContent | null> {
@@ -85,13 +128,13 @@ export function extractUrlsFromText(text: string): string[] {
 
 export async function researchReferenceUrls(
   briefContent: string,
-  projectId: string
+  projectId: string,
+  clientName?: string,
+  industry?: string
 ): Promise<string[]> {
-  const urls = extractUrlsFromText(briefContent);
-  if (urls.length === 0) return [];
-
   const results: string[] = [];
 
+  const urls = extractUrlsFromText(briefContent);
   for (const url of urls.slice(0, 5)) {
     const content = await fetchPageContent(url, projectId);
     if (content) {
@@ -99,6 +142,47 @@ export async function researchReferenceUrls(
         `[Reference: ${content.title || url}]\nURL: ${url}\nNavigation: ${content.links.slice(0, 15).join(', ')}\nContent:\n${content.text.slice(0, 3000)}`
       );
     }
+  }
+
+  if (env.BRAVE_API_KEY) {
+    const queries: string[] = [];
+
+    if (clientName && industry) {
+      queries.push(`${clientName} ${industry} website design inspiration`);
+    }
+
+    const integrationKeywords = ['stripe', 'paypal', 'payoneer', 'shopify', 'twilio', 'sendgrid', 'firebase', 'supabase', 'mapbox', 'google maps', 'calendly', 'mailchimp'];
+    for (const keyword of integrationKeywords) {
+      if (briefContent.toLowerCase().includes(keyword)) {
+        queries.push(`${keyword} API documentation integration guide`);
+      }
+    }
+
+    if (industry) {
+      queries.push(`best ${industry} website examples 2025`);
+    }
+
+    for (const query of queries.slice(0, 3)) {
+      await logger.info(`Searching: "${query}"`, 'research', projectId);
+      const searchResults = await braveSearch(query, 3);
+
+      for (const sr of searchResults.slice(0, 2)) {
+        const content = await fetchPageContent(sr.url, projectId);
+        if (content) {
+          results.push(
+            `[Search: ${sr.title}]\nURL: ${sr.url}\nSnippet: ${sr.description}\nContent:\n${content.text.slice(0, 2000)}`
+          );
+        } else {
+          results.push(
+            `[Search: ${sr.title}]\nURL: ${sr.url}\nSnippet: ${sr.description}`
+          );
+        }
+      }
+    }
+  }
+
+  if (results.length > 0) {
+    await logger.info(`Collected ${results.length} research reference(s)`, 'research', projectId);
   }
 
   return results;

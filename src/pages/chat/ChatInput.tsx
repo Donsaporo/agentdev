@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, ChevronDown } from 'lucide-react';
+import { Send, ChevronDown, Paperclip, X, Loader2 } from 'lucide-react';
+import { supabase } from '../../lib/supabase';
 
 interface ChatInputProps {
-  onSend: (content: string) => void;
+  onSend: (content: string, attachmentUrls?: string[]) => void;
   disabled: boolean;
   placeholder?: string;
 }
@@ -17,7 +18,10 @@ const quickCommands = [
 export default function ChatInput({ onSend, disabled, placeholder }: ChatInputProps) {
   const [value, setValue] = useState('');
   const [showCommands, setShowCommands] = useState(false);
+  const [attachments, setAttachments] = useState<{ name: string; url: string }[]>([]);
+  const [uploading, setUploading] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (textareaRef.current) {
@@ -28,9 +32,16 @@ export default function ChatInput({ onSend, disabled, placeholder }: ChatInputPr
 
   function handleSubmit() {
     const trimmed = value.trim();
-    if (!trimmed || disabled) return;
-    onSend(trimmed);
+    if ((!trimmed && attachments.length === 0) || disabled) return;
+
+    const urls = attachments.map(a => a.url);
+    const content = urls.length > 0
+      ? `${trimmed}\n\n[Attached files: ${attachments.map(a => a.name).join(', ')}]`
+      : trimmed;
+
+    onSend(content, urls.length > 0 ? urls : undefined);
     setValue('');
+    setAttachments([]);
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
   }
 
@@ -44,6 +55,34 @@ export default function ChatInput({ onSend, disabled, placeholder }: ChatInputPr
   function handleCommand(cmd: string) {
     onSend(cmd);
     setShowCommands(false);
+  }
+
+  async function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    setUploading(true);
+    for (const file of Array.from(files)) {
+      const safeName = `${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+      const path = `chat-attachments/${safeName}`;
+
+      const { error } = await supabase.storage
+        .from('brief-attachments')
+        .upload(path, file, { upsert: true });
+
+      if (!error) {
+        const { data: urlData } = supabase.storage
+          .from('brief-attachments')
+          .getPublicUrl(path);
+        setAttachments(prev => [...prev, { name: file.name, url: urlData.publicUrl }]);
+      }
+    }
+    setUploading(false);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }
+
+  function removeAttachment(index: number) {
+    setAttachments(prev => prev.filter((_, i) => i !== index));
   }
 
   return (
@@ -62,6 +101,19 @@ export default function ChatInput({ onSend, disabled, placeholder }: ChatInputPr
           ))}
         </div>
       )}
+      {attachments.length > 0 && (
+        <div className="mb-2 flex flex-wrap gap-1.5">
+          {attachments.map((att, i) => (
+            <span key={i} className="inline-flex items-center gap-1.5 bg-slate-800 text-slate-300 text-xs px-2.5 py-1 rounded-lg">
+              <Paperclip className="w-3 h-3 text-slate-500" />
+              {att.name}
+              <button onClick={() => removeAttachment(i)} className="text-slate-500 hover:text-red-400 transition-colors">
+                <X className="w-3 h-3" />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
       <div className="flex items-end gap-2">
         <button
           onClick={() => setShowCommands(!showCommands)}
@@ -70,6 +122,22 @@ export default function ChatInput({ onSend, disabled, placeholder }: ChatInputPr
         >
           <ChevronDown className={`w-4 h-4 transition-transform ${showCommands ? 'rotate-180' : ''}`} />
         </button>
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          disabled={disabled || uploading}
+          className="p-2 text-slate-500 hover:text-slate-300 transition-colors flex-shrink-0 mb-0.5 disabled:opacity-40"
+          title="Attach file"
+        >
+          {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Paperclip className="w-4 h-4" />}
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          onChange={handleFileSelect}
+          className="hidden"
+          accept="image/*,.pdf,.doc,.docx,.xlsx,.xls,.csv,.txt,.json"
+        />
         <textarea
           ref={textareaRef}
           value={value}
@@ -82,7 +150,7 @@ export default function ChatInput({ onSend, disabled, placeholder }: ChatInputPr
         />
         <button
           onClick={handleSubmit}
-          disabled={disabled || !value.trim()}
+          disabled={disabled || (!value.trim() && attachments.length === 0)}
           className="p-2.5 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 rounded-xl text-white transition-all disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0 mb-0.5"
         >
           <Send className="w-4 h-4" />

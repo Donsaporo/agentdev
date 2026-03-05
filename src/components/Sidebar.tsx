@@ -34,10 +34,26 @@ export default function Sidebar() {
   const { signOut, teamMember } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [pendingQA, setPendingQA] = useState(0);
+  const [agentOnline, setAgentOnline] = useState(false);
 
   useEffect(() => {
     loadBadges();
+    checkAgentStatus();
+    const interval = setInterval(checkAgentStatus, 60_000);
+    return () => clearInterval(interval);
   }, []);
+
+  async function checkAgentStatus() {
+    const twoMinutesAgo = new Date(Date.now() - 120_000).toISOString();
+    const { data } = await supabase
+      .from('agent_logs')
+      .select('id')
+      .eq('action', 'Agent heartbeat')
+      .gte('created_at', twoMinutesAgo)
+      .limit(1)
+      .maybeSingle();
+    setAgentOnline(!!data);
+  }
 
   async function loadBadges() {
     const { count } = await supabase
@@ -60,7 +76,12 @@ export default function Sidebar() {
         </div>
         <div className="min-w-0">
           <h1 className="text-sm font-bold text-white truncate">Obzide Dev Agent</h1>
-          <p className="text-xs text-slate-500 truncate">AI Development Platform</p>
+          <div className="flex items-center gap-1.5">
+            <span className={`w-1.5 h-1.5 rounded-full ${agentOnline ? 'bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.5)]' : 'bg-slate-600'}`} />
+            <p className={`text-xs truncate ${agentOnline ? 'text-emerald-400' : 'text-slate-500'}`}>
+              {agentOnline ? 'Agent Online' : 'Agent Offline'}
+            </p>
+          </div>
         </div>
       </div>
 

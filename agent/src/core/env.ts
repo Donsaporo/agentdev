@@ -20,5 +20,6 @@ export const env = {
   get NAMECHEAP_API_KEY() { return optional('NAMECHEAP_API_KEY', ''); },
   get NAMECHEAP_CLIENT_IP() { return optional('NAMECHEAP_CLIENT_IP', '178.156.252.99'); },
   get RESEND_API_KEY() { return optional('RESEND_API_KEY', ''); },
+  get BRAVE_API_KEY() { return optional('BRAVE_API_KEY', ''); },
   get NODE_ENV() { return optional('NODE_ENV', 'production'); },
 };

@@ -1,14 +1,15 @@
 import { getSupabase } from '../core/supabase.js';
 import { logger } from '../core/logger.js';
 import { getConfig } from '../core/config.js';
-import { analyzeBrief, generateProjectScaffold, generateTaskCode } from '../services/claude.js';
+import { analyzeBrief, generateProjectScaffold, generateTaskCode, analyzeScreenshot } from '../services/claude.js';
 import { processAttachments } from '../services/file-processing.js';
 import { researchReferenceUrls } from '../services/web-research.js';
 import { createRepo, pushFiles, getMultipleFileContents, getRepoFiles } from '../services/github.js';
-import { createProject as createVercelProject, triggerDeployment, waitForDeployment } from '../services/vercel.js';
+import { createProject as createVercelProject, triggerDeployment, waitForDeployment, addDomain } from '../services/vercel.js';
 import { captureAllPages } from '../services/screenshots.js';
 import { verifyBuild, extractBuildErrors } from '../services/build-verify.js';
-import { notifyBuildComplete, notifyQAReady, notifyError } from '../services/notifications.js';
+import { notifyBuildComplete, notifyQAReady, notifyError, notifyDeploySuccess } from '../services/notifications.js';
+import { setCnameRecord } from '../services/namecheap.js';
 import type { Brief, Client, Project } from '../core/types.js';
 
 async function updateProject(
@@ -55,6 +56,7 @@ async function sendChatMessage(
 
 export async function processBrief(projectId: string, briefId: string): Promise<void> {
   const supabase = getSupabase();
+  const config = await getConfig();
 
   try {
     await updateProject(projectId, { agent_status: 'working', current_phase: 'analysis', status: 'in_progress' });
@@ -93,8 +95,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       }
     }
 
-    // Research reference URLs mentioned in the brief
-    const referenceContents = await researchReferenceUrls(brief.original_content, projectId);
+    const referenceContents = await researchReferenceUrls(brief.original_content, projectId, client.name, client.industry);
     if (referenceContents.length > 0) {
       await sendChatMessage(projectId, `Analyzed ${referenceContents.length} reference website(s) from the brief.`);
       attachmentContents = [...attachmentContents, ...referenceContents];
@@ -230,15 +231,21 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       }
     }
 
-    // Phase 3.5: Build Verification
     await sendChatMessage(projectId, 'Verifying build before deployment...');
     await logger.info('Verifying build locally', 'development', projectId);
 
-    const buildResult = await verifyBuild(fullName, projectId);
-    if (!buildResult.success) {
+    let buildPassed = false;
+    for (let attempt = 1; attempt <= config.max_corrections; attempt++) {
+      const buildResult = await verifyBuild(fullName, projectId);
+      if (buildResult.success) {
+        buildPassed = true;
+        await sendChatMessage(projectId, attempt === 1 ? 'Build verified successfully.' : `Build verified after ${attempt - 1} fix(es).`);
+        break;
+      }
+
       const buildErrors = extractBuildErrors(buildResult.errors || buildResult.output);
-      await sendChatMessage(projectId, `Build failed with ${buildErrors.length} error(s). Attempting auto-fix...`);
-      await logger.warn(`Build failed, attempting fix: ${buildErrors.slice(0, 5).join('; ')}`, 'development', projectId);
+      await sendChatMessage(projectId, `Build failed (attempt ${attempt}/${config.max_corrections}): ${buildErrors.length} error(s). Auto-fixing...`);
+      await logger.warn(`Build attempt ${attempt} failed: ${buildErrors.slice(0, 5).join('; ')}`, 'development', projectId);
 
       const allRepoFiles = await getRepoFiles(fullName);
       const allCodePaths = allRepoFiles
@@ -249,7 +256,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       const fixResult = await generateTaskCode(
         {
           title: 'Fix build errors',
-          description: `The project build failed. Fix these errors:\n${buildErrors.join('\n')}\n\nFull build output:\n${buildResult.errors.slice(0, 3000)}`,
+          description: `Build attempt ${attempt} failed. Fix these errors:\n${buildErrors.join('\n')}\n\nFull output:\n${(buildResult.errors || buildResult.output).slice(0, 3000)}`,
         },
         project as unknown as Project,
         client,
@@ -258,19 +265,18 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       );
 
       if (fixResult.files.length > 0) {
-        await pushFiles(fullName, fixResult.files, 'fix: resolve build errors', projectId);
-        await sendChatMessage(projectId, 'Build fixes applied. Retrying build...');
-
-        const retryResult = await verifyBuild(fullName, projectId);
-        if (!retryResult.success) {
-          await logger.warn('Build still failing after auto-fix attempt', 'development', projectId);
-          await sendChatMessage(projectId, 'Build still has issues but proceeding with deployment. Vercel may catch additional errors.');
-        } else {
-          await sendChatMessage(projectId, 'Build verified successfully after fixes.');
-        }
+        await pushFiles(fullName, fixResult.files, `fix: resolve build errors (attempt ${attempt})`, projectId);
+      } else {
+        await logger.warn('No fix generated, stopping build loop', 'development', projectId);
+        break;
       }
-    } else {
-      await sendChatMessage(projectId, 'Build verified successfully.');
+    }
+
+    if (!buildPassed) {
+      await updateProject(projectId, { agent_status: 'error' });
+      await sendChatMessage(projectId, `Build failed after ${config.max_corrections} attempts. Manual intervention needed.`);
+      await notifyError(project.name, 'Build failed after max correction attempts', projectId);
+      return;
     }
 
     // Phase 4: Deploy
@@ -284,27 +290,126 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     const deployment = await triggerDeployment(repoName, projectId);
     const result = await waitForDeployment(deployment.deploymentId, projectId);
 
-    if (result.status === 'ready') {
-      await updateProject(projectId, { demo_url: result.url, progress: 90 });
-      await sendChatMessage(projectId, `Deployed successfully: ${result.url}\nTaking QA screenshots...`);
-    } else {
+    if (result.status !== 'ready') {
       await updateProject(projectId, { agent_status: 'error' });
       await sendChatMessage(projectId, `Deployment failed: ${result.buildLogs || 'Unknown error'}. Check the logs.`);
       await notifyError(project.name, result.buildLogs || 'Deployment failed', projectId);
       return;
     }
 
-    // Phase 5: QA Screenshots
-    const config = await getConfig();
+    await updateProject(projectId, { demo_url: result.url, progress: 90 });
+    await sendChatMessage(projectId, `Deployed successfully: ${result.url}`);
+    await notifyDeploySuccess(project.name, result.url, projectId);
+
+    const demoSubdomain = clientSlug;
+    const demoDomain = `${demoSubdomain}.obzide.com`;
+    const cnameSet = await setCnameRecord('obzide.com', demoSubdomain, 'cname.vercel-dns.com', projectId);
+    if (cnameSet) {
+      const domainAdded = await addDomain(vercelProjectId, demoDomain, projectId);
+      if (domainAdded) {
+        await supabase.from('domains').insert({
+          project_id: projectId,
+          client_id: project.client_id,
+          domain_name: demoDomain,
+          subdomain: demoSubdomain,
+          is_demo: true,
+          dns_status: 'propagating',
+          ssl_status: 'pending',
+          registrar: 'namecheap',
+        }).maybeSingle();
+        await sendChatMessage(projectId, `Custom domain configured: ${demoDomain}`);
+      }
+    }
+
     if (config.auto_qa && result.url) {
       await updateProject(projectId, { current_phase: 'qa' });
-      await logger.info('Phase 5: Capturing QA screenshots', 'qa', projectId);
+      await logger.info('Phase 5: Auto-QA with Vision analysis', 'qa', projectId);
+      await sendChatMessage(projectId, 'Running auto-QA with visual analysis...');
 
-      const screenshotResults = await captureAllPages(
+      let qaVersion = 1;
+      let screenshotResults = await captureAllPages(
         result.url,
         pages.map((p) => ({ name: p.name, route: p.route })),
-        projectId
+        projectId,
+        qaVersion
       );
+
+      for (let qaAttempt = 0; qaAttempt < config.max_corrections; qaAttempt++) {
+        const failedPages: { pageName: string; issues: string[] }[] = [];
+
+        for (const ss of screenshotResults) {
+          if (!ss.desktopUrl) continue;
+          const pageArch = pages.find((p) => p.name === ss.pageName);
+          const qaResult = await analyzeScreenshot(
+            ss.desktopUrl,
+            ss.pageName,
+            pageArch?.description || ss.pageName,
+            projectId
+          );
+
+          if (!qaResult.pass) {
+            failedPages.push({ pageName: ss.pageName, issues: qaResult.issues });
+            await logger.warn(`QA failed for ${ss.pageName}: ${qaResult.issues.join('; ')}`, 'qa', projectId);
+          }
+        }
+
+        if (failedPages.length === 0) {
+          await sendChatMessage(projectId, qaAttempt === 0
+            ? 'All pages passed visual QA on first try.'
+            : `All pages passed visual QA after ${qaAttempt} correction(s).`);
+          break;
+        }
+
+        if (qaAttempt === config.max_corrections - 1) {
+          await sendChatMessage(projectId, `${failedPages.length} page(s) still have visual issues after ${config.max_corrections} attempts. Sending to human QA.`);
+          break;
+        }
+
+        await sendChatMessage(projectId, `${failedPages.length} page(s) failed visual QA. Auto-correcting (round ${qaAttempt + 1})...`);
+
+        const allRepoFiles = await getRepoFiles(fullName);
+        const allCodePaths = allRepoFiles
+          .filter((f) => f.type === 'file' && /\.(tsx?|jsx?|css|json)$/.test(f.path))
+          .map((f) => f.path);
+        const allCode = await getMultipleFileContents(fullName, allCodePaths.slice(0, 50));
+
+        const issueDescription = failedPages
+          .map((fp) => `${fp.pageName}:\n${fp.issues.map((i) => `  - ${i}`).join('\n')}`)
+          .join('\n\n');
+
+        const fixResult = await generateTaskCode(
+          {
+            title: 'Fix visual QA issues',
+            description: `The following pages have visual issues detected by auto-QA:\n\n${issueDescription}\n\nFix these visual problems while keeping the existing functionality.`,
+          },
+          project as unknown as Project,
+          client,
+          analysis.architecture,
+          allCode
+        );
+
+        if (fixResult.files.length > 0) {
+          await pushFiles(fullName, fixResult.files, `fix: visual QA corrections (round ${qaAttempt + 1})`, projectId);
+          const redeploy = await triggerDeployment(repoName, projectId);
+          const redeployResult = await waitForDeployment(redeploy.deploymentId, projectId);
+
+          if (redeployResult.status === 'ready') {
+            await updateProject(projectId, { demo_url: redeployResult.url });
+            qaVersion++;
+            screenshotResults = await captureAllPages(
+              redeployResult.url,
+              pages.map((p) => ({ name: p.name, route: p.route })),
+              projectId,
+              qaVersion
+            );
+          } else {
+            await logger.warn('Redeploy failed during QA correction', 'qa', projectId);
+            break;
+          }
+        } else {
+          break;
+        }
+      }
 
       for (const ss of screenshotResults) {
         await supabase.from('qa_screenshots').insert({
@@ -315,12 +420,12 @@ export async function processBrief(projectId: string, briefId: string): Promise<
           tablet_url: ss.tabletUrl,
           mobile_url: ss.mobileUrl,
           status: 'pending',
-          version_number: 1,
+          version_number: qaVersion,
         });
       }
 
       await updateProject(projectId, { status: 'qa', progress: 100, agent_status: 'idle' });
-      await sendChatMessage(projectId, `QA screenshots are ready for review. ${screenshotResults.length} pages captured in 3 viewports each. Check the QA section.`);
+      await sendChatMessage(projectId, `QA screenshots ready for human review. ${screenshotResults.length} pages captured across 3 viewports.`);
       await notifyBuildComplete(project.name, result.url, projectId);
       await notifyQAReady(project.name, screenshotResults.length, projectId);
     } else {

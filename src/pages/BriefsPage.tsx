@@ -65,9 +65,8 @@ export default function BriefsPage() {
       await supabase.from('brief_attachments').insert(attachments);
     }
 
-    toast.success('Brief submitted');
     setShowModal(false);
-    loadData();
+    await handleSendToAgent(brief.id, data.project_id);
   }
 
   async function handleSendToAgent(briefId: string, projectId: string) {
@@ -196,7 +195,7 @@ export default function BriefsPage() {
                     </span>
                   </div>
                 </Link>
-                {brief.status === 'approved' && (
+                {(brief.status === 'approved' || brief.status === 'pending_review') && (
                   <button
                     onClick={() => handleSendToAgent(brief.id, brief.project_id)}
                     disabled={sendingId === brief.id}

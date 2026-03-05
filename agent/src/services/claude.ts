@@ -184,7 +184,7 @@ Respond with this exact JSON structure:
 
   const response = await ai.messages.create({
     model: config.default_model,
-    max_tokens: 8192,
+    max_tokens: 16384,
     system: systemPrompt,
     messages: [{ role: 'user', content: userPrompt }],
   });
