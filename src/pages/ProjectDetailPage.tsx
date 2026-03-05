@@ -1,10 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import {
-  ArrowLeft, ExternalLink, GitBranch, Globe, Pencil, Trash2,
-  CheckCircle2, Circle, AlertCircle, Clock, Loader2, MessageSquare, Save,
-  Layout, Palette, Type, Puzzle, Layers,
-} from 'lucide-react';
+import { ArrowLeft, ExternalLink, GitBranch, Globe, Pencil, Trash2, CheckCircle2, Circle, AlertCircle, Clock, Loader2, MessageSquare, Save, LayoutGrid as Layout, Palette, Type, Puzzle, Layers } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useToast } from '../contexts/ToastContext';
 import type { Project, ProjectTask, Integration, Brief } from '../lib/types';
