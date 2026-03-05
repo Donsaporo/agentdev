@@ -1,8 +1,5 @@
 import { useState, useRef, useCallback } from 'react';
-import {
-  Upload, X, FileText, Image, FileSpreadsheet, Send, Loader2,
-  ChevronRight, ChevronLeft, Palette, Globe, Paperclip, FileEdit
-} from 'lucide-react';
+import { Upload, X, FileText, Image, FileSpreadsheet, Send, Loader2, ChevronRight, ChevronLeft, Palette, Globe, Paperclip, File as FileEdit } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import type { Project } from '../../lib/types';
 
