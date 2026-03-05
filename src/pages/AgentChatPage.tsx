@@ -118,23 +118,19 @@ export default function AgentChatPage() {
       setConversation(data);
     }
 
-    const newMsg: AgentMessage = {
-      id: crypto.randomUUID(),
-      conversation_id: conv.id,
+    const { data: inserted } = await supabase.from('agent_messages').insert({
+      conversation_id: conv!.id,
       role: 'user',
       content,
       metadata: {},
-      created_at: new Date().toISOString(),
-    };
+    }).select().maybeSingle();
 
-    setMessages(prev => [...prev, newMsg]);
-
-    await supabase.from('agent_messages').insert({
-      conversation_id: conv.id,
-      role: 'user',
-      content,
-      metadata: {},
-    });
+    if (inserted) {
+      setMessages(prev => {
+        if (prev.some(m => m.id === inserted.id)) return prev;
+        return [...prev, inserted as AgentMessage];
+      });
+    }
   }
 
   if (loading) {

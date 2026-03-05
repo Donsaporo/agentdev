@@ -73,8 +73,8 @@ export async function handleChatMessage(
       `STATUS: ${project.status} | PHASE: ${project.current_phase}`,
       `DEMO: ${project.demo_url || 'Not deployed'}`,
       `REPO: ${project.git_repo_url || 'Not created'}`,
-      brief ? `\nBRIEF: ${brief.original_content?.slice(0, 500)}` : '',
-      brief?.architecture_plan ? `\nARCHITECTURE: ${JSON.stringify(brief.architecture_plan).slice(0, 500)}` : '',
+      brief ? `\nBRIEF: ${brief.original_content}` : '',
+      brief?.architecture_plan ? `\nARCHITECTURE: ${JSON.stringify(brief.architecture_plan, null, 2)}` : '',
       recentTasks?.length ? `\nTASKS:\n${recentTasks.map((t) => `- [${t.status}] ${t.title}`).join('\n')}` : '',
       recentLogs?.length ? `\nRECENT ACTIVITY:\n${recentLogs.map((l) => `- [${l.severity}] ${l.action}`).join('\n')}` : '',
     ].filter(Boolean).join('\n');

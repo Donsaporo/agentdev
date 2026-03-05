@@ -173,6 +173,18 @@ export interface QAScreenshot {
 
 export type QAScreenshotStatus = 'pending' | 'approved' | 'rejected';
 
+export interface BriefAttachment {
+  id: string;
+  brief_id: string;
+  file_name: string;
+  file_url: string;
+  file_type: string;
+  file_size: number;
+  processing_status: 'pending' | 'processed' | 'failed';
+  extracted_content: string;
+  created_at: string;
+}
+
 export interface AgentConfig {
   id: string;
   key: string;

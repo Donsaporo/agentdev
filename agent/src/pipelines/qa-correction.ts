@@ -93,7 +93,11 @@ export async function handleQARejection(
     const currentCode = await getMultipleFileContents(repoFullName, relevantPaths.slice(0, 15));
     const briefContext = brief ? `${brief.original_content}\n\nArchitecture: ${JSON.stringify(brief.architecture_plan)}` : '';
 
-    const result = await analyzeQARejection(rejectionNotes, pageName, currentCode, briefContext);
+    const result = await analyzeQARejection(rejectionNotes, pageName, currentCode, briefContext, {
+      desktop: screenshot.desktop_url,
+      tablet: screenshot.tablet_url,
+      mobile: screenshot.mobile_url,
+    });
 
     if (result.files.length === 0) {
       await sendChatMessage(projectId, `I couldn't determine what changes to make for "${pageName}". Please provide more specific feedback.`);

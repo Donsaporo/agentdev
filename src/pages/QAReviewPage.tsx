@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { MonitorCheck, Filter, Rocket, X } from 'lucide-react';
+import { MonitorCheck, Filter, Rocket, X, Loader2 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useToast } from '../contexts/ToastContext';
 import type { Project, QAScreenshot, QAScreenshotStatus } from '../lib/types';
@@ -19,6 +19,7 @@ export default function QAReviewPage() {
   const [filter, setFilter] = useState<FilterType>('all');
   const [loading, setLoading] = useState(true);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [deploying, setDeploying] = useState(false);
 
   useEffect(() => {
     loadProjects();
@@ -79,6 +80,37 @@ export default function QAReviewPage() {
     setScreenshots(prev => prev.map(s => s.id === id ? { ...s, status: 'rejected' as const, rejection_notes: notes } : s));
   }
 
+  async function handleApproveAllAndDeploy() {
+    if (!selectedProjectId) return;
+    setDeploying(true);
+    const pending = screenshots.filter(s => s.status === 'pending');
+    for (const s of pending) {
+      await supabase.from('qa_screenshots').update({ status: 'approved' }).eq('id', s.id);
+    }
+    setScreenshots(prev => prev.map(s => ({ ...s, status: 'approved' as const })));
+
+    await supabase.from('projects').update({ status: 'deployed' }).eq('id', selectedProjectId);
+
+    const { data: conv } = await supabase
+      .from('agent_conversations')
+      .select('id')
+      .eq('project_id', selectedProjectId)
+      .eq('status', 'active')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (conv) {
+      await supabase.from('agent_messages').insert({
+        conversation_id: conv.id,
+        role: 'system',
+        content: 'All QA screenshots approved. Deploy to production requested.',
+      });
+    }
+
+    setDeploying(false);
+    toast.success('All screenshots approved. Agent will deploy to production.');
+  }
+
   function handleSelectProject(id: string) {
     setSelectedProjectId(id);
     navigate(`/qa/${id}`, { replace: true });
@@ -121,8 +153,12 @@ export default function QAReviewPage() {
           <p className="text-slate-400 mt-1">Review screenshots and approve pages for deployment</p>
         </div>
         {allApproved && (
-          <button className="inline-flex items-center gap-2 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white text-sm font-medium rounded-lg px-5 py-2.5 transition-all shadow-lg shadow-emerald-500/20 active:scale-[0.97]">
-            <Rocket className="w-4 h-4" />
+          <button
+            onClick={handleApproveAllAndDeploy}
+            disabled={deploying}
+            className="inline-flex items-center gap-2 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white text-sm font-medium rounded-lg px-5 py-2.5 transition-all shadow-lg shadow-emerald-500/20 active:scale-[0.97] disabled:opacity-50"
+          >
+            {deploying ? <Loader2 className="w-4 h-4 animate-spin" /> : <Rocket className="w-4 h-4" />}
             Approve All & Deploy
           </button>
         )}

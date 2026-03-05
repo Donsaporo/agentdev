@@ -2,9 +2,12 @@ import { getSupabase } from '../core/supabase.js';
 import { logger } from '../core/logger.js';
 import { getConfig } from '../core/config.js';
 import { analyzeBrief, generateProjectScaffold, generateTaskCode } from '../services/claude.js';
+import { processAttachments } from '../services/file-processing.js';
+import { researchReferenceUrls } from '../services/web-research.js';
 import { createRepo, pushFiles, getMultipleFileContents, getRepoFiles } from '../services/github.js';
 import { createProject as createVercelProject, triggerDeployment, waitForDeployment } from '../services/vercel.js';
 import { captureAllPages } from '../services/screenshots.js';
+import { verifyBuild, extractBuildErrors } from '../services/build-verify.js';
 import { notifyBuildComplete, notifyQAReady, notifyError } from '../services/notifications.js';
 import type { Brief, Client, Project } from '../core/types.js';
 
@@ -69,9 +72,37 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
     const client = project.clients as Client;
 
+    // Load and process brief attachments
+    const { data: attachments } = await supabase
+      .from('brief_attachments')
+      .select('file_name, file_url, file_type')
+      .eq('brief_id', briefId);
+
+    let attachmentContents: string[] = [];
+    if (attachments && attachments.length > 0) {
+      await sendChatMessage(projectId, `Processing ${attachments.length} attached file(s)...`);
+      const processed = await processAttachments(attachments, projectId);
+      attachmentContents = processed.map(p => `[${p.fileName} (${p.fileType})]\n${p.content}`);
+
+      for (const p of processed) {
+        await supabase
+          .from('brief_attachments')
+          .update({ processing_status: 'processed', extracted_content: p.content.slice(0, 10000) })
+          .eq('brief_id', briefId)
+          .eq('file_name', p.fileName);
+      }
+    }
+
+    // Research reference URLs mentioned in the brief
+    const referenceContents = await researchReferenceUrls(brief.original_content, projectId);
+    if (referenceContents.length > 0) {
+      await sendChatMessage(projectId, `Analyzed ${referenceContents.length} reference website(s) from the brief.`);
+      attachmentContents = [...attachmentContents, ...referenceContents];
+    }
+
     // Phase 1: Analysis
     await logger.info('Phase 1: Analyzing brief', 'development', projectId);
-    const analysis = await analyzeBrief(brief as Brief, client, project as unknown as Project);
+    const analysis = await analyzeBrief(brief as Brief, client, project as unknown as Project, attachmentContents);
 
     if (analysis.questions.length > 0) {
       await supabase.from('briefs').update({
@@ -166,7 +197,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
         const codeFiles = repoFiles
           .filter((f) => f.type === 'file' && /\.(tsx?|jsx?|css|json)$/.test(f.path))
           .map((f) => f.path);
-        const existingCode = await getMultipleFileContents(fullName, codeFiles.slice(0, 20));
+        const existingCode = await getMultipleFileContents(fullName, codeFiles.slice(0, 50));
 
         const codeResult = await generateTaskCode(
           { title: `Build ${task.page.name} page`, description: task.page.description || '' },
@@ -199,10 +230,53 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       }
     }
 
+    // Phase 3.5: Build Verification
+    await sendChatMessage(projectId, 'Verifying build before deployment...');
+    await logger.info('Verifying build locally', 'development', projectId);
+
+    const buildResult = await verifyBuild(fullName, projectId);
+    if (!buildResult.success) {
+      const buildErrors = extractBuildErrors(buildResult.errors || buildResult.output);
+      await sendChatMessage(projectId, `Build failed with ${buildErrors.length} error(s). Attempting auto-fix...`);
+      await logger.warn(`Build failed, attempting fix: ${buildErrors.slice(0, 5).join('; ')}`, 'development', projectId);
+
+      const allRepoFiles = await getRepoFiles(fullName);
+      const allCodePaths = allRepoFiles
+        .filter((f) => f.type === 'file' && /\.(tsx?|jsx?|css|json)$/.test(f.path))
+        .map((f) => f.path);
+      const allCode = await getMultipleFileContents(fullName, allCodePaths.slice(0, 50));
+
+      const fixResult = await generateTaskCode(
+        {
+          title: 'Fix build errors',
+          description: `The project build failed. Fix these errors:\n${buildErrors.join('\n')}\n\nFull build output:\n${buildResult.errors.slice(0, 3000)}`,
+        },
+        project as unknown as Project,
+        client,
+        analysis.architecture,
+        allCode
+      );
+
+      if (fixResult.files.length > 0) {
+        await pushFiles(fullName, fixResult.files, 'fix: resolve build errors', projectId);
+        await sendChatMessage(projectId, 'Build fixes applied. Retrying build...');
+
+        const retryResult = await verifyBuild(fullName, projectId);
+        if (!retryResult.success) {
+          await logger.warn('Build still failing after auto-fix attempt', 'development', projectId);
+          await sendChatMessage(projectId, 'Build still has issues but proceeding with deployment. Vercel may catch additional errors.');
+        } else {
+          await sendChatMessage(projectId, 'Build verified successfully after fixes.');
+        }
+      }
+    } else {
+      await sendChatMessage(projectId, 'Build verified successfully.');
+    }
+
     // Phase 4: Deploy
     await updateProject(projectId, { current_phase: 'deployment', progress: 80 });
     await logger.info('Phase 4: Deploying to Vercel', 'deployment', projectId);
-    await sendChatMessage(projectId, 'All pages built. Deploying to Vercel...');
+    await sendChatMessage(projectId, 'Deploying to Vercel...');
 
     const vercelProjectId = await createVercelProject(repoName, fullName, projectId);
     await updateProject(projectId, { vercel_project_id: vercelProjectId });

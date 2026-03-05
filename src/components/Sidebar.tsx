@@ -74,9 +74,9 @@ export default function Sidebar() {
               end={item.to === '/'}
               onClick={() => setMobileOpen(false)}
               className={({ isActive }) =>
-                `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                `relative flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
                   isActive
-                    ? 'bg-emerald-500/10 text-emerald-400'
+                    ? 'bg-emerald-500/10 text-emerald-400 before:absolute before:left-0 before:top-1/2 before:-translate-y-1/2 before:w-[3px] before:h-4 before:bg-emerald-500 before:rounded-r-full'
                     : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
                 }`
               }

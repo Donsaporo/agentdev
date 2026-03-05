@@ -13,8 +13,10 @@
     "@supabase/supabase-js": "^2.57.4",
     "dotenv": "^16.4.7",
     "octokit": "^4.1.2",
+    "pdf-parse": "^1.1.1",
     "puppeteer": "^23.11.1",
-    "resend": "^4.1.2"
+    "resend": "^4.1.2",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@types/node": "^22.12.0",

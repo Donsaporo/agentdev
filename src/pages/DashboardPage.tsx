@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { FolderKanban, Users, Globe, Activity, ArrowRight, Clock, Bot } from 'lucide-react';
+import { FolderKanban, Users, Globe, Activity, ArrowRight, Clock, Bot, Zap } from 'lucide-react';
 import { supabase } from '../lib/supabase';
+import { useAuth } from '../contexts/AuthContext';
 import type { Project, AgentLog } from '../lib/types';
 import StatCard from '../components/StatCard';
 import StatusBadge from '../components/StatusBadge';
@@ -10,7 +11,15 @@ import PhaseIndicator from '../components/PhaseIndicator';
 import { useRealtimeSubscription } from '../hooks/useRealtimeSubscription';
 import { formatDistanceToNow } from 'date-fns';
 
+function getGreeting(): string {
+  const hour = new Date().getHours();
+  if (hour < 12) return 'Good morning';
+  if (hour < 18) return 'Good afternoon';
+  return 'Good evening';
+}
+
 export default function DashboardPage() {
+  const { teamMember } = useAuth();
   const [stats, setStats] = useState({ projects: 0, clients: 0, domains: 0, activeTasks: 0 });
   const [recentProjects, setRecentProjects] = useState<Project[]>([]);
   const [recentLogs, setRecentLogs] = useState<AgentLog[]>([]);
@@ -70,8 +79,15 @@ export default function DashboardPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="w-8 h-8 border-2 border-emerald-500/30 border-t-emerald-500 rounded-full animate-spin" />
+      <div className="space-y-8 animate-fade-in">
+        <div><div className="skeleton h-8 w-64 mb-2" /><div className="skeleton h-4 w-48" /></div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {[1, 2, 3, 4].map(i => <div key={i} className="skeleton h-24 rounded-xl" />)}
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="skeleton h-80 rounded-xl" />
+          <div className="skeleton h-80 rounded-xl" />
+        </div>
       </div>
     );
   }
@@ -79,10 +95,20 @@ export default function DashboardPage() {
   const workingProjects = recentProjects.filter(p => p.agent_status === 'working');
 
   return (
-    <div className="space-y-8">
-      <div>
-        <h1 className="text-2xl font-bold text-white">Dashboard</h1>
-        <p className="text-slate-400 mt-1">Overview of your development projects and agent activity</p>
+    <div className="space-y-8 animate-fade-in">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-white">
+            {getGreeting()}{teamMember?.full_name ? `, ${teamMember.full_name.split(' ')[0]}` : ''}
+          </h1>
+          <p className="text-slate-400 mt-1">Here is what is happening with your projects</p>
+        </div>
+        {workingProjects.length > 0 && (
+          <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 bg-emerald-500/10 border border-emerald-500/20 rounded-full animate-pulse-glow">
+            <Zap className="w-3.5 h-3.5 text-emerald-400" />
+            <span className="text-xs font-medium text-emerald-400">{workingProjects.length} active build{workingProjects.length > 1 ? 's' : ''}</span>
+          </div>
+        )}
       </div>
 
       {workingProjects.length > 0 && (

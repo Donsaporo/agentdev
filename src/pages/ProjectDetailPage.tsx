@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, ExternalLink, GitBranch, Globe, Pencil, Trash2,
-  CheckCircle2, Circle, AlertCircle, Clock, Loader2, MessageSquare,
+  CheckCircle2, Circle, AlertCircle, Clock, Loader2, MessageSquare, Save,
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useToast } from '../contexts/ToastContext';
@@ -10,6 +10,7 @@ import type { Project, ProjectTask, Integration, Brief } from '../lib/types';
 import StatusBadge from '../components/StatusBadge';
 import AgentStatusIndicator from '../components/AgentStatusIndicator';
 import PhaseIndicator from '../components/PhaseIndicator';
+import Modal from '../components/Modal';
 import { useRealtimeSubscription } from '../hooks/useRealtimeSubscription';
 import { formatDistanceToNow } from 'date-fns';
 
@@ -22,6 +23,9 @@ export default function ProjectDetailPage() {
   const [integrations, setIntegrations] = useState<Integration[]>([]);
   const [brief, setBrief] = useState<Brief | null>(null);
   const [loading, setLoading] = useState(true);
+  const [showEdit, setShowEdit] = useState(false);
+  const [editForm, setEditForm] = useState({ name: '', description: '', demo_url: '', production_url: '' });
+  const [editSaving, setEditSaving] = useState(false);
 
   useEffect(() => {
     if (id) loadProject(id);
@@ -65,6 +69,50 @@ export default function ProjectDetailPage() {
     },
     enabled: !!id && !loading,
   });
+
+  function openEdit() {
+    if (!project) return;
+    setEditForm({ name: project.name, description: project.description || '', demo_url: project.demo_url || '', production_url: project.production_url || '' });
+    setShowEdit(true);
+  }
+
+  async function handleSaveEdit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!project) return;
+    setEditSaving(true);
+    const { error } = await supabase.from('projects').update({
+      name: editForm.name,
+      description: editForm.description,
+      demo_url: editForm.demo_url,
+      production_url: editForm.production_url,
+    }).eq('id', project.id);
+    setEditSaving(false);
+    if (error) {
+      toast.error('Failed to update: ' + error.message);
+      return;
+    }
+    setProject(prev => prev ? { ...prev, ...editForm } : null);
+    toast.success('Project updated');
+    setShowEdit(false);
+  }
+
+  async function handleAnswerQuestion(briefId: string, questionId: string, answer: string) {
+    if (!brief) return;
+    const updatedQuestions = brief.questions.map(q => q.id === questionId ? { ...q, answered: true } : q);
+    const updatedAnswers = [...(brief.answers || []), { question_id: questionId, answer, answered_by: 'team', answered_at: new Date().toISOString() }];
+    const allAnswered = updatedQuestions.every(q => q.answered);
+    const { error } = await supabase.from('briefs').update({
+      questions: updatedQuestions,
+      answers: updatedAnswers,
+      status: allAnswered ? 'approved' : 'questions_pending',
+    }).eq('id', briefId);
+    if (error) {
+      toast.error('Failed to save answer');
+      return;
+    }
+    setBrief(prev => prev ? { ...prev, questions: updatedQuestions, answers: updatedAnswers, status: allAnswered ? 'approved' : 'questions_pending' } : null);
+    toast.success(allAnswered ? 'All questions answered -- brief ready to send to agent' : 'Answer saved');
+  }
 
   async function handleDelete() {
     if (!confirm('Delete this project and all its data?')) return;
@@ -137,7 +185,7 @@ export default function ProjectDetailPage() {
           >
             <MessageSquare className="w-4 h-4" />
           </Link>
-          <button className="p-2 text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 rounded-lg transition-all">
+          <button onClick={openEdit} className="p-2 text-slate-400 hover:text-slate-200 hover:bg-slate-800/50 rounded-lg transition-all">
             <Pencil className="w-4 h-4" />
           </button>
           <button onClick={handleDelete} className="p-2 text-slate-400 hover:text-red-400 hover:bg-slate-800/50 rounded-lg transition-all">
@@ -212,9 +260,7 @@ export default function ProjectDetailPage() {
             </div>
           )}
           {brief.questions.length > 0 && (
-            <div className="mt-4 pt-4 border-t border-slate-800/40">
-              <p className="text-xs font-medium text-slate-400 mb-2">{brief.questions.filter(q => !q.answered).length} unanswered questions</p>
-            </div>
+            <BriefQuestionsUI brief={brief} onAnswer={(qId, answer) => handleAnswerQuestion(brief.id, qId, answer)} />
           )}
         </div>
       )}
@@ -271,6 +317,74 @@ export default function ProjectDetailPage() {
           </div>
         </div>
       )}
+
+      <Modal open={showEdit} onClose={() => setShowEdit(false)} title="Edit Project">
+        <form onSubmit={handleSaveEdit} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-slate-300 mb-1.5">Name</label>
+            <input type="text" value={editForm.name} onChange={e => setEditForm({ ...editForm, name: e.target.value })} required className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-colors" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-300 mb-1.5">Description</label>
+            <textarea value={editForm.description} onChange={e => setEditForm({ ...editForm, description: e.target.value })} rows={3} className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-colors resize-none text-sm" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-300 mb-1.5">Demo URL</label>
+            <input type="url" value={editForm.demo_url} onChange={e => setEditForm({ ...editForm, demo_url: e.target.value })} className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-colors" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-300 mb-1.5">Production URL</label>
+            <input type="url" value={editForm.production_url} onChange={e => setEditForm({ ...editForm, production_url: e.target.value })} className="w-full bg-slate-800 border border-slate-700 rounded-lg px-4 py-2.5 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-colors" />
+          </div>
+          <div className="flex justify-end gap-3 pt-2">
+            <button type="button" onClick={() => setShowEdit(false)} className="px-4 py-2.5 text-sm text-slate-400 hover:text-slate-200 transition-colors">Cancel</button>
+            <button type="submit" disabled={editSaving} className="inline-flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white text-sm font-medium rounded-lg transition-all disabled:opacity-50">
+              {editSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} Save
+            </button>
+          </div>
+        </form>
+      </Modal>
+    </div>
+  );
+}
+
+function BriefQuestionsUI({ brief, onAnswer }: { brief: Brief; onAnswer: (questionId: string, answer: string) => void }) {
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const unanswered = brief.questions.filter(q => !q.answered);
+
+  if (unanswered.length === 0) {
+    return (
+      <div className="mt-4 pt-4 border-t border-slate-800/40">
+        <p className="text-xs text-emerald-400">All questions answered</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-4 pt-4 border-t border-slate-800/40 space-y-3">
+      <p className="text-xs font-medium text-amber-400">{unanswered.length} unanswered questions from the agent</p>
+      {unanswered.map(q => (
+        <div key={q.id} className="bg-slate-800/30 rounded-lg p-3 space-y-2">
+          <p className="text-sm text-slate-200">{q.question}</p>
+          <span className="text-[10px] text-slate-500 uppercase tracking-wider">{q.category}</span>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={answers[q.id] || ''}
+              onChange={e => setAnswers(prev => ({ ...prev, [q.id]: e.target.value }))}
+              placeholder="Type your answer..."
+              className="flex-1 bg-slate-900/60 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 transition-colors"
+            />
+            <button
+              onClick={() => { if (answers[q.id]?.trim()) { onAnswer(q.id, answers[q.id].trim()); setAnswers(prev => { const n = { ...prev }; delete n[q.id]; return n; }); } }}
+              disabled={!answers[q.id]?.trim()}
+              className="px-3 py-2 bg-emerald-500/10 text-emerald-400 text-xs font-medium rounded-lg hover:bg-emerald-500/20 transition-colors disabled:opacity-40"
+            >
+              Answer
+            </button>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }

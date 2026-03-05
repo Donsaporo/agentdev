@@ -34,21 +34,37 @@ export default function BriefsPage() {
   }
 
   async function handleCreate(data: BriefFormData) {
-    const fullContent = [
-      data.original_content,
-      data.design_notes ? `\n\nDesign Notes:\n${data.design_notes}` : '',
-    ].join('');
-
-    const { error } = await supabase.from('briefs').insert({
+    const { data: brief, error } = await supabase.from('briefs').insert({
       project_id: data.project_id,
-      original_content: fullContent,
-      pages_screens: data.pages_screens,
-      features: data.features,
-    });
-    if (error) {
-      toast.error('Failed to submit brief: ' + error.message);
+      original_content: data.original_content,
+      pages_screens: [],
+      features: [],
+    }).select('id').maybeSingle();
+
+    if (error || !brief) {
+      toast.error('Failed to submit brief: ' + (error?.message || 'Unknown error'));
       return;
     }
+
+    if (data.attachment_urls.length > 0) {
+      const attachments = data.attachment_urls.map(url => {
+        const name = decodeURIComponent(url.split('/').pop() || 'file').replace(/^\d+-/, '');
+        const ext = name.split('.').pop()?.toLowerCase() || '';
+        let fileType = 'document';
+        if (['pdf'].includes(ext)) fileType = 'pdf';
+        else if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].includes(ext)) fileType = 'image';
+        else if (['xlsx', 'xls', 'csv'].includes(ext)) fileType = 'spreadsheet';
+        return {
+          brief_id: brief.id,
+          file_name: name,
+          file_url: url,
+          file_type: fileType,
+          file_size: 0,
+        };
+      });
+      await supabase.from('brief_attachments').insert(attachments);
+    }
+
     toast.success('Brief submitted');
     setShowModal(false);
     loadData();

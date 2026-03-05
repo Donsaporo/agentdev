@@ -35,7 +35,7 @@ export default function StatCard({ label, value, icon: Icon, trend, color }: Sta
   const c = colorMap[color];
 
   return (
-    <div className="bg-slate-900/60 border border-slate-800/60 rounded-xl p-5 hover:border-slate-700/60 transition-colors">
+    <div className="bg-slate-900/60 border border-slate-800/60 rounded-xl p-5 hover:border-slate-700/60 glow-emerald-hover transition-all duration-300">
       <div className="flex items-start justify-between">
         <div>
           <p className="text-sm text-slate-400">{label}</p>
