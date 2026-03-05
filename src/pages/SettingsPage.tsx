@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
-import { Save, User, Key, Server, Shield, CheckCircle2, AlertCircle, Loader2, Wifi, WifiOff } from 'lucide-react';
+import { Save, User, Key, Server, Shield, Loader2, Wifi, WifiOff } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { supabase } from '../lib/supabase';
 import { useAgentConfig } from '../hooks/useAgentConfig';
 import { formatDistanceToNow } from 'date-fns';
+import SecretsManager from './settings/SecretsManager';
 
 interface SettingsSection {
   id: string;
@@ -29,14 +30,6 @@ const CORRECTION_OPTIONS = [
   { value: 3, label: '3 attempts' },
   { value: 5, label: '5 attempts' },
   { value: 10, label: '10 attempts' },
-];
-
-const apiServices = [
-  { name: 'Claude API (Anthropic)', envVar: 'ANTHROPIC_API_KEY' },
-  { name: 'GitHub PAT', envVar: 'GITHUB_TOKEN' },
-  { name: 'Vercel API', envVar: 'VERCEL_TOKEN' },
-  { name: 'Namecheap API', envVar: 'NAMECHEAP_API_KEY' },
-  { name: 'Resend API', envVar: 'RESEND_API_KEY' },
 ];
 
 export default function SettingsPage() {
@@ -177,9 +170,7 @@ export default function SettingsPage() {
           )}
 
           {activeSection === 'api-keys' && (
-            <div className="bg-slate-900/60 border border-slate-800/60 rounded-xl p-6 space-y-5">
-              <h2 className="text-lg font-semibold text-white">API Keys & Agent Status</h2>
-
+            <div className="space-y-5">
               <div className={`flex items-center gap-3 p-4 rounded-lg border ${agentStatus.online ? 'bg-emerald-500/5 border-emerald-500/20' : 'bg-slate-800/30 border-slate-700/30'}`}>
                 {agentStatus.online ? (
                   <Wifi className="w-5 h-5 text-emerald-400" />
@@ -198,37 +189,7 @@ export default function SettingsPage() {
                 </div>
               </div>
 
-              <p className="text-sm text-slate-400">
-                API keys are configured as environment variables on the VPS agent server.
-                {agentStatus.online ? ' Agent is running with all services connected.' : ' Start the agent to verify service connections.'}
-              </p>
-
-              <div className="space-y-3">
-                {apiServices.map(service => (
-                  <div key={service.name} className="flex items-center justify-between py-3 px-4 bg-slate-800/30 rounded-lg">
-                    <div className="flex items-center gap-3">
-                      <Key className="w-4 h-4 text-slate-500" />
-                      <div>
-                        <span className="text-sm text-slate-300">{service.name}</span>
-                        <span className="block text-xs text-slate-600 font-mono">{service.envVar}</span>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                      {agentStatus.online ? (
-                        <>
-                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                          <span className="text-xs text-emerald-400">Active</span>
-                        </>
-                      ) : (
-                        <>
-                          <AlertCircle className="w-3.5 h-3.5 text-amber-500" />
-                          <span className="text-xs text-amber-500">Unknown</span>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
+              <SecretsManager />
             </div>
           )}
 

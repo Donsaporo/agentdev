@@ -1,20 +1,23 @@
 import { Resend } from 'resend';
-import { env } from '../core/env.js';
 import { getConfig } from '../core/config.js';
 import { logger } from '../core/logger.js';
+import { getSecretWithFallback } from '../core/secrets.js';
 
 let resend: Resend | null = null;
+let cachedKey: string = '';
 
-function getClient(): Resend | null {
-  if (!env.RESEND_API_KEY) return null;
-  if (!resend) {
-    resend = new Resend(env.RESEND_API_KEY);
+async function getClient(): Promise<Resend | null> {
+  const key = await getSecretWithFallback('resend');
+  if (!key) return null;
+  if (!resend || cachedKey !== key) {
+    cachedKey = key;
+    resend = new Resend(key);
   }
   return resend;
 }
 
 async function sendEmail(subject: string, html: string, projectId?: string): Promise<void> {
-  const client = getClient();
+  const client = await getClient();
   if (!client) {
     await logger.warn('Resend not configured, skipping email', 'notifications', projectId);
     return;

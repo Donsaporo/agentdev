@@ -1,7 +1,7 @@
 import { getSupabase } from '../core/supabase.js';
 import { logger } from '../core/logger.js';
 import { getConfig } from '../core/config.js';
-import { analyzeBrief, generateProjectScaffold, generateTaskCode, analyzeScreenshot } from '../services/claude.js';
+import { analyzeBrief, generateProjectScaffold, generateTaskCode, analyzeScreenshotAllViewports } from '../services/claude.js';
 import { processAttachments } from '../services/file-processing.js';
 import { researchReferenceUrls } from '../services/web-research.js';
 import { createRepo, pushFiles, getMultipleFileContents, getRepoFiles } from '../services/github.js';
@@ -279,6 +279,14 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       return;
     }
 
+    if (!config.auto_deploy) {
+      await updateProject(projectId, { status: 'review', progress: 100, agent_status: 'idle', current_phase: 'complete' });
+      await sendChatMessage(projectId, `Build verified successfully. Auto-deploy is disabled. Repo: ${repoUrl}\nReady for manual deployment.`);
+      await notifyBuildComplete(project.name, repoUrl, projectId);
+      await logger.success('Brief processing complete (deploy skipped per config)', 'development', projectId);
+      return;
+    }
+
     // Phase 4: Deploy
     await updateProject(projectId, { current_phase: 'deployment', progress: 80 });
     await logger.info('Phase 4: Deploying to Vercel', 'deployment', projectId);
@@ -323,8 +331,8 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
     if (config.auto_qa && result.url) {
       await updateProject(projectId, { current_phase: 'qa' });
-      await logger.info('Phase 5: Auto-QA with Vision analysis', 'qa', projectId);
-      await sendChatMessage(projectId, 'Running auto-QA with visual analysis...');
+      await logger.info('Phase 5: Multi-viewport QA with Vision analysis', 'qa', projectId);
+      await sendChatMessage(projectId, 'Running multi-viewport QA (desktop, tablet, mobile)...');
 
       let qaVersion = 1;
       let screenshotResults = await captureAllPages(
@@ -335,37 +343,50 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       );
 
       for (let qaAttempt = 0; qaAttempt < config.max_corrections; qaAttempt++) {
-        const failedPages: { pageName: string; issues: string[] }[] = [];
+        const failedPages: { pageName: string; issues: string[]; score: number }[] = [];
 
         for (const ss of screenshotResults) {
-          if (!ss.desktopUrl) continue;
           const pageArch = pages.find((p) => p.name === ss.pageName);
-          const qaResult = await analyzeScreenshot(
-            ss.desktopUrl,
+          const qaResult = await analyzeScreenshotAllViewports(
+            { desktop: ss.desktopUrl, tablet: ss.tabletUrl, mobile: ss.mobileUrl },
             ss.pageName,
             pageArch?.description || ss.pageName,
             projectId
           );
 
-          if (!qaResult.pass) {
-            failedPages.push({ pageName: ss.pageName, issues: qaResult.issues });
-            await logger.warn(`QA failed for ${ss.pageName}: ${qaResult.issues.join('; ')}`, 'qa', projectId);
+          if (!qaResult.overallPass) {
+            const allIssues = qaResult.viewports.flatMap(
+              (v) => v.issues.map((issue) => `[${v.viewport}] ${issue}`)
+            );
+            failedPages.push({ pageName: ss.pageName, issues: allIssues, score: qaResult.overallScore });
+            await logger.warn(
+              `QA failed for ${ss.pageName} (score: ${qaResult.overallScore}/100): ${allIssues.slice(0, 3).join('; ')}`,
+              'qa',
+              projectId
+            );
+          } else {
+            await logger.info(
+              `QA passed for ${ss.pageName} (score: ${qaResult.overallScore}/100)`,
+              'qa',
+              projectId
+            );
           }
         }
 
         if (failedPages.length === 0) {
           await sendChatMessage(projectId, qaAttempt === 0
-            ? 'All pages passed visual QA on first try.'
-            : `All pages passed visual QA after ${qaAttempt} correction(s).`);
+            ? 'All pages passed multi-viewport QA on first try.'
+            : `All pages passed multi-viewport QA after ${qaAttempt} correction(s).`);
           break;
         }
 
         if (qaAttempt === config.max_corrections - 1) {
-          await sendChatMessage(projectId, `${failedPages.length} page(s) still have visual issues after ${config.max_corrections} attempts. Sending to human QA.`);
+          const summary = failedPages.map((fp) => `${fp.pageName} (${fp.score}/100)`).join(', ');
+          await sendChatMessage(projectId, `${failedPages.length} page(s) still have issues after ${config.max_corrections} attempts: ${summary}. Sending to human QA.`);
           break;
         }
 
-        await sendChatMessage(projectId, `${failedPages.length} page(s) failed visual QA. Auto-correcting (round ${qaAttempt + 1})...`);
+        await sendChatMessage(projectId, `${failedPages.length} page(s) failed QA. Auto-correcting (round ${qaAttempt + 1})...`);
 
         const allRepoFiles = await getRepoFiles(fullName);
         const allCodePaths = allRepoFiles
@@ -374,13 +395,13 @@ export async function processBrief(projectId: string, briefId: string): Promise<
         const allCode = await getMultipleFileContents(fullName, allCodePaths.slice(0, 50));
 
         const issueDescription = failedPages
-          .map((fp) => `${fp.pageName}:\n${fp.issues.map((i) => `  - ${i}`).join('\n')}`)
+          .map((fp) => `${fp.pageName} (score: ${fp.score}/100):\n${fp.issues.map((i) => `  - ${i}`).join('\n')}`)
           .join('\n\n');
 
         const fixResult = await generateTaskCode(
           {
-            title: 'Fix visual QA issues',
-            description: `The following pages have visual issues detected by auto-QA:\n\n${issueDescription}\n\nFix these visual problems while keeping the existing functionality.`,
+            title: 'Fix visual QA issues across all viewports',
+            description: `The following pages have visual issues detected by multi-viewport QA:\n\n${issueDescription}\n\nFix these visual problems for desktop, tablet, AND mobile while keeping existing functionality.`,
           },
           project as unknown as Project,
           client,
@@ -389,7 +410,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
         );
 
         if (fixResult.files.length > 0) {
-          await pushFiles(fullName, fixResult.files, `fix: visual QA corrections (round ${qaAttempt + 1})`, projectId);
+          await pushFiles(fullName, fixResult.files, `fix: multi-viewport QA corrections (round ${qaAttempt + 1})`, projectId);
           const redeploy = await triggerDeployment(repoName, projectId);
           const redeployResult = await waitForDeployment(redeploy.deploymentId, projectId);
 

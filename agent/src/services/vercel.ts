@@ -1,19 +1,25 @@
 import { env } from '../core/env.js';
 import { logger } from '../core/logger.js';
+import { getSecretWithFallback } from '../core/secrets.js';
 import type { DeploymentResult } from '../core/types.js';
 
 const API_BASE = 'https://api.vercel.com';
 
 async function vercelFetch(path: string, options: RequestInit = {}): Promise<Response> {
+  const token = await getSecretWithFallback('vercel');
+  const teamId = await getSecretWithFallback('vercel_team_id') || env.VERCEL_TEAM_ID;
+
+  if (!token) throw new Error('Vercel token not configured');
+
   const url = new URL(path, API_BASE);
-  if (env.VERCEL_TEAM_ID) {
-    url.searchParams.set('teamId', env.VERCEL_TEAM_ID);
+  if (teamId) {
+    url.searchParams.set('teamId', teamId);
   }
 
   const response = await fetch(url.toString(), {
     ...options,
     headers: {
-      Authorization: `Bearer ${env.VERCEL_TOKEN}`,
+      Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
       ...options.headers,
     },

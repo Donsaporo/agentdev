@@ -11,10 +11,10 @@ function optional(name: string, fallback: string): string {
 export const env = {
   get SUPABASE_URL() { return required('SUPABASE_URL'); },
   get SUPABASE_SERVICE_ROLE_KEY() { return required('SUPABASE_SERVICE_ROLE_KEY'); },
-  get ANTHROPIC_API_KEY() { return required('ANTHROPIC_API_KEY'); },
-  get GITHUB_TOKEN() { return required('GITHUB_TOKEN'); },
+  get ANTHROPIC_API_KEY() { return optional('ANTHROPIC_API_KEY', ''); },
+  get GITHUB_TOKEN() { return optional('GITHUB_TOKEN', ''); },
   get GITHUB_ORG() { return optional('GITHUB_ORG', 'obzide-tech'); },
-  get VERCEL_TOKEN() { return required('VERCEL_TOKEN'); },
+  get VERCEL_TOKEN() { return optional('VERCEL_TOKEN', ''); },
   get VERCEL_TEAM_ID() { return optional('VERCEL_TEAM_ID', ''); },
   get NAMECHEAP_API_USER() { return optional('NAMECHEAP_API_USER', ''); },
   get NAMECHEAP_API_KEY() { return optional('NAMECHEAP_API_KEY', ''); },

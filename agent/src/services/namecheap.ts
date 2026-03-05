@@ -1,5 +1,6 @@
 import { env } from '../core/env.js';
 import { logger } from '../core/logger.js';
+import { getSecretWithFallback } from '../core/secrets.js';
 
 const API_BASE = 'https://api.namecheap.com/xml.response';
 
@@ -11,10 +12,14 @@ interface DnsRecord {
 }
 
 async function namecheapRequest(command: string, params: Record<string, string>): Promise<string> {
+  const apiUser = await getSecretWithFallback('namecheap_user') || env.NAMECHEAP_API_USER;
+  const apiKey = await getSecretWithFallback('namecheap') || env.NAMECHEAP_API_KEY;
+  if (!apiUser || !apiKey) throw new Error('Namecheap credentials not configured');
+
   const url = new URL(API_BASE);
-  url.searchParams.set('ApiUser', env.NAMECHEAP_API_USER);
-  url.searchParams.set('ApiKey', env.NAMECHEAP_API_KEY);
-  url.searchParams.set('UserName', env.NAMECHEAP_API_USER);
+  url.searchParams.set('ApiUser', apiUser);
+  url.searchParams.set('ApiKey', apiKey);
+  url.searchParams.set('UserName', apiUser);
   url.searchParams.set('ClientIp', env.NAMECHEAP_CLIENT_IP);
   url.searchParams.set('Command', command);
 

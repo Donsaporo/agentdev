@@ -50,42 +50,26 @@ echo "[4/6] Installing npm dependencies..."
 npm install
 
 echo ""
-echo "[5/6] Configuring environment variables..."
-if [ ! -f "$AGENT_DIR/agent/.env" ]; then
-  cp "$AGENT_DIR/agent/.env.example" "$AGENT_DIR/agent/.env"
-  echo ""
-  echo "Please enter your environment variables:"
-  echo ""
+echo "[5/6] Configuring environment..."
+echo ""
+echo "  The agent only needs 2 environment variables."
+echo "  All API keys (Anthropic, GitHub, Vercel, etc.) are"
+echo "  stored securely in Supabase and managed via the dashboard."
+echo ""
 
+if [ ! -f "$AGENT_DIR/agent/.env" ]; then
   read -rp "SUPABASE_URL: " SUPABASE_URL
   read -rp "SUPABASE_SERVICE_ROLE_KEY: " SUPABASE_SERVICE_ROLE_KEY
-  read -rp "ANTHROPIC_API_KEY: " ANTHROPIC_API_KEY
-  read -rp "GITHUB_TOKEN: " GITHUB_TOKEN
-  read -rp "GITHUB_ORG [obzide-tech]: " GITHUB_ORG
-  GITHUB_ORG=${GITHUB_ORG:-obzide-tech}
-  read -rp "VERCEL_TOKEN: " VERCEL_TOKEN
-  read -rp "VERCEL_TEAM_ID (leave empty if personal account): " VERCEL_TEAM_ID
-  read -rp "NAMECHEAP_API_USER (leave empty to skip): " NAMECHEAP_API_USER
-  read -rp "NAMECHEAP_API_KEY (leave empty to skip): " NAMECHEAP_API_KEY
-  read -rp "RESEND_API_KEY (leave empty to skip): " RESEND_API_KEY
 
   cat > "$AGENT_DIR/agent/.env" << EOF
 SUPABASE_URL=$SUPABASE_URL
 SUPABASE_SERVICE_ROLE_KEY=$SUPABASE_SERVICE_ROLE_KEY
-ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
-GITHUB_TOKEN=$GITHUB_TOKEN
-GITHUB_ORG=$GITHUB_ORG
-VERCEL_TOKEN=$VERCEL_TOKEN
-VERCEL_TEAM_ID=$VERCEL_TEAM_ID
-NAMECHEAP_API_USER=$NAMECHEAP_API_USER
-NAMECHEAP_API_KEY=$NAMECHEAP_API_KEY
 NAMECHEAP_CLIENT_IP=178.156.252.99
-RESEND_API_KEY=$RESEND_API_KEY
 NODE_ENV=production
 EOF
 
   chmod 600 "$AGENT_DIR/agent/.env"
-  echo ".env file created and secured"
+  echo ".env file created (only Supabase credentials needed)"
 else
   echo ".env already exists, skipping configuration"
 fi
@@ -126,6 +110,9 @@ echo "  Setup Complete!"
 echo "==========================================="
 echo ""
 echo "  Agent is running as a systemd service."
+echo ""
+echo "  API keys are managed in the dashboard:"
+echo "    Settings > API Keys"
 echo ""
 echo "  Useful commands:"
 echo "    systemctl status obzide-agent"

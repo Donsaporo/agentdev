@@ -2,6 +2,7 @@ import { exec } from 'node:child_process';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { logger } from '../core/logger.js';
+import { getSecretWithFallback } from '../core/secrets.js';
 
 const BUILD_DIR = '/tmp/obzide-builds';
 
@@ -42,7 +43,10 @@ export async function verifyBuild(
         await writeFile(filePath, file.content, 'utf-8');
       }
     } else {
-      const cloneUrl = `https://github.com/${repoFullName}.git`;
+      const token = await getSecretWithFallback('github');
+      const cloneUrl = token
+        ? `https://${token}@github.com/${repoFullName}.git`
+        : `https://github.com/${repoFullName}.git`;
       const { code, stderr } = await runCommand(`git clone --depth 1 ${cloneUrl} .`, buildDir);
       if (code !== 0) {
         return { success: false, output: '', errors: `Git clone failed: ${stderr}` };

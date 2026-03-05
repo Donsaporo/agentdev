@@ -8,6 +8,7 @@ config({ path: resolve(__dirname, '..', '.env') });
 
 import { logger } from './core/logger.js';
 import { getConfig } from './core/config.js';
+import { loadSecrets } from './core/secrets.js';
 import { startListening, startHeartbeat, setEventHandler } from './core/event-listener.js';
 import { processBrief } from './pipelines/brief-processing.js';
 import { handleChatMessage } from './pipelines/chat-response.js';
@@ -69,12 +70,20 @@ async function main(): Promise<void> {
   ╚═══════════════════════════════════════╝
   `);
 
+  const secrets = await loadSecrets();
+  const configuredServices = Array.from(secrets.keys()).filter((k) => secrets.get(k));
+  console.log(`  Secrets loaded: ${configuredServices.length} services configured`);
+  if (configuredServices.length > 0) {
+    console.log(`  Services: ${configuredServices.join(', ')}`);
+  }
+
   const agentConfig = await getConfig();
   await logger.info('Agent starting', 'system', null, {
     model: agentConfig.default_model,
     autoQA: agentConfig.auto_qa,
     autoDeploy: agentConfig.auto_deploy,
     maxCorrections: agentConfig.max_corrections,
+    servicesConfigured: configuredServices.length,
   });
 
   await checkStuckProjects();

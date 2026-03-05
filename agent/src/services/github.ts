@@ -1,13 +1,18 @@
 import { Octokit } from 'octokit';
 import { env } from '../core/env.js';
 import { logger } from '../core/logger.js';
+import { getSecretWithFallback } from '../core/secrets.js';
 import type { GeneratedFile } from '../core/types.js';
 
 let octokit: Octokit | null = null;
+let cachedToken: string = '';
 
-function getClient(): Octokit {
-  if (!octokit) {
-    octokit = new Octokit({ auth: env.GITHUB_TOKEN });
+async function getClient(): Promise<Octokit> {
+  const token = await getSecretWithFallback('github');
+  if (!token) throw new Error('GitHub token not configured');
+  if (!octokit || cachedToken !== token) {
+    cachedToken = token;
+    octokit = new Octokit({ auth: token });
   }
   return octokit;
 }
@@ -17,8 +22,8 @@ export async function createRepo(
   description: string,
   projectId: string
 ): Promise<{ repoUrl: string; fullName: string }> {
-  const gh = getClient();
-  const org = env.GITHUB_ORG;
+  const gh = await getClient();
+  const org = (await getSecretWithFallback('github_org')) || env.GITHUB_ORG;
 
   const { data } = await gh.rest.repos.createInOrg({
     org,
@@ -39,7 +44,7 @@ export async function pushFiles(
   commitMessage: string,
   projectId: string
 ): Promise<string> {
-  const gh = getClient();
+  const gh = await getClient();
   const [owner, repo] = repoFullName.split('/');
 
   const { data: ref } = await gh.rest.git.getRef({ owner, repo, ref: 'heads/main' });
@@ -96,7 +101,7 @@ export async function getFileContent(
   repoFullName: string,
   filePath: string
 ): Promise<string | null> {
-  const gh = getClient();
+  const gh = await getClient();
   const [owner, repo] = repoFullName.split('/');
 
   try {
@@ -115,7 +120,7 @@ export async function getRepoFiles(
   repoFullName: string,
   path: string = ''
 ): Promise<{ path: string; type: string }[]> {
-  const gh = getClient();
+  const gh = await getClient();
   const [owner, repo] = repoFullName.split('/');
 
   try {

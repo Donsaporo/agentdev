@@ -191,3 +191,27 @@ export interface AgentConfig {
   value: unknown;
   updated_at: string;
 }
+
+export interface AgentSecret {
+  id: string;
+  service_name: string;
+  service_label: string;
+  secret_value: string;
+  masked_value: string;
+  status: 'connected' | 'error' | 'untested';
+  status_message: string;
+  last_tested: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TokenUsage {
+  id: string;
+  project_id: string | null;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  cost_estimate: number;
+  operation: string;
+  created_at: string;
+}

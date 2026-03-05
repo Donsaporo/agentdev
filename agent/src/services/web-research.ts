@@ -1,5 +1,6 @@
 import { env } from '../core/env.js';
 import { logger } from '../core/logger.js';
+import { getSecretWithFallback } from '../core/secrets.js';
 
 interface PageContent {
   url: string;
@@ -15,7 +16,8 @@ interface BraveSearchResult {
 }
 
 async function braveSearch(query: string, count = 5): Promise<BraveSearchResult[]> {
-  if (!env.BRAVE_API_KEY) return [];
+  const braveKey = await getSecretWithFallback('brave');
+  if (!braveKey) return [];
 
   try {
     const url = new URL('https://api.search.brave.com/res/v1/web/search');
@@ -26,7 +28,7 @@ async function braveSearch(query: string, count = 5): Promise<BraveSearchResult[
       headers: {
         'Accept': 'application/json',
         'Accept-Encoding': 'gzip',
-        'X-Subscription-Token': env.BRAVE_API_KEY,
+        'X-Subscription-Token': braveKey,
       },
       signal: AbortSignal.timeout(15_000),
     });
@@ -144,14 +146,21 @@ export async function researchReferenceUrls(
     }
   }
 
-  if (env.BRAVE_API_KEY) {
+  const hasBrave = !!(await getSecretWithFallback('brave'));
+  if (hasBrave) {
     const queries: string[] = [];
 
     if (clientName && industry) {
       queries.push(`${clientName} ${industry} website design inspiration`);
     }
 
-    const integrationKeywords = ['stripe', 'paypal', 'payoneer', 'shopify', 'twilio', 'sendgrid', 'firebase', 'supabase', 'mapbox', 'google maps', 'calendly', 'mailchimp'];
+    const integrationKeywords = [
+      'stripe', 'paypal', 'payoneer', 'shopify', 'twilio', 'sendgrid',
+      'firebase', 'supabase', 'mapbox', 'google maps', 'calendly', 'mailchimp',
+      'banco general', 'banistmo', 'cybersource', 'yappy', 'clave', 'nequi',
+      'whatsapp api', 'instagram api', 'facebook api', 'hubspot', 'zoho',
+      'woocommerce', 'square', 'mercadopago', 'auth0', 'clerk',
+    ];
     for (const keyword of integrationKeywords) {
       if (briefContent.toLowerCase().includes(keyword)) {
         queries.push(`${keyword} API documentation integration guide`);

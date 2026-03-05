@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Activity, Search, Filter, Clock, Cpu, Rocket, Globe, AlertTriangle, CheckCircle2, Info, AlertCircle } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import type { AgentLog } from '../lib/types';
+import { useRealtimeSubscription } from '../hooks/useRealtimeSubscription';
 import { formatDistanceToNow, format } from 'date-fns';
 
 const categories = [
@@ -55,6 +56,20 @@ export default function ActivityPage() {
     setLogs(data || []);
     setLoading(false);
   }
+
+  useRealtimeSubscription({
+    table: 'agent_logs',
+    event: 'INSERT',
+    onInsert: (payload) => {
+      if (page === 0) {
+        const log = payload.new as unknown as AgentLog;
+        if (!filterCategory || log.category === filterCategory) {
+          setLogs(prev => [log, ...prev.slice(0, pageSize - 1)]);
+        }
+      }
+    },
+    enabled: !loading,
+  });
 
   const filtered = logs.filter(l =>
     l.action.toLowerCase().includes(search.toLowerCase()) ||

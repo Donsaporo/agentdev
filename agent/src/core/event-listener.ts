@@ -1,12 +1,16 @@
 import { getSupabase } from './supabase.js';
 import { logger } from './logger.js';
 import type { QueueEvent } from './types.js';
+import type { RealtimeChannel } from '@supabase/supabase-js';
 
 type EventHandler = (event: QueueEvent) => Promise<void>;
 
 const queue: QueueEvent[] = [];
 let processing = false;
 let handler: EventHandler | null = null;
+let channels: RealtimeChannel[] = [];
+let reconnectTimer: NodeJS.Timeout | null = null;
+let reconnectAttempt = 0;
 
 export function setEventHandler(fn: EventHandler): void {
   handler = fn;
@@ -38,10 +42,30 @@ function enqueue(event: QueueEvent): void {
   processQueue();
 }
 
+function scheduleReconnect(): void {
+  if (reconnectTimer) return;
+  reconnectAttempt++;
+  const delay = Math.min(1000 * Math.pow(2, reconnectAttempt), 60_000);
+  console.log(`Scheduling reconnect in ${delay}ms (attempt ${reconnectAttempt})`);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    stopListening();
+    startListening();
+  }, delay);
+}
+
+function stopListening(): void {
+  const supabase = getSupabase();
+  for (const ch of channels) {
+    supabase.removeChannel(ch);
+  }
+  channels = [];
+}
+
 export function startListening(): void {
   const supabase = getSupabase();
 
-  supabase
+  const messagesChannel = supabase
     .channel('agent-messages-listener')
     .on(
       'postgres_changes',
@@ -69,9 +93,16 @@ export function startListening(): void {
         }
       }
     )
-    .subscribe();
+    .subscribe((status) => {
+      if (status === 'SUBSCRIBED') {
+        reconnectAttempt = 0;
+      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        logger.warn(`Messages channel ${status}, scheduling reconnect`, 'system');
+        scheduleReconnect();
+      }
+    });
 
-  supabase
+  const briefsChannel = supabase
     .channel('agent-briefs-listener')
     .on(
       'postgres_changes',
@@ -93,9 +124,13 @@ export function startListening(): void {
         }
       }
     )
-    .subscribe();
+    .subscribe((status) => {
+      if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        scheduleReconnect();
+      }
+    });
 
-  supabase
+  const qaChannel = supabase
     .channel('agent-qa-listener')
     .on(
       'postgres_changes',
@@ -121,8 +156,13 @@ export function startListening(): void {
         }
       }
     )
-    .subscribe();
+    .subscribe((status) => {
+      if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        scheduleReconnect();
+      }
+    });
 
+  channels = [messagesChannel, briefsChannel, qaChannel];
   logger.info('Realtime listeners started', 'system');
 }
 

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { FolderKanban, Users, Globe, Activity, ArrowRight, Clock, Bot, Zap } from 'lucide-react';
+import { FolderKanban, Users, Globe, Activity, ArrowRight, Clock, Bot, Zap, DollarSign } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import type { Project, AgentLog } from '../lib/types';
@@ -20,7 +20,7 @@ function getGreeting(): string {
 
 export default function DashboardPage() {
   const { teamMember } = useAuth();
-  const [stats, setStats] = useState({ projects: 0, clients: 0, domains: 0, activeTasks: 0 });
+  const [stats, setStats] = useState({ projects: 0, clients: 0, domains: 0, activeTasks: 0, aiSpend: 0 });
   const [recentProjects, setRecentProjects] = useState<Project[]>([]);
   const [recentLogs, setRecentLogs] = useState<AgentLog[]>([]);
   const [loading, setLoading] = useState(true);
@@ -30,20 +30,24 @@ export default function DashboardPage() {
   }, []);
 
   async function loadDashboard() {
-    const [projectsRes, clientsRes, domainsRes, tasksRes, recentProjRes, logsRes] = await Promise.all([
+    const [projectsRes, clientsRes, domainsRes, tasksRes, recentProjRes, logsRes, usageRes] = await Promise.all([
       supabase.from('projects').select('id', { count: 'exact', head: true }),
       supabase.from('clients').select('id', { count: 'exact', head: true }),
       supabase.from('domains').select('id', { count: 'exact', head: true }),
       supabase.from('project_tasks').select('id', { count: 'exact', head: true }).in('status', ['in_progress', 'pending']),
       supabase.from('projects').select('*, clients(name)').order('updated_at', { ascending: false }).limit(5),
       supabase.from('agent_logs').select('*, projects(name)').order('created_at', { ascending: false }).limit(8),
+      supabase.from('token_usage').select('cost_estimate'),
     ]);
+
+    const totalSpend = (usageRes.data || []).reduce((sum: number, r: { cost_estimate: number }) => sum + (r.cost_estimate || 0), 0);
 
     setStats({
       projects: projectsRes.count || 0,
       clients: clientsRes.count || 0,
       domains: domainsRes.count || 0,
       activeTasks: tasksRes.count || 0,
+      aiSpend: totalSpend,
     });
     setRecentProjects(recentProjRes.data || []);
     setRecentLogs(logsRes.data || []);
@@ -135,11 +139,12 @@ export default function DashboardPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard label="Total Projects" value={stats.projects} icon={FolderKanban} color="emerald" />
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
+        <StatCard label="Projects" value={stats.projects} icon={FolderKanban} color="emerald" />
         <StatCard label="Clients" value={stats.clients} icon={Users} color="cyan" />
-        <StatCard label="Active Domains" value={stats.domains} icon={Globe} color="amber" />
+        <StatCard label="Domains" value={stats.domains} icon={Globe} color="amber" />
         <StatCard label="Pending Tasks" value={stats.activeTasks} icon={Activity} color="rose" />
+        <StatCard label="AI Spend" value={`$${stats.aiSpend.toFixed(2)}`} icon={DollarSign} color="emerald" />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
