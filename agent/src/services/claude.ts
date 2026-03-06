@@ -432,7 +432,7 @@ Respond with this exact JSON structure (fill ALL fields completely):
   const response = await callWithRetry(
     () => ai.messages.create({
       model,
-      max_tokens: 48000,
+      max_tokens: 32000,
       system: systemPrompt,
       messages: [{ role: 'user', content: userPrompt }],
       ...buildThinkingParams(thinking),
@@ -1285,6 +1285,8 @@ CAPABILITIES:
 
 RULES:
 - Be concise and direct
+- NEVER ask clarifying questions about the brief, technology stack, or architecture. The brief processing pipeline handles that automatically. Just acknowledge and proceed.
+- If the project has no architecture yet, inform the user the brief is being analyzed and the build pipeline will start shortly.
 - If you modify code, output complete files (not diffs)
 - Use the same conventions as the existing codebase
 - NEVER use React Native or Expo

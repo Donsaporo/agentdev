@@ -158,7 +158,7 @@ function createMessagesChannel(): RealtimeChannel {
       },
       async (payload) => {
         const msg = payload.new as { id: string; conversation_id: string; role: string; content: string };
-        if (msg.role !== 'user' && msg.role !== 'system') return;
+        if (msg.role !== 'user') return;
 
         const { data: conv } = await supabase
           .from('agent_conversations')
