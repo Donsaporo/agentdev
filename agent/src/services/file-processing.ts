@@ -1,4 +1,4 @@
-import { analyzeImage } from './claude.js';
+import { analyzeImage, analyzePdfDocument } from './claude.js';
 import { logger } from '../core/logger.js';
 
 interface ProcessedAttachment {
@@ -79,28 +79,15 @@ async function extractPdfWithVision(
     );
   }
 
-  const pageImages = await renderPdfPagesToImages(buffer, projectId);
-  if (pageImages.length === 0) {
-    return { text, visualAnalysis: '' };
-  }
+  const pdfBase64 = buffer.toString('base64');
+  await logger.info('Sending PDF to Claude for native visual analysis', 'development', projectId);
 
-  await logger.info(`Rendered ${pageImages.length} PDF page(s) for visual analysis`, 'development', projectId);
+  const visualAnalysis = await analyzePdfDocument(
+    pdfBase64,
+    `You are analyzing a PDF document attached to a client brief for a web development project.
 
-  const visualParts: string[] = [];
-  const pagesToAnalyze = pageImages.slice(0, 10);
-
-  const BATCH_SIZE = 3;
-  for (let i = 0; i < pagesToAnalyze.length; i += BATCH_SIZE) {
-    const batch = pagesToAnalyze.slice(i, i + BATCH_SIZE);
-    const batchResults = await Promise.all(
-      batch.map(async (imgData, batchIdx) => {
-        const pageNum = i + batchIdx + 1;
-        const analysis = await analyzeImage(
-          imgData,
-          `You are analyzing page ${pageNum} of a PDF document attached to a client brief for a web development project.
-
-EXTRACT EVERYTHING USEFUL:
-1. If this page contains UI mockups, wireframes, or design references:
+EXTRACT EVERYTHING USEFUL FROM EVERY PAGE:
+1. If any page contains UI mockups, wireframes, or design references:
    - Describe the exact layout (header, sidebar, content areas, footer)
    - List every UI component visible (buttons, cards, forms, tables, navbars, modals)
    - Extract exact hex color codes visible or describe colors precisely
@@ -108,100 +95,28 @@ EXTRACT EVERYTHING USEFUL:
    - Note spacing, alignment, and grid structure
    - Describe any icons, images, or illustrations
 
-2. If this page contains brand guidelines:
+2. If any page contains brand guidelines:
    - Extract ALL color codes (primary, secondary, accent, neutrals)
    - Extract font names and usage rules
    - Extract logo usage rules
    - Extract spacing/grid specifications
 
-3. If this page contains text content/requirements:
+3. If any page contains text content/requirements:
    - Summarize the key requirements
    - Extract any feature lists, user stories, or specifications
    - Note any technical requirements mentioned
 
-4. If this page contains screenshots of reference websites:
+4. If any page contains screenshots of reference websites:
    - Describe the design style, layout patterns, and UI elements
    - Note what the client likely wants to replicate
 
-Be extremely detailed and specific. This analysis will be used to build the actual website.`,
-          projectId,
-          'sonnet'
-        );
-        return `[Page ${pageNum}]\n${analysis}`;
-      })
-    );
-    visualParts.push(...batchResults);
-  }
+Be extremely detailed and specific. Label each page you analyze with [Page N].
+This analysis will be used to build the actual website.`,
+    projectId,
+    'sonnet'
+  );
 
-  return { text, visualAnalysis: visualParts.join('\n\n') };
-}
-
-async function renderPdfPagesToImages(
-  buffer: Buffer,
-  projectId: string
-): Promise<string[]> {
-  try {
-    const { writeFile, mkdir, readFile, rm, readdir } = await import('node:fs/promises');
-    const { join } = await import('node:path');
-    const { exec } = await import('node:child_process');
-
-    const tempDir = `/tmp/pdf-render-${Date.now()}`;
-    await mkdir(tempDir, { recursive: true });
-    const pdfPath = join(tempDir, 'input.pdf');
-    await writeFile(pdfPath, buffer);
-
-    const hasMutools = await new Promise<boolean>((resolve) => {
-      exec('which mutool', (err) => resolve(!err));
-    });
-
-    if (!hasMutools) {
-      const hasConvert = await new Promise<boolean>((resolve) => {
-        exec('which convert', (err) => resolve(!err));
-      });
-
-      if (!hasConvert) {
-        await logger.info('No PDF renderer available (mutool/convert), skipping visual analysis', 'development', projectId);
-        await rm(tempDir, { recursive: true, force: true }).catch(() => {});
-        return [];
-      }
-
-      await new Promise<void>((resolve, reject) => {
-        exec(
-          `convert -density 150 -quality 85 "${pdfPath}" "${join(tempDir, 'page-%03d.png')}"`,
-          { timeout: 60_000 },
-          (err) => (err ? reject(err) : resolve())
-        );
-      });
-    } else {
-      await new Promise<void>((resolve, reject) => {
-        exec(
-          `mutool convert -O resolution=150 -o "${join(tempDir, 'page-%03d.png')}" "${pdfPath}"`,
-          { timeout: 60_000 },
-          (err) => (err ? reject(err) : resolve())
-        );
-      });
-    }
-
-    const files = await readdir(tempDir);
-    const pngFiles = files.filter((f) => f.endsWith('.png')).sort();
-
-    const base64Images: string[] = [];
-    for (const pngFile of pngFiles) {
-      const imgBuffer = await readFile(join(tempDir, pngFile));
-      const b64 = `data:image/png;base64,${imgBuffer.toString('base64')}`;
-      base64Images.push(b64);
-    }
-
-    await rm(tempDir, { recursive: true, force: true }).catch(() => {});
-    return base64Images;
-  } catch (err) {
-    await logger.warn(
-      `PDF page rendering failed: ${err instanceof Error ? err.message : String(err)}`,
-      'development',
-      projectId
-    );
-    return [];
-  }
+  return { text, visualAnalysis };
 }
 
 const IMAGE_ANALYSIS_PROMPT = `Describe this image in exhaustive detail for use in a web development project brief.

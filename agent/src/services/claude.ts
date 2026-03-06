@@ -23,7 +23,7 @@ async function getClient(): Promise<Anthropic> {
   const key = await getSecretWithFallback('anthropic');
   if (!key) throw new Error('Anthropic API key not configured');
   if (!anthropic || (anthropic as unknown as Record<string, string>)._apiKey !== key) {
-    anthropic = new Anthropic({ apiKey: key });
+    anthropic = new Anthropic({ apiKey: key, timeout: 30 * 60 * 1000 });
   }
   return anthropic;
 }
@@ -77,7 +77,7 @@ interface ThinkingConfig {
 }
 
 async function callWithRetry(
-  fn: () => Promise<Anthropic.Message>,
+  fn: () => PromiseLike<unknown>,
   maxRetries: number = 3,
   operation: string = 'unknown'
 ): Promise<Anthropic.Message> {
@@ -85,7 +85,7 @@ async function callWithRetry(
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      return await fn();
+      return await fn() as Anthropic.Message;
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
 
@@ -115,11 +115,10 @@ async function callWithRetry(
 function buildThinkingParams(
   thinking?: ThinkingConfig
 ) {
-  if (!thinking?.enabled) return {} as const;
+  if (!thinking?.enabled) return {};
   return {
     thinking: { type: 'enabled' as const, budget_tokens: thinking.budgetTokens },
     temperature: 1 as const,
-    stream: false as const,
   };
 }
 
@@ -203,6 +202,43 @@ async function fetchImageBase64(url: string): Promise<{ data: string; mediaType:
     };
   } catch {
     return null;
+  }
+}
+
+export async function analyzePdfDocument(
+  pdfBase64: string,
+  prompt: string,
+  projectId?: string | null,
+  modelTier: ModelTier = 'sonnet'
+): Promise<string> {
+  const ai = await getClient();
+  const model = MODELS[modelTier];
+
+  try {
+    const response = await callWithRetry(
+      () => ai.messages.create({
+        model,
+        max_tokens: 8192,
+        messages: [{
+          role: 'user',
+          content: [
+            {
+              type: 'document',
+              source: { type: 'base64', media_type: 'application/pdf', data: pdfBase64 },
+            } as unknown as Anthropic.ImageBlockParam,
+            { type: 'text', text: prompt },
+          ],
+        }],
+      }),
+      2,
+      'pdf_analysis'
+    );
+
+    await trackUsage(model, response.usage.input_tokens, response.usage.output_tokens, 'pdf_analysis', projectId || undefined);
+    return extractText(response);
+  } catch (err) {
+    await logger.error(`PDF analysis failed: ${err instanceof Error ? err.message : String(err)}`, 'ai', projectId || undefined);
+    return '';
   }
 }
 
