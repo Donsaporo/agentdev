@@ -85,13 +85,15 @@ export default function SecretsManager() {
       i === index ? { ...r, saving: true } : r
     ));
 
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from('agent_secrets')
       .update({ secret_value: row.inputValue.trim(), status: 'untested', status_message: '' })
-      .eq('id', row.secret.id);
+      .eq('id', row.secret.id)
+      .select('id')
+      .maybeSingle();
 
-    if (error) {
-      toast.error(`Failed to save ${row.secret.service_label}`);
+    if (error || !data) {
+      toast.error(`Failed to save ${row.secret.service_label}${error ? ': ' + error.message : ' (no rows updated)'}`);
       setRows(prev => prev.map((r, i) =>
         i === index ? { ...r, saving: false } : r
       ));
