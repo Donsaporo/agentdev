@@ -25,7 +25,7 @@ export async function createSupabaseProject(
   orgId: string,
   region: string = 'us-east-1',
   projectId: string
-): Promise<{ ref: string; id: string }> {
+): Promise<{ ref: string; id: string; dbPassword: string }> {
   const dbPass = generateDbPassword();
 
   const res = await supabaseFetch('/v1/projects', {
@@ -47,7 +47,7 @@ export async function createSupabaseProject(
   const data = await res.json();
   await logger.success(`Created Supabase project: ${data.name} (${data.id})`, 'supabase', projectId);
 
-  return { ref: data.id, id: data.id };
+  return { ref: data.id, id: data.id, dbPassword: dbPass };
 }
 
 export async function waitForProjectReady(

@@ -1,7 +1,7 @@
 import { getSupabase } from '../core/supabase.js';
 import { logger } from '../core/logger.js';
 import { generateChatResponse } from '../services/claude.js';
-import { pushFiles, getMultipleFileContents, getRepoFiles } from '../services/github.js';
+import { pushFiles } from '../services/github.js';
 import { triggerDeployment, waitForDeployment } from '../services/vercel.js';
 import { captureAllPages } from '../services/screenshots.js';
 import { getConfig } from '../core/config.js';

@@ -9,6 +9,7 @@ config({ path: resolve(__dirname, '..', '.env') });
 import { logger } from './core/logger.js';
 import { getConfig } from './core/config.js';
 import { loadSecrets } from './core/secrets.js';
+import { validateAllApis } from './core/api-validator.js';
 import { startListening, startHeartbeat, setEventHandler, markOffline, clearBriefRetries } from './core/event-listener.js';
 import { processBrief } from './pipelines/brief-processing.js';
 import { handleChatMessage } from './pipelines/chat-response.js';
@@ -102,6 +103,11 @@ async function main(): Promise<void> {
     autoDeploy: agentConfig.auto_deploy,
     maxCorrections: agentConfig.max_corrections,
     servicesConfigured: configuredServices.length,
+  });
+
+  console.log('  Validating API connections...');
+  await validateAllApis().catch((err) => {
+    console.error('  API validation failed (non-critical):', err);
   });
 
   await checkStuckProjects();

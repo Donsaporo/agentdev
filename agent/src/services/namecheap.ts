@@ -47,16 +47,23 @@ export async function getExistingRecords(domain: string): Promise<DnsRecord[]> {
   const xml = await namecheapRequest('namecheap.domains.dns.getHosts', { SLD: sld, TLD: tld });
 
   const records: DnsRecord[] = [];
-  const regex = /HostName="([^"]*)" RecordType="([^"]*)" Address="([^"]*)"[^>]*TTL="([^"]*)"/g;
-  let match: RegExpExecArray | null;
+  const attrPatterns = [
+    /HostName="([^"]*)"[^>]*RecordType="([^"]*)"[^>]*Address="([^"]*)"[^>]*TTL="([^"]*)"/g,
+    /RecordType="([^"]*)"[^>]*HostName="([^"]*)"[^>]*Address="([^"]*)"[^>]*TTL="([^"]*)"/g,
+  ];
 
-  while ((match = regex.exec(xml)) !== null) {
-    records.push({
-      hostName: match[1],
-      recordType: match[2],
-      address: match[3],
-      ttl: parseInt(match[4], 10),
-    });
+  for (const regex of attrPatterns) {
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(xml)) !== null) {
+      const isReversed = regex === attrPatterns[1];
+      records.push({
+        hostName: isReversed ? match[2] : match[1],
+        recordType: isReversed ? match[1] : match[2],
+        address: match[3],
+        ttl: parseInt(match[4], 10),
+      });
+    }
+    if (records.length > 0) break;
   }
 
   return records;
@@ -71,6 +78,22 @@ export async function setCnameRecord(
   try {
     const { sld, tld } = parseDomainParts(domain);
     const existing = await getExistingRecords(domain);
+
+    await logger.info(
+      `DNS backup before CNAME write: ${existing.length} existing records for ${domain}`,
+      'dns',
+      projectId,
+      { records: existing }
+    );
+
+    if (existing.length === 0) {
+      await logger.warn(
+        `getExistingRecords returned 0 records for ${domain}. Aborting CNAME write to prevent record loss.`,
+        'dns',
+        projectId
+      );
+      return false;
+    }
 
     const filtered = existing.filter(
       (r) => !(r.hostName.toLowerCase() === subdomain.toLowerCase() && r.recordType === 'CNAME')

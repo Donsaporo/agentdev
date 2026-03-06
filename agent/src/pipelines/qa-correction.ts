@@ -2,7 +2,7 @@ import { getSupabase } from '../core/supabase.js';
 import { logger } from '../core/logger.js';
 import { getConfig } from '../core/config.js';
 import { analyzeQARejection, analyzeScreenshotAllViewports } from '../services/claude.js';
-import { pushFiles, getMultipleFileContents, getRepoFiles } from '../services/github.js';
+import { pushFiles, getMultipleFileContents, getRepoTree } from '../services/github.js';
 import { triggerDeployment, waitForDeployment } from '../services/vercel.js';
 import { capturePageScreenshots } from '../services/screenshots.js';
 
@@ -80,7 +80,7 @@ export async function handleQARejection(
     const repoFullName = extractRepoFullName(project.git_repo_url);
     if (!repoFullName) throw new Error('No repo URL found');
 
-    const allFiles = await getRepoFiles(repoFullName);
+    const allFiles = await getRepoTree(repoFullName);
     const codeFilePaths = allFiles
       .filter((f) => f.type === 'file' && /\.(tsx?|jsx?|css)$/.test(f.path))
       .map((f) => f.path);

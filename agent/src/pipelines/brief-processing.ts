@@ -8,7 +8,7 @@ import {
 } from '../services/claude.js';
 import { processAttachments } from '../services/file-processing.js';
 import { researchReferenceUrls } from '../services/web-research.js';
-import { createRepo, pushFiles, getMultipleFileContents, getRepoFiles } from '../services/github.js';
+import { createRepo, pushFiles, getMultipleFileContents, getRepoTree } from '../services/github.js';
 import { createProject as createVercelProject, triggerDeployment, waitForDeployment, addDomain, setEnvironmentVariables } from '../services/vercel.js';
 import { captureAllPages } from '../services/screenshots.js';
 import { verifyBuild, extractBuildErrors, hashErrors, validateScaffold } from '../services/build-verify.js';
@@ -18,7 +18,7 @@ import {
   createSupabaseProject, waitForProjectReady, getProjectApiKeys,
   getProjectUrl, executeSqlOnProject, isManagementAvailable,
 } from '../services/supabase-management.js';
-import { saveCheckpoint, clearCheckpoint, recordDeployment } from '../core/pipeline-state.js';
+import { saveCheckpoint, clearCheckpoint, recordDeployment, getCheckpoint } from '../core/pipeline-state.js';
 import type { Brief, Client, Project, FullArchitecture, BuildFixAttempt } from '../core/types.js';
 
 const CORE_FILE_PATTERNS = [
@@ -82,6 +82,16 @@ function getCoreFilePaths(allFiles: { path: string; type: string }[]): string[] 
 export async function processBrief(projectId: string, briefId: string): Promise<void> {
   const supabase = getSupabase();
   const config = await getConfig();
+
+  const existingCheckpoint = await getCheckpoint(projectId);
+  if (existingCheckpoint && existingCheckpoint.brief_id === briefId) {
+    await logger.info(
+      `Found checkpoint at phase "${existingCheckpoint.current_phase}" for project ${projectId}. Resuming...`,
+      'development',
+      projectId
+    );
+    await sendChatMessage(projectId, `Resuming from checkpoint: ${existingCheckpoint.current_phase}. Previous progress preserved.`);
+  }
 
   try {
     await supabase.from('briefs').update({ status: 'processing' }).eq('id', briefId);
@@ -239,6 +249,8 @@ export async function processBrief(projectId: string, briefId: string): Promise<
             supabase_project_ref: sbProject.ref,
             supabase_url: sbUrl,
             supabase_anon_key: keys.anonKey,
+            supabase_service_role_key: keys.serviceRoleKey,
+            supabase_db_password: sbProject.dbPassword,
           });
 
           await sendChatMessage(projectId, 'Generating and executing database schema...');
@@ -299,7 +311,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       for (let i = 0; i < tasks.length; i += MODULE_CONCURRENCY) {
         const batch = tasks.slice(i, i + MODULE_CONCURRENCY);
 
-        const repoFiles = await getRepoFiles(fullName);
+        const repoFiles = await getRepoTree(fullName);
         const coreFilePaths = getCoreFilePaths(repoFiles);
         const coreFiles = await getMultipleFileContents(fullName, coreFilePaths.slice(0, 30));
         const allPaths = repoFiles.filter((f) => f.type === 'file').map((f) => f.path);
@@ -379,7 +391,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     await sendChatMessage(projectId, 'Verifying project completeness...');
 
     try {
-      const allRepoFiles = await getRepoFiles(fullName);
+      const allRepoFiles = await getRepoTree(fullName);
       const allCodePaths = allRepoFiles
         .filter((f) => f.type === 'file' && /\.(tsx?|jsx?|css|json)$/.test(f.path))
         .map((f) => f.path);
@@ -441,7 +453,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
       await sendChatMessage(projectId, `Build failed (attempt ${attempt}/${config.max_corrections}): ${buildErrors.length} error(s). Auto-fixing...`);
 
-      const allRepoFiles = await getRepoFiles(fullName);
+      const allRepoFiles = await getRepoTree(fullName);
       const allCodePaths = allRepoFiles
         .filter((f) => f.type === 'file' && /\.(tsx?|jsx?|css|json)$/.test(f.path))
         .map((f) => f.path);
@@ -495,12 +507,20 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     const vercelProjectId = await createVercelProject(repoName, fullName, projectId);
     await updateProject(projectId, { vercel_project_id: vercelProjectId });
 
-    if (architecture.requiresBackend && (project as Record<string, unknown>).supabase_url) {
-      await setEnvironmentVariables(vercelProjectId, [
-        { key: 'VITE_SUPABASE_URL', value: String((project as Record<string, unknown>).supabase_url) },
-        { key: 'VITE_SUPABASE_ANON_KEY', value: String((project as Record<string, unknown>).supabase_anon_key || '') },
-      ], projectId);
-      await logger.info('Set Supabase env vars on Vercel project', 'deployment', projectId);
+    if (architecture.requiresBackend) {
+      const { data: freshProject } = await supabase
+        .from('projects')
+        .select('supabase_url, supabase_anon_key')
+        .eq('id', projectId)
+        .maybeSingle();
+
+      if (freshProject?.supabase_url) {
+        await setEnvironmentVariables(vercelProjectId, [
+          { key: 'VITE_SUPABASE_URL', value: freshProject.supabase_url },
+          { key: 'VITE_SUPABASE_ANON_KEY', value: freshProject.supabase_anon_key || '' },
+        ], projectId);
+        await logger.info('Set Supabase env vars on Vercel project', 'deployment', projectId);
+      }
     }
 
     const deployStartTime = Date.now();
@@ -616,7 +636,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
         await sendChatMessage(projectId, `${failedPages.length} page(s) failed QA. Auto-correcting (round ${qaAttempt + 1})...`);
 
-        const qaRepoFiles = await getRepoFiles(fullName);
+        const qaRepoFiles = await getRepoTree(fullName);
         const qaCodePaths = qaRepoFiles
           .filter((f) => f.type === 'file' && /\.(tsx?|jsx?|css|json)$/.test(f.path))
           .map((f) => f.path);

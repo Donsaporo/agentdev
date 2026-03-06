@@ -5,8 +5,10 @@ import type { RealtimeChannel } from '@supabase/supabase-js';
 
 type EventHandler = (event: QueueEvent) => Promise<void>;
 
-const queue: QueueEvent[] = [];
-let processing = false;
+const briefQueue: QueueEvent[] = [];
+const fastQueue: QueueEvent[] = [];
+let briefProcessing = false;
+let fastProcessing = false;
 let handler: EventHandler | null = null;
 let channels: RealtimeChannel[] = [];
 
@@ -20,34 +22,53 @@ export function setEventHandler(fn: EventHandler): void {
   handler = fn;
 }
 
-async function processQueue(): Promise<void> {
-  if (processing || !handler) return;
-  processing = true;
+async function processBriefQueue(): Promise<void> {
+  if (briefProcessing || !handler) return;
+  briefProcessing = true;
 
-  while (queue.length > 0) {
-    const event = queue.shift()!;
-    const briefId = event.type === 'brief_approved' ? event.payload.briefId as string : null;
-
-    if (briefId) activeBriefs.add(briefId);
+  while (briefQueue.length > 0) {
+    const event = briefQueue.shift()!;
+    const briefId = event.payload.briefId as string;
+    activeBriefs.add(briefId);
 
     try {
       await handler(event);
     } catch (err) {
-      if (briefId) {
-        briefRetryCount.set(briefId, (briefRetryCount.get(briefId) || 0) + 1);
-      }
+      briefRetryCount.set(briefId, (briefRetryCount.get(briefId) || 0) + 1);
       await logger.error(
-        `Event handler failed: ${err instanceof Error ? err.message : String(err)}`,
+        `Brief handler failed: ${err instanceof Error ? err.message : String(err)}`,
         'system',
         event.projectId,
         { eventType: event.type }
       );
     } finally {
-      if (briefId) activeBriefs.delete(briefId);
+      activeBriefs.delete(briefId);
     }
   }
 
-  processing = false;
+  briefProcessing = false;
+}
+
+async function processFastQueue(): Promise<void> {
+  if (fastProcessing || !handler) return;
+  fastProcessing = true;
+
+  while (fastQueue.length > 0) {
+    const event = fastQueue.shift()!;
+
+    try {
+      await handler(event);
+    } catch (err) {
+      await logger.error(
+        `Fast event handler failed: ${err instanceof Error ? err.message : String(err)}`,
+        'system',
+        event.projectId,
+        { eventType: event.type }
+      );
+    }
+  }
+
+  fastProcessing = false;
 }
 
 function enqueue(event: QueueEvent): void {
@@ -59,7 +80,7 @@ function enqueue(event: QueueEvent): void {
       return;
     }
 
-    if (queue.some(e => e.type === 'brief_approved' && e.payload.briefId === briefId)) {
+    if (briefQueue.some(e => e.payload.briefId === briefId)) {
       logger.warn(`Brief ${briefId} already queued, skipping duplicate`, 'system');
       return;
     }
@@ -69,10 +90,13 @@ function enqueue(event: QueueEvent): void {
       logger.warn(`Brief ${briefId} exceeded max retries (${MAX_BRIEF_RETRIES}), ignoring`, 'system');
       return;
     }
-  }
 
-  queue.push(event);
-  processQueue();
+    briefQueue.push(event);
+    processBriefQueue();
+  } else {
+    fastQueue.push(event);
+    processFastQueue();
+  }
 }
 
 function scheduleChannelReconnect(channelName: string, createFn: () => RealtimeChannel): void {

@@ -31,7 +31,16 @@ export async function getConfig(): Promise<AgentConfig> {
   for (const row of data) {
     const key = row.key as keyof AgentConfig;
     if (key in config) {
-      (config as Record<string, unknown>)[key] = row.value;
+      const raw = row.value;
+      const defaultVal = DEFAULTS[key];
+      if (typeof defaultVal === 'boolean') {
+        (config as Record<string, unknown>)[key] = raw === true || raw === 'true';
+      } else if (typeof defaultVal === 'number') {
+        const num = Number(raw);
+        (config as Record<string, unknown>)[key] = Number.isFinite(num) ? num : defaultVal;
+      } else {
+        (config as Record<string, unknown>)[key] = raw;
+      }
     }
   }
 

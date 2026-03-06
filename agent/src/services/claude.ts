@@ -71,6 +71,11 @@ async function trackUsage(
   } catch { /* non-critical */ }
 }
 
+interface ThinkingConfig {
+  enabled: boolean;
+  budgetTokens: number;
+}
+
 async function callWithRetry(
   fn: () => Promise<Anthropic.Message>,
   maxRetries: number = 3,
@@ -105,6 +110,26 @@ async function callWithRetry(
   }
 
   throw lastError || new Error('Retry exhausted');
+}
+
+function buildThinkingParams(
+  thinking?: ThinkingConfig
+): { thinking?: { type: 'enabled'; budget_tokens: number }; temperature?: undefined } | Record<string, never> {
+  if (!thinking?.enabled) return {};
+  return {
+    thinking: { type: 'enabled' as const, budget_tokens: thinking.budgetTokens },
+    temperature: undefined,
+  };
+}
+
+function extractThinkingAndText(response: Anthropic.Message): { thinking: string; text: string } {
+  let thinking = '';
+  let text = '';
+  for (const block of response.content) {
+    if (block.type === 'thinking') thinking = (block as unknown as { thinking: string }).thinking;
+    if (block.type === 'text') text = block.text;
+  }
+  return { thinking, text };
 }
 
 function parseCodeBlocks(text: string): GeneratedFile[] {
@@ -365,18 +390,21 @@ Respond with this exact JSON structure (fill ALL fields completely):
   "questions": []
 }`;
 
+  const thinking: ThinkingConfig = { enabled: true, budgetTokens: 16000 };
+
   const response = await callWithRetry(
     () => ai.messages.create({
       model,
-      max_tokens: 32000,
+      max_tokens: 48000,
       system: systemPrompt,
       messages: [{ role: 'user', content: userPrompt }],
-    }),
+      ...buildThinkingParams(thinking),
+    } as Parameters<typeof ai.messages.create>[0]),
     3,
     'brief_analysis'
   );
 
-  const text = extractText(response);
+  const { text } = extractThinkingAndText(response);
   await trackUsage(model, response.usage.input_tokens, response.usage.output_tokens, 'brief_analysis', project.id);
   await logger.info('Brief analyzed', 'ai', project.id, {
     model,
@@ -775,18 +803,21 @@ Generate:
 6. updated_at trigger function
 7. Storage bucket creation if needed`;
 
+  const thinking: ThinkingConfig = { enabled: true, budgetTokens: 10000 };
+
   const response = await callWithRetry(
     () => ai.messages.create({
       model,
-      max_tokens: 16384,
+      max_tokens: 26000,
       system: systemPrompt,
       messages: [{ role: 'user', content: userPrompt }],
-    }),
+      ...buildThinkingParams(thinking),
+    } as Parameters<typeof ai.messages.create>[0]),
     3,
     'backend_schema'
   );
 
-  const text = extractText(response);
+  const { text } = extractThinkingAndText(response);
   await trackUsage(model, response.usage.input_tokens, response.usage.output_tokens, 'backend_schema', projectId);
 
   let sql = text.trim();
@@ -998,21 +1029,24 @@ Output JSON only:
 
   const archPages = (architecture.pages || []).map((p) => `${p.name} -> ${p.route}`).join('\n');
 
+  const thinking: ThinkingConfig = { enabled: true, budgetTokens: 8000 };
+
   const response = await callWithRetry(
     () => ai.messages.create({
       model,
-      max_tokens: 16384,
+      max_tokens: 24000,
       system: systemPrompt,
       messages: [{
         role: 'user',
         content: `ARCHITECTURE PAGES:\n${archPages}\n\nALL FILES IN REPO:\n${fileListStr}\n\nApp.tsx:\n${appContent}\n\nNavbar:\n${navContent}`,
       }],
-    }),
+      ...buildThinkingParams(thinking),
+    } as Parameters<typeof ai.messages.create>[0]),
     2,
     'completeness_check'
   );
 
-  const text = extractText(response);
+  const { text } = extractThinkingAndText(response);
   await trackUsage(model, response.usage.input_tokens, response.usage.output_tokens, 'completeness_check', projectId);
 
   return safeParseJSON(text, { missingFiles: [], brokenImports: [], missingRoutes: [], fixFiles: [] });
@@ -1310,18 +1344,21 @@ ${codeContext}
 Fix the problems described in the rejection notes.`,
   });
 
+  const thinking: ThinkingConfig = { enabled: true, budgetTokens: 8000 };
+
   const response = await callWithRetry(
     () => ai.messages.create({
       model,
-      max_tokens: 16384,
+      max_tokens: 24000,
       system: systemPrompt,
       messages: [{ role: 'user', content: userContent as never }],
-    }),
+      ...buildThinkingParams(thinking),
+    } as Parameters<typeof ai.messages.create>[0]),
     3,
     'qa_fix'
   );
 
-  const text = extractText(response);
+  const { text } = extractThinkingAndText(response);
   const files = parseCodeBlocks(text);
   await trackUsage(model, response.usage.input_tokens, response.usage.output_tokens, 'qa_fix');
 
@@ -1357,6 +1394,15 @@ export async function analyzeScreenshotAllViewports(
 
   const viewportAnalysis = await Promise.all(
     entries.map(async ([viewport, url]) => {
+      if (!url) {
+        return {
+          viewport,
+          issues: ['Screenshot not available for analysis'],
+          pass: false,
+          score: 0,
+        };
+      }
+
       const prompt = `You are performing QA review of the "${pageName}" page - ${viewport.toUpperCase()} viewport.
 
 EXPECTED: ${expectedDescription}
@@ -1371,7 +1417,16 @@ Respond with JSON only:
 
 Pass threshold: all scores >= 75 and no critical issues.`;
 
-      const result = await analyzeImage(url!, prompt, projectId, 'haiku');
+      const result = await analyzeImage(url, prompt, projectId, 'haiku');
+
+      if (!result || result.trim().length === 0) {
+        return {
+          viewport,
+          issues: ['Screenshot analysis returned empty result'],
+          pass: false,
+          score: 0,
+        };
+      }
 
       const parsed = safeParseJSON<{
         issues: string[];
