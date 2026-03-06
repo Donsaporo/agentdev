@@ -9,8 +9,8 @@ const queue: QueueEvent[] = [];
 let processing = false;
 let handler: EventHandler | null = null;
 let channels: RealtimeChannel[] = [];
-let reconnectTimer: NodeJS.Timeout | null = null;
-let reconnectAttempt = 0;
+
+const channelReconnectState: Map<string, { timer: NodeJS.Timeout | null; attempt: number }> = new Map();
 
 export function setEventHandler(fn: EventHandler): void {
   handler = fn;
@@ -42,41 +42,67 @@ function enqueue(event: QueueEvent): void {
   processQueue();
 }
 
-function scheduleReconnect(): void {
-  if (reconnectTimer) return;
-  reconnectAttempt++;
-  const delay = Math.min(1000 * Math.pow(2, reconnectAttempt), 60_000);
-  console.log(`Scheduling reconnect in ${delay}ms (attempt ${reconnectAttempt})`);
-  reconnectTimer = setTimeout(() => {
-    reconnectTimer = null;
-    stopListening();
-    startListening();
+function scheduleChannelReconnect(channelName: string, createFn: () => RealtimeChannel): void {
+  let state = channelReconnectState.get(channelName);
+  if (!state) {
+    state = { timer: null, attempt: 0 };
+    channelReconnectState.set(channelName, state);
+  }
+  if (state.timer) return;
+
+  state.attempt++;
+  const delay = Math.min(1000 * Math.pow(2, state.attempt), 60_000);
+  console.log(`[${channelName}] Reconnecting in ${delay}ms (attempt ${state.attempt})`);
+
+  state.timer = setTimeout(() => {
+    state!.timer = null;
+    const supabase = getSupabase();
+    const oldChannel = channels.find((ch) => (ch as any).topic === `realtime:${channelName}`);
+    if (oldChannel) {
+      supabase.removeChannel(oldChannel);
+      channels = channels.filter((ch) => ch !== oldChannel);
+    }
+    const newChannel = createFn();
+    channels.push(newChannel);
   }, delay);
 }
 
-function stopListening(): void {
+function resetReconnectState(channelName: string): void {
+  const state = channelReconnectState.get(channelName);
+  if (state) {
+    state.attempt = 0;
+  }
+}
+
+function stopAllChannels(): void {
   const supabase = getSupabase();
   for (const ch of channels) {
     supabase.removeChannel(ch);
   }
   channels = [];
+  for (const [, state] of channelReconnectState) {
+    if (state.timer) clearTimeout(state.timer);
+    state.timer = null;
+    state.attempt = 0;
+  }
 }
 
-export function startListening(): void {
+function createMessagesChannel(): RealtimeChannel {
   const supabase = getSupabase();
-
-  const messagesChannel = supabase
-    .channel('agent-messages-listener')
+  const channelName = 'agent-messages';
+  return supabase
+    .channel(channelName)
     .on(
       'postgres_changes',
       {
         event: 'INSERT',
         schema: 'public',
         table: 'agent_messages',
-        filter: 'role=in.(user,system)',
       },
       async (payload) => {
         const msg = payload.new as { id: string; conversation_id: string; role: string; content: string };
+        if (msg.role !== 'user' && msg.role !== 'system') return;
+
         const { data: conv } = await supabase
           .from('agent_conversations')
           .select('project_id')
@@ -94,23 +120,28 @@ export function startListening(): void {
       }
     )
     .subscribe((status) => {
+      console.log(`[${channelName}] Status: ${status}`);
       if (status === 'SUBSCRIBED') {
-        reconnectAttempt = 0;
+        resetReconnectState(channelName);
+        logger.info('Messages channel subscribed', 'system');
       } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-        logger.warn(`Messages channel ${status}, scheduling reconnect`, 'system');
-        scheduleReconnect();
+        logger.warn(`Messages channel ${status}`, 'system');
+        scheduleChannelReconnect(channelName, createMessagesChannel);
       }
     });
+}
 
-  const briefsChannel = supabase
-    .channel('agent-briefs-listener')
+function createBriefsChannel(): RealtimeChannel {
+  const supabase = getSupabase();
+  const channelName = 'agent-briefs';
+  return supabase
+    .channel(channelName)
     .on(
       'postgres_changes',
       {
         event: 'UPDATE',
         schema: 'public',
         table: 'briefs',
-        filter: 'status=eq.in_progress',
       },
       (payload) => {
         const brief = payload.new as { id: string; project_id: string; status: string };
@@ -125,20 +156,27 @@ export function startListening(): void {
       }
     )
     .subscribe((status) => {
-      if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-        scheduleReconnect();
+      console.log(`[${channelName}] Status: ${status}`);
+      if (status === 'SUBSCRIBED') {
+        resetReconnectState(channelName);
+      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        logger.warn(`Briefs channel ${status}`, 'system');
+        scheduleChannelReconnect(channelName, createBriefsChannel);
       }
     });
+}
 
-  const qaChannel = supabase
-    .channel('agent-qa-listener')
+function createQAChannel(): RealtimeChannel {
+  const supabase = getSupabase();
+  const channelName = 'agent-qa';
+  return supabase
+    .channel(channelName)
     .on(
       'postgres_changes',
       {
         event: 'UPDATE',
         schema: 'public',
         table: 'qa_screenshots',
-        filter: 'status=eq.rejected',
       },
       (payload) => {
         const screenshot = payload.new as { id: string; project_id: string; status: string; rejection_notes: string; page_name: string };
@@ -157,12 +195,23 @@ export function startListening(): void {
       }
     )
     .subscribe((status) => {
-      if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-        scheduleReconnect();
+      console.log(`[${channelName}] Status: ${status}`);
+      if (status === 'SUBSCRIBED') {
+        resetReconnectState(channelName);
+      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        logger.warn(`QA channel ${status}`, 'system');
+        scheduleChannelReconnect(channelName, createQAChannel);
       }
     });
+}
 
-  channels = [messagesChannel, briefsChannel, qaChannel];
+export function startListening(): void {
+  stopAllChannels();
+  channels = [
+    createMessagesChannel(),
+    createBriefsChannel(),
+    createQAChannel(),
+  ];
   logger.info('Realtime listeners started', 'system');
 }
 
@@ -191,6 +240,7 @@ export function startHeartbeat(): NodeJS.Timeout {
 
 export async function markOffline(): Promise<void> {
   try {
+    stopAllChannels();
     const supabase = getSupabase();
     await supabase.from('agent_heartbeat').update({ status: 'offline' }).eq('id', 1);
   } catch {
