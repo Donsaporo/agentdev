@@ -283,7 +283,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     const modules = groupPagesIntoModules(architecture);
     await sendChatMessage(projectId, `Starting module-based development: ${modules.length} modules, ${totalPages} total pages.`);
 
-    const moduleTasks = [];
+    const moduleTasks: { id: string; module: (typeof modules)[number] }[] = [];
     for (let i = 0; i < modules.length; i++) {
       const mod = modules[i];
       const { data: task } = await supabase.from('project_tasks').insert({

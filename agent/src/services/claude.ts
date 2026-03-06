@@ -114,11 +114,12 @@ async function callWithRetry(
 
 function buildThinkingParams(
   thinking?: ThinkingConfig
-): { thinking?: { type: 'enabled'; budget_tokens: number }; temperature?: undefined } | Record<string, never> {
-  if (!thinking?.enabled) return {};
+) {
+  if (!thinking?.enabled) return {} as const;
   return {
     thinking: { type: 'enabled' as const, budget_tokens: thinking.budgetTokens },
-    temperature: undefined,
+    temperature: 1 as const,
+    stream: false as const,
   };
 }
 
@@ -399,7 +400,7 @@ Respond with this exact JSON structure (fill ALL fields completely):
       system: systemPrompt,
       messages: [{ role: 'user', content: userPrompt }],
       ...buildThinkingParams(thinking),
-    } as Parameters<typeof ai.messages.create>[0]),
+    }),
     3,
     'brief_analysis'
   );
@@ -812,7 +813,7 @@ Generate:
       system: systemPrompt,
       messages: [{ role: 'user', content: userPrompt }],
       ...buildThinkingParams(thinking),
-    } as Parameters<typeof ai.messages.create>[0]),
+    }),
     3,
     'backend_schema'
   );
@@ -1041,7 +1042,7 @@ Output JSON only:
         content: `ARCHITECTURE PAGES:\n${archPages}\n\nALL FILES IN REPO:\n${fileListStr}\n\nApp.tsx:\n${appContent}\n\nNavbar:\n${navContent}`,
       }],
       ...buildThinkingParams(thinking),
-    } as Parameters<typeof ai.messages.create>[0]),
+    }),
     2,
     'completeness_check'
   );
@@ -1353,7 +1354,7 @@ Fix the problems described in the rejection notes.`,
       system: systemPrompt,
       messages: [{ role: 'user', content: userContent as never }],
       ...buildThinkingParams(thinking),
-    } as Parameters<typeof ai.messages.create>[0]),
+    }),
     3,
     'qa_fix'
   );

@@ -192,7 +192,8 @@ export async function getRepoTree(
         size: item.size || 0,
       }));
   } catch {
-    return getRepoFiles(repoFullName);
+    const files = await getRepoFiles(repoFullName);
+    return files.map((f) => ({ ...f, size: 0 }));
   }
 }
 
