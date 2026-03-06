@@ -1,4 +1,4 @@
-import { env } from '../core/env.js';
+import * as cheerio from 'cheerio';
 import { logger } from '../core/logger.js';
 import { getSecretWithFallback } from '../core/secrets.js';
 
@@ -14,6 +14,8 @@ interface BraveSearchResult {
   url: string;
   description: string;
 }
+
+const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 async function braveSearch(query: string, count = 5): Promise<BraveSearchResult[]> {
   const braveKey = await getSecretWithFallback('brave');
@@ -54,68 +56,62 @@ async function braveSearch(query: string, count = 5): Promise<BraveSearchResult[
 
 export async function fetchPageContent(url: string, projectId?: string): Promise<PageContent | null> {
   try {
-    let puppeteer;
-    try {
-      puppeteer = await import('puppeteer');
-    } catch {
-      return await fetchWithFetch(url);
-    }
-
-    const browser = await puppeteer.default.launch({
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu'],
-    });
-
-    const page = await browser.newPage();
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: 30_000 });
-
-    const result = await page.evaluate(() => {
-      const title = document.title || '';
-      const navLinks = Array.from(document.querySelectorAll('nav a, header a')).map(
-        (a) => (a as HTMLAnchorElement).href
-      );
-      const textNodes = document.querySelectorAll('h1, h2, h3, h4, p, li, span, a, button, label');
-      const texts: string[] = [];
-      textNodes.forEach((el) => {
-        const t = el.textContent?.trim();
-        if (t && t.length > 2 && t.length < 500) texts.push(t);
-      });
-      return { title, text: [...new Set(texts)].join('\n'), links: [...new Set(navLinks)] };
-    });
-
-    await browser.close();
-
-    await logger.info(`Fetched reference page: ${url}`, 'development', projectId);
-    return { url, ...result };
-  } catch (err) {
-    await logger.error(`Failed to fetch page ${url}: ${err instanceof Error ? err.message : String(err)}`, 'development', projectId);
-    return await fetchWithFetch(url);
-  }
-}
-
-async function fetchWithFetch(url: string): Promise<PageContent | null> {
-  try {
     const res = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+      headers: {
+        'User-Agent': USER_AGENT,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9,es;q=0.8',
+      },
       signal: AbortSignal.timeout(15_000),
+      redirect: 'follow',
     });
+
     if (!res.ok) return null;
 
     const html = await res.text();
-    const titleMatch = html.match(/<title[^>]*>(.*?)<\/title>/i);
-    const title = titleMatch ? titleMatch[1].trim() : '';
+    const $ = cheerio.load(html);
 
-    const textContent = html
-      .replace(/<script[\s\S]*?<\/script>/gi, '')
-      .replace(/<style[\s\S]*?<\/style>/gi, '')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, 5000);
+    $('script, style, noscript, svg, iframe, nav, footer, header').remove();
 
-    return { url, title, text: textContent, links: [] };
-  } catch {
+    const title = $('title').first().text().trim() ||
+      $('h1').first().text().trim() ||
+      '';
+
+    const navLinks: string[] = [];
+    $('a[href]').each((_, el) => {
+      const href = $(el).attr('href');
+      if (href && (href.startsWith('http') || href.startsWith('/'))) {
+        try {
+          const resolved = href.startsWith('http') ? href : new URL(href, url).toString();
+          navLinks.push(resolved);
+        } catch { /* skip invalid urls */ }
+      }
+    });
+
+    const textParts: string[] = [];
+    $('h1, h2, h3, h4, h5, h6, p, li, td, th, blockquote, pre, code, article, section, main, div').each((_, el) => {
+      const text = $(el).clone().children('h1, h2, h3, h4, h5, h6, p, li, td, th, blockquote, pre, code, article, section, main, div').remove().end().text().trim();
+      if (text && text.length > 5 && text.length < 1000) {
+        textParts.push(text);
+      }
+    });
+
+    const uniqueText = [...new Set(textParts)].join('\n');
+
+    await logger.info(`Fetched reference page: ${url}`, 'development', projectId);
+
+    return {
+      url,
+      title,
+      text: uniqueText.slice(0, 8000),
+      links: [...new Set(navLinks)].slice(0, 30),
+    };
+  } catch (err) {
+    await logger.error(
+      `Failed to fetch page ${url}: ${err instanceof Error ? err.message : String(err)}`,
+      'development',
+      projectId
+    );
     return null;
   }
 }

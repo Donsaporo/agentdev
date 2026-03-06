@@ -1,4 +1,3 @@
-import puppeteer, { Browser } from 'puppeteer';
 import { getSupabase } from '../core/supabase.js';
 import { logger } from '../core/logger.js';
 import type { ScreenshotResult } from '../core/types.js';
@@ -9,19 +8,52 @@ const VIEWPORTS = [
   { name: 'mobile', width: 375, height: 812 },
 ] as const;
 
-let browser: Browser | null = null;
+type Browser = { connected: boolean; close: () => Promise<void>; newPage: () => Promise<PuppeteerPage> };
+type PuppeteerPage = {
+  setViewport: (v: { width: number; height: number }) => Promise<void>;
+  goto: (url: string, opts: Record<string, unknown>) => Promise<void>;
+  screenshot: (opts: Record<string, unknown>) => Promise<Uint8Array>;
+  close: () => Promise<void>;
+};
 
-async function getBrowser(): Promise<Browser> {
+let browser: Browser | null = null;
+let puppeteerModule: { default: { launch: (opts: Record<string, unknown>) => Promise<Browser> } } | null = null;
+let puppeteerAvailable: boolean | null = null;
+
+async function getPuppeteer() {
+  if (puppeteerAvailable === false) return null;
+  if (puppeteerModule) return puppeteerModule;
+
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    puppeteerModule = await import(/* webpackIgnore: true */ 'puppeteer' as string);
+    puppeteerAvailable = true;
+    return puppeteerModule;
+  } catch {
+    puppeteerAvailable = false;
+    return null;
+  }
+}
+
+async function getBrowser(): Promise<Browser | null> {
+  const pptr = await getPuppeteer();
+  if (!pptr) return null;
+
   if (!browser || !browser.connected) {
-    browser = await puppeteer.launch({
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-      ],
-    });
+    try {
+      browser = await pptr.default.launch({
+        headless: true,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-gpu',
+        ],
+      });
+    } catch {
+      puppeteerAvailable = false;
+      return null;
+    }
   }
   return browser;
 }
@@ -37,8 +69,10 @@ async function captureViewport(
   url: string,
   width: number,
   height: number
-): Promise<Buffer> {
+): Promise<Buffer | null> {
   const b = await getBrowser();
+  if (!b) return null;
+
   const page = await b.newPage();
 
   try {
@@ -86,6 +120,18 @@ export async function capturePageScreenshots(
   projectId: string,
   version: number = 1
 ): Promise<ScreenshotResult> {
+  const pptr = await getPuppeteer();
+  if (!pptr) {
+    await logger.info(`Screenshots skipped for ${pageName} (Puppeteer not available)`, 'qa', projectId);
+    return {
+      pageName,
+      pageUrl: url,
+      desktopUrl: '',
+      tabletUrl: '',
+      mobileUrl: '',
+    };
+  }
+
   await logger.info(`Capturing screenshots for ${pageName}`, 'qa', projectId);
 
   const results: Record<string, string> = {};
@@ -93,6 +139,10 @@ export async function capturePageScreenshots(
   for (const viewport of VIEWPORTS) {
     try {
       const buffer = await captureViewport(url, viewport.width, viewport.height);
+      if (!buffer) {
+        results[viewport.name] = '';
+        continue;
+      }
       const publicUrl = await uploadToStorage(
         projectId,
         pageName,
