@@ -482,8 +482,8 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       if (proj) await notifyError(proj.name, errMsg, projectId);
     } catch (innerErr) {
       console.error('Error in brief-processing catch block:', innerErr);
-      await supabase.from('briefs').update({ status: 'failed' }).eq('id', briefId).catch(() => {});
-      await supabase.from('projects').update({ agent_status: 'error' }).eq('id', projectId).catch(() => {});
+      try { await supabase.from('briefs').update({ status: 'failed' }).eq('id', briefId); } catch {}
+      try { await supabase.from('projects').update({ agent_status: 'error' }).eq('id', projectId); } catch {}
     }
   }
 }
