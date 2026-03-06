@@ -153,6 +153,34 @@ export async function addDomain(
   return true;
 }
 
+export async function setEnvironmentVariables(
+  vercelProjectId: string,
+  envVars: { key: string; value: string; target?: string[] }[],
+  projectId: string
+): Promise<void> {
+  const body = envVars.map((v) => ({
+    key: v.key,
+    value: v.value,
+    target: v.target || ['production', 'preview', 'development'],
+    type: 'encrypted',
+  }));
+
+  const res = await vercelFetch(`/v10/projects/${vercelProjectId}/env`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    const errStr = JSON.stringify(err);
+    if (!errStr.includes('already exists')) {
+      await logger.warn(`Failed to set some env vars: ${errStr}`, 'vercel', projectId);
+    }
+  }
+
+  await logger.info(`Set ${envVars.length} environment variable(s) on Vercel project`, 'vercel', projectId);
+}
+
 export async function getDeploymentUrl(vercelProjectId: string): Promise<string | null> {
   const res = await vercelFetch(`/v6/deployments?projectId=${vercelProjectId}&target=production&limit=1`);
   if (!res.ok) return null;

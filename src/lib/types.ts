@@ -35,6 +35,11 @@ export interface Project {
   technologies: string[];
   agent_status: AgentStatus;
   current_phase: ProjectPhase;
+  has_backend: boolean;
+  supabase_project_ref: string | null;
+  supabase_url: string | null;
+  supabase_anon_key: string | null;
+  last_error_message: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;
@@ -44,7 +49,7 @@ export interface Project {
 export type ProjectType = 'website' | 'ecommerce' | 'mobile_app' | 'crm' | 'custom';
 export type ProjectStatus = 'draft' | 'planning' | 'in_progress' | 'qa' | 'review' | 'approved' | 'deployed';
 export type AgentStatus = 'idle' | 'working' | 'waiting' | 'error';
-export type ProjectPhase = 'analysis' | 'scaffolding' | 'development' | 'qa' | 'deployment';
+export type ProjectPhase = 'analysis' | 'scaffolding' | 'backend_setup' | 'development' | 'completeness_check' | 'qa' | 'deployment';
 
 export interface Brief {
   id: string;

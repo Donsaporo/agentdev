@@ -149,6 +149,6 @@ export async function handleQARejection(
     const errMsg = err instanceof Error ? err.message : String(err);
     await logger.error(`QA correction failed: ${errMsg}`, 'qa', projectId);
     await sendChatMessage(projectId, `QA correction failed: ${errMsg}`);
-    await supabase.from('projects').update({ agent_status: 'error' }).eq('id', projectId);
+    await supabase.from('projects').update({ agent_status: 'idle', last_error_message: errMsg }).eq('id', projectId);
   }
 }

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, ExternalLink, GitBranch, Globe, Pencil, Trash2, CheckCircle2, Circle, AlertCircle, Clock, Loader2, MessageSquare, Save, LayoutGrid as Layout, Palette, Type, Puzzle, Layers } from 'lucide-react';
+import { ArrowLeft, ExternalLink, GitBranch, Globe, Pencil, Trash2, CheckCircle2, Circle, AlertCircle, Clock, Loader2, MessageSquare, Save, LayoutGrid as Layout, Palette, Type, Puzzle, Layers, Database, AlertTriangle } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useToast } from '../contexts/ToastContext';
 import type { Project, ProjectTask, Integration, Brief } from '../lib/types';
@@ -233,6 +233,45 @@ export default function ProjectDetailPage() {
         )}
       </div>
 
+      {project.last_error_message && (
+        <div className="glass-card p-4 border border-red-500/20 bg-red-500/5">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="w-4 h-4 text-red-400 mt-0.5 flex-shrink-0" />
+            <div>
+              <p className="text-xs font-medium text-red-400 mb-1">Last Error</p>
+              <p className="text-sm text-red-300/80 font-mono">{project.last_error_message}</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {project.has_backend && (
+        <div className="glass-card p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <Database className="w-4 h-4 text-teal-400" />
+            <h3 className="text-sm font-semibold text-white">Backend Database</h3>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {project.supabase_url ? (
+              <>
+                <div>
+                  <p className="text-xs text-slate-500 mb-0.5">Supabase URL</p>
+                  <a href={project.supabase_url} target="_blank" rel="noopener noreferrer" className="text-xs text-teal-400 hover:text-teal-300 transition-colors truncate block">{project.supabase_url}</a>
+                </div>
+                <div>
+                  <p className="text-xs text-slate-500 mb-0.5">Project Ref</p>
+                  <p className="text-xs text-slate-300 font-mono">{project.supabase_project_ref || 'N/A'}</p>
+                </div>
+              </>
+            ) : (
+              <div className="col-span-2">
+                <p className="text-xs text-amber-400/80">Database not yet provisioned. It will be created automatically when the brief is processed, or you can configure it manually in Vercel.</p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {project.description && (
         <div className="glass-card p-5">
           <h2 className="text-sm font-semibold text-white mb-2">Description</h2>
@@ -392,12 +431,17 @@ function BriefQuestionsUI({ brief, onAnswer }: { brief: Brief; onAnswer: (questi
 
 function ArchitecturePlanDisplay({ architecture }: { architecture: Record<string, unknown> }) {
   const arch = architecture as {
-    pages?: { name: string; route: string; description: string }[];
+    projectType?: string;
+    requiresBackend?: boolean;
+    pages?: { name: string; route: string; description: string; module?: string; role?: string }[];
     components?: { name: string; description: string }[];
     designSystem?: { primaryColor?: string; secondaryColor?: string; accentColor?: string; fonts?: { heading?: string; body?: string }; style?: string };
     integrations?: string[];
     framework?: string;
     styling?: string;
+    userRoles?: { name: string; description: string; permissions: string[] }[];
+    dataModels?: { name: string; fields: { name: string; type: string }[] }[];
+    flows?: { name: string; role: string; steps: string[] }[];
   };
 
   return (
@@ -463,11 +507,42 @@ function ArchitecturePlanDisplay({ architecture }: { architecture: Record<string
         </div>
       )}
 
+      {arch.userRoles && arch.userRoles.length > 0 && (
+        <div className="space-y-2">
+          <div className="text-xs font-medium text-slate-400">User Roles ({arch.userRoles.length})</div>
+          <div className="flex flex-wrap gap-1.5">
+            {arch.userRoles.map((role, i) => (
+              <span key={i} className="text-xs px-2.5 py-1 bg-teal-500/10 text-teal-400 rounded-lg capitalize" title={role.description}>
+                {role.name}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {arch.dataModels && arch.dataModels.length > 0 && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 text-xs font-medium text-slate-400">
+            <Database className="w-3.5 h-3.5" />
+            Data Models ({arch.dataModels.length})
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {arch.dataModels.map((model, i) => (
+              <span key={i} className="text-xs px-2.5 py-1 bg-white/[0.04] text-slate-300 rounded-lg border border-white/[0.06]" title={model.fields.map(f => f.name).join(', ')}>
+                {model.name} ({model.fields.length} fields)
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
       {arch.framework && (
-        <div className="flex items-center gap-2 text-xs text-slate-500">
+        <div className="flex items-center gap-2 text-xs text-slate-500 flex-wrap">
           <Layers className="w-3.5 h-3.5" />
           Stack: <span className="text-slate-400">{arch.framework}</span>
           {arch.styling && <span className="text-slate-400">+ {arch.styling}</span>}
+          {arch.projectType && <span className="text-slate-500">| Type: <span className="text-slate-400 capitalize">{arch.projectType}</span></span>}
+          {arch.requiresBackend && <span className="text-teal-400/60">| Backend required</span>}
         </div>
       )}
     </div>

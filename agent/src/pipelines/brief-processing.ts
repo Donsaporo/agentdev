@@ -1,16 +1,30 @@
 import { getSupabase } from '../core/supabase.js';
 import { logger } from '../core/logger.js';
 import { getConfig } from '../core/config.js';
-import { analyzeBrief, generateProjectScaffold, generateTaskCode, analyzeScreenshotAllViewports } from '../services/claude.js';
+import {
+  analyzeBrief, generateProjectScaffold, generateModuleCode, groupPagesIntoModules,
+  generateDatabaseSchema, generateBuildFix, verifyProjectCompleteness,
+  analyzeScreenshotAllViewports,
+} from '../services/claude.js';
 import { processAttachments } from '../services/file-processing.js';
 import { researchReferenceUrls } from '../services/web-research.js';
 import { createRepo, pushFiles, getMultipleFileContents, getRepoFiles } from '../services/github.js';
-import { createProject as createVercelProject, triggerDeployment, waitForDeployment, addDomain } from '../services/vercel.js';
+import { createProject as createVercelProject, triggerDeployment, waitForDeployment, addDomain, setEnvironmentVariables } from '../services/vercel.js';
 import { captureAllPages } from '../services/screenshots.js';
-import { verifyBuild, extractBuildErrors } from '../services/build-verify.js';
+import { verifyBuild, extractBuildErrors, hashErrors, validateScaffold } from '../services/build-verify.js';
 import { notifyBuildComplete, notifyQAReady, notifyError, notifyDeploySuccess } from '../services/notifications.js';
 import { setCnameRecord } from '../services/namecheap.js';
-import type { Brief, Client, Project } from '../core/types.js';
+import {
+  createSupabaseProject, waitForProjectReady, getProjectApiKeys,
+  getProjectUrl, executeSqlOnProject, isManagementAvailable,
+} from '../services/supabase-management.js';
+import type { Brief, Client, Project, FullArchitecture, BuildFixAttempt } from '../core/types.js';
+
+const CORE_FILE_PATTERNS = [
+  'app.tsx', 'main.tsx', 'layout', 'navbar', 'footer', 'index.css',
+  'tailwind.config', 'supabase', 'types', 'api.ts', 'auth', 'mock-data',
+  'package.json', 'vite.config',
+];
 
 async function updateProject(
   projectId: string,
@@ -54,14 +68,23 @@ async function sendChatMessage(
   }
 }
 
+function getCoreFilePaths(allFiles: { path: string; type: string }[]): string[] {
+  return allFiles
+    .filter((f) => {
+      if (f.type !== 'file') return false;
+      const lower = f.path.toLowerCase();
+      return CORE_FILE_PATTERNS.some((p) => lower.includes(p));
+    })
+    .map((f) => f.path);
+}
+
 export async function processBrief(projectId: string, briefId: string): Promise<void> {
   const supabase = getSupabase();
   const config = await getConfig();
 
   try {
     await supabase.from('briefs').update({ status: 'processing' }).eq('id', briefId);
-
-    await updateProject(projectId, { agent_status: 'working', current_phase: 'analysis', status: 'in_progress' });
+    await updateProject(projectId, { agent_status: 'working', current_phase: 'analysis', status: 'in_progress', last_error_message: null });
     await sendChatMessage(projectId, 'Starting to process your brief. Analyzing requirements...');
 
     const { data: brief } = await supabase.from('briefs').select('*').eq('id', briefId).maybeSingle();
@@ -76,7 +99,10 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
     const client = project.clients as Client;
 
-    // Load and process brief attachments
+    // ============================================================
+    // PHASE 1: ANALYSIS
+    // ============================================================
+
     const { data: attachments } = await supabase
       .from('brief_attachments')
       .select('file_name, file_url, file_type')
@@ -103,14 +129,13 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       attachmentContents = [...attachmentContents, ...referenceContents];
     }
 
-    // Phase 1: Analysis
     await logger.info('Phase 1: Analyzing brief', 'development', projectId);
     const analysis = await analyzeBrief(brief as Brief, client, project as unknown as Project, attachmentContents);
 
     if (analysis.questions.length > 0) {
       await supabase.from('briefs').update({
         parsed_requirements: analysis.requirements,
-        architecture_plan: analysis.architecture,
+        architecture_plan: analysis.architecture as unknown as Record<string, unknown>,
         questions: analysis.questions.map((q, i) => ({
           id: `q-${i}`,
           question: q.question,
@@ -127,15 +152,21 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       return;
     }
 
+    const architecture = analysis.architecture as FullArchitecture;
+    const totalPages = (architecture.pages || []).length;
+
     await supabase.from('briefs').update({
       parsed_requirements: analysis.requirements,
-      architecture_plan: analysis.architecture,
+      architecture_plan: architecture as unknown as Record<string, unknown>,
     }).eq('id', briefId);
 
-    await sendChatMessage(projectId, 'Analysis complete. Setting up the repository...');
+    await sendChatMessage(projectId, `Analysis complete. Found ${totalPages} pages to build${architecture.requiresBackend ? ' with full backend' : ''}. Setting up the repository...`);
 
-    // Phase 2: Scaffolding
-    await updateProject(projectId, { current_phase: 'scaffolding', progress: 10 });
+    // ============================================================
+    // PHASE 2: SCAFFOLDING
+    // ============================================================
+
+    await updateProject(projectId, { current_phase: 'scaffolding', progress: 5, has_backend: architecture.requiresBackend || false });
     await logger.info('Phase 2: Scaffolding project', 'development', projectId);
 
     const clientSlug = client.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+$/, '');
@@ -147,45 +178,113 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       `${project.name} - ${client.name} | Built by Obzide Agent`,
       projectId
     );
-
     await updateProject(projectId, { git_repo_url: repoUrl });
 
     const scaffold = await generateProjectScaffold(
       project as unknown as Project,
       client,
-      analysis.architecture
+      architecture
     );
 
     if (scaffold.files.length > 0) {
+      const validation = await validateScaffold(scaffold.files);
+      if (validation.issues.length > 0) {
+        await logger.warn(`Scaffold validation: ${validation.issues.join('; ')}`, 'development', projectId);
+        for (const fix of validation.fixedFiles) {
+          const idx = scaffold.files.findIndex((f) => f.path === fix.path);
+          if (idx >= 0) scaffold.files[idx] = fix;
+          else scaffold.files.push(fix);
+        }
+      }
       await pushFiles(fullName, scaffold.files, 'Initial scaffold', projectId);
     }
 
-    await updateProject(projectId, { progress: 25 });
-    await sendChatMessage(projectId, `Repository created: ${repoUrl}\nScaffold pushed. Starting page development...`);
+    await updateProject(projectId, { progress: 15 });
+    await sendChatMessage(projectId, `Repository created: ${repoUrl}\nScaffold pushed with ${scaffold.files.length} files.`);
 
-    // Phase 3: Development
-    await updateProject(projectId, { current_phase: 'development' });
-    await logger.info('Phase 3: Developing pages', 'development', projectId);
+    // ============================================================
+    // PHASE 2.5: BACKEND SETUP (if needed)
+    // ============================================================
 
-    const arch = analysis.architecture as { pages?: { name: string; route: string; description: string }[] };
-    const pages = arch.pages || [];
+    if (architecture.requiresBackend) {
+      await updateProject(projectId, { current_phase: 'backend_setup', progress: 18 });
+      await logger.info('Phase 2.5: Setting up backend', 'development', projectId);
 
-    const tasks = [];
-    for (let i = 0; i < pages.length; i++) {
-      const page = pages[i];
+      const hasManagement = await isManagementAvailable();
+
+      if (hasManagement) {
+        await sendChatMessage(projectId, 'Creating Supabase database for this project...');
+
+        try {
+          const orgId = config.supabase_org_id || (await import('../core/secrets.js').then(s => s.getSecretWithFallback('supabase_org_id')));
+          if (!orgId) throw new Error('Supabase org ID not configured');
+
+          const sbProject = await createSupabaseProject(
+            `obz-${projectSlug}`.slice(0, 40),
+            orgId,
+            config.supabase_db_region || 'us-east-1',
+            projectId
+          );
+
+          await sendChatMessage(projectId, 'Waiting for database to be ready...');
+          await waitForProjectReady(sbProject.ref, projectId);
+
+          const keys = await getProjectApiKeys(sbProject.ref, projectId);
+          const sbUrl = getProjectUrl(sbProject.ref);
+
+          await updateProject(projectId, {
+            supabase_project_ref: sbProject.ref,
+            supabase_url: sbUrl,
+            supabase_anon_key: keys.anonKey,
+          });
+
+          await sendChatMessage(projectId, 'Generating and executing database schema...');
+          const sql = await generateDatabaseSchema(architecture, projectId);
+
+          if (sql && sql.length > 10) {
+            await executeSqlOnProject(sbProject.ref, sql, projectId);
+            await logger.success('Database schema executed', 'development', projectId);
+          }
+
+          await sendChatMessage(projectId, `Database ready: ${sbUrl}`);
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          await logger.warn(`Backend setup failed (will continue without real DB): ${errMsg}`, 'development', projectId);
+          await sendChatMessage(projectId, `Note: Could not auto-create Supabase project (${errMsg}). The project will use placeholder env vars - configure them manually in Vercel after deployment.`);
+        }
+      } else {
+        await sendChatMessage(projectId, 'Supabase Management API not configured. The project will use placeholder env vars. Configure VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in Vercel after deployment.');
+        await logger.info('Supabase Management API not available, skipping auto-setup', 'development', projectId);
+      }
+    }
+
+    // ============================================================
+    // PHASE 3: MODULE-BASED DEVELOPMENT
+    // ============================================================
+
+    await updateProject(projectId, { current_phase: 'development', progress: 20 });
+    await logger.info('Phase 3: Module-based development', 'development', projectId);
+
+    const modules = groupPagesIntoModules(architecture);
+    await sendChatMessage(projectId, `Starting module-based development: ${modules.length} modules, ${totalPages} total pages.`);
+
+    const moduleTasks = [];
+    for (let i = 0; i < modules.length; i++) {
+      const mod = modules[i];
       const { data: task } = await supabase.from('project_tasks').insert({
         project_id: projectId,
-        title: `Build ${page.name} page`,
-        description: page.description || `Implement the ${page.name} page at route ${page.route}`,
+        title: `Build ${mod.name} module (${mod.pages.length} pages)`,
+        description: `Module: ${mod.name}\nRole: ${mod.role}\nPages: ${mod.pages.map((p) => p.name).join(', ')}`,
         status: 'pending',
         priority: 2,
         order_index: i,
       }).select('id').maybeSingle();
-      if (task) tasks.push({ ...task, page });
+      if (task) moduleTasks.push({ ...task, module: mod });
     }
 
-    for (let i = 0; i < tasks.length; i++) {
-      const task = tasks[i];
+    for (let i = 0; i < moduleTasks.length; i++) {
+      const task = moduleTasks[i];
+      const mod = task.module;
       const taskStartTime = Date.now();
 
       await supabase.from('project_tasks').update({
@@ -193,25 +292,25 @@ export async function processBrief(projectId: string, briefId: string): Promise<
         started_at: new Date().toISOString(),
       }).eq('id', task.id);
 
-      await sendChatMessage(projectId, `Building ${task.page.name} page (${i + 1}/${tasks.length})...`);
+      await sendChatMessage(projectId, `Building ${mod.name} module (${mod.pages.length} pages) [${i + 1}/${moduleTasks.length}]...`);
 
       try {
         const repoFiles = await getRepoFiles(fullName);
-        const codeFiles = repoFiles
-          .filter((f) => f.type === 'file' && /\.(tsx?|jsx?|css|json)$/.test(f.path))
-          .map((f) => f.path);
-        const existingCode = await getMultipleFileContents(fullName, codeFiles.slice(0, 50));
+        const coreFilePaths = getCoreFilePaths(repoFiles);
+        const coreFiles = await getMultipleFileContents(fullName, coreFilePaths.slice(0, 30));
+        const allPaths = repoFiles.filter((f) => f.type === 'file').map((f) => f.path);
 
-        const codeResult = await generateTaskCode(
-          { title: `Build ${task.page.name} page`, description: task.page.description || '' },
+        const codeResult = await generateModuleCode(
+          mod,
           project as unknown as Project,
           client,
-          analysis.architecture,
-          existingCode
+          architecture,
+          coreFiles,
+          allPaths
         );
 
         if (codeResult.files.length > 0) {
-          await pushFiles(fullName, codeResult.files, `feat: implement ${task.page.name} page`, projectId);
+          await pushFiles(fullName, codeResult.files, `feat: implement ${mod.name} module (${mod.pages.map((p) => p.name).join(', ')})`, projectId);
         }
 
         const durationSeconds = Math.round((Date.now() - taskStartTime) / 1000);
@@ -221,7 +320,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
           duration_seconds: durationSeconds,
         }).eq('id', task.id);
 
-        const progress = 25 + Math.round(((i + 1) / tasks.length) * 50);
+        const progress = 20 + Math.round(((i + 1) / moduleTasks.length) * 45);
         await updateProject(projectId, { progress });
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
@@ -229,15 +328,55 @@ export async function processBrief(projectId: string, briefId: string): Promise<
           status: 'failed',
           error_log: errMsg,
         }).eq('id', task.id);
-        await logger.error(`Task failed: ${task.page.name}: ${errMsg}`, 'development', projectId);
+        await logger.error(`Module failed: ${mod.name}: ${errMsg}`, 'development', projectId);
       }
     }
 
+    // ============================================================
+    // PHASE 3.5: COMPLETENESS CHECK
+    // ============================================================
+
+    await updateProject(projectId, { current_phase: 'completeness_check', progress: 68 });
+    await logger.info('Phase 3.5: Completeness verification', 'development', projectId);
+    await sendChatMessage(projectId, 'Verifying project completeness...');
+
+    try {
+      const allRepoFiles = await getRepoFiles(fullName);
+      const allCodePaths = allRepoFiles
+        .filter((f) => f.type === 'file' && /\.(tsx?|jsx?|css|json)$/.test(f.path))
+        .map((f) => f.path);
+      const allCode = await getMultipleFileContents(fullName, allCodePaths.slice(0, 60));
+
+      const completeness = await verifyProjectCompleteness(architecture, allCode, projectId);
+
+      const totalIssues = completeness.missingFiles.length + completeness.brokenImports.length + completeness.missingRoutes.length;
+
+      if (totalIssues > 0) {
+        await sendChatMessage(projectId, `Found ${totalIssues} completeness issue(s). Auto-fixing...`);
+        await logger.info(`Completeness issues: ${totalIssues} (${completeness.missingFiles.length} missing, ${completeness.brokenImports.length} broken imports, ${completeness.missingRoutes.length} missing routes)`, 'development', projectId);
+
+        if (completeness.fixFiles.length > 0) {
+          await pushFiles(fullName, completeness.fixFiles, 'fix: resolve completeness issues (missing routes, broken imports)', projectId);
+        }
+      } else {
+        await sendChatMessage(projectId, 'All pages accounted for. No missing routes or broken imports.');
+      }
+    } catch (err) {
+      await logger.warn(`Completeness check failed (non-critical): ${err instanceof Error ? err.message : String(err)}`, 'development', projectId);
+    }
+
+    // ============================================================
+    // BUILD VERIFICATION (with cycle detection)
+    // ============================================================
+
     await sendChatMessage(projectId, 'Verifying build before deployment...');
-    await logger.info('Verifying build locally', 'development', projectId);
+    await logger.info('Verifying build', 'development', projectId);
+    await updateProject(projectId, { progress: 72 });
 
     let buildPassed = false;
-    for (let attempt = 1; attempt <= config.max_corrections; attempt++) {
+    const previousAttempts: BuildFixAttempt[] = [];
+
+    for (let attempt = 1; attempt <= config.max_corrections + 1; attempt++) {
       const buildResult = await verifyBuild(fullName, projectId);
       if (buildResult.success) {
         buildPassed = true;
@@ -245,25 +384,41 @@ export async function processBrief(projectId: string, briefId: string): Promise<
         break;
       }
 
+      if (attempt > config.max_corrections) break;
+
       const buildErrors = extractBuildErrors(buildResult.errors || buildResult.output);
+      const errorHash = hashErrors(buildErrors);
+
+      const isDuplicate = previousAttempts.some((a) => a.errorHash === errorHash);
+      if (isDuplicate) {
+        await sendChatMessage(projectId, `Same errors persisting after fix attempt. Escalating to more powerful model...`);
+        await logger.warn('Duplicate error hash detected, escalating', 'development', projectId);
+      }
+
+      previousAttempts.push({
+        errorHash,
+        attempt,
+        errorsText: buildErrors.slice(0, 10).join('\n'),
+      });
+
       await sendChatMessage(projectId, `Build failed (attempt ${attempt}/${config.max_corrections}): ${buildErrors.length} error(s). Auto-fixing...`);
-      await logger.warn(`Build attempt ${attempt} failed: ${buildErrors.slice(0, 5).join('; ')}`, 'development', projectId);
 
       const allRepoFiles = await getRepoFiles(fullName);
       const allCodePaths = allRepoFiles
         .filter((f) => f.type === 'file' && /\.(tsx?|jsx?|css|json)$/.test(f.path))
         .map((f) => f.path);
-      const allCode = await getMultipleFileContents(fullName, allCodePaths.slice(0, 50));
+      const allCode = await getMultipleFileContents(fullName, allCodePaths.slice(0, 60));
 
-      const fixResult = await generateTaskCode(
-        {
-          title: 'Fix build errors',
-          description: `Build attempt ${attempt} failed. Fix these errors:\n${buildErrors.join('\n')}\n\nFull output:\n${(buildResult.errors || buildResult.output).slice(0, 3000)}`,
-        },
+      const fixResult = await generateBuildFix(
+        buildErrors,
+        (buildResult.errors || buildResult.output).slice(0, 5000),
         project as unknown as Project,
         client,
-        analysis.architecture,
-        allCode
+        architecture as unknown as Record<string, unknown>,
+        allCode,
+        previousAttempts,
+        attempt,
+        config.max_corrections
       );
 
       if (fixResult.files.length > 0) {
@@ -276,22 +431,25 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
     if (!buildPassed) {
       await supabase.from('briefs').update({ status: 'failed' }).eq('id', briefId);
-      await updateProject(projectId, { agent_status: 'error' });
-      await sendChatMessage(projectId, `Build failed after ${config.max_corrections} attempts. Manual intervention needed.`);
+      await updateProject(projectId, { agent_status: 'idle', last_error_message: 'Build failed after max correction attempts' });
+      await sendChatMessage(projectId, `Build failed after ${config.max_corrections} attempts. The repo is available at ${repoUrl} for manual fixes.`);
       await notifyError(project.name, 'Build failed after max correction attempts', projectId);
       return;
     }
 
     if (!config.auto_deploy) {
       await supabase.from('briefs').update({ status: 'completed' }).eq('id', briefId);
-      await updateProject(projectId, { status: 'review', progress: 100, agent_status: 'idle', current_phase: 'complete' });
+      await updateProject(projectId, { status: 'review', progress: 100, agent_status: 'idle', current_phase: 'deployment' });
       await sendChatMessage(projectId, `Build verified successfully. Auto-deploy is disabled. Repo: ${repoUrl}\nReady for manual deployment.`);
       await notifyBuildComplete(project.name, repoUrl, projectId);
       await logger.success('Brief processing complete (deploy skipped per config)', 'development', projectId);
       return;
     }
 
-    // Phase 4: Deploy
+    // ============================================================
+    // PHASE 4: DEPLOYMENT
+    // ============================================================
+
     await updateProject(projectId, { current_phase: 'deployment', progress: 80 });
     await logger.info('Phase 4: Deploying to Vercel', 'deployment', projectId);
     await sendChatMessage(projectId, 'Deploying to Vercel...');
@@ -299,12 +457,20 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     const vercelProjectId = await createVercelProject(repoName, fullName, projectId);
     await updateProject(projectId, { vercel_project_id: vercelProjectId });
 
+    if (architecture.requiresBackend && (project as Record<string, unknown>).supabase_url) {
+      await setEnvironmentVariables(vercelProjectId, [
+        { key: 'VITE_SUPABASE_URL', value: String((project as Record<string, unknown>).supabase_url) },
+        { key: 'VITE_SUPABASE_ANON_KEY', value: String((project as Record<string, unknown>).supabase_anon_key || '') },
+      ], projectId);
+      await logger.info('Set Supabase env vars on Vercel project', 'deployment', projectId);
+    }
+
     const deployment = await triggerDeployment(repoName, projectId);
     const result = await waitForDeployment(deployment.deploymentId, projectId);
 
     if (result.status !== 'ready') {
       await supabase.from('briefs').update({ status: 'failed' }).eq('id', briefId);
-      await updateProject(projectId, { agent_status: 'error' });
+      await updateProject(projectId, { agent_status: 'idle', last_error_message: result.buildLogs || 'Deployment failed' });
       await sendChatMessage(projectId, `Deployment failed: ${result.buildLogs || 'Unknown error'}. Check the logs.`);
       await notifyError(project.name, result.buildLogs || 'Deployment failed', projectId);
       return;
@@ -314,6 +480,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     await sendChatMessage(projectId, `Deployed successfully: ${result.url}`);
     await notifyDeploySuccess(project.name, result.url, projectId);
 
+    // Custom domain setup
     const demoSubdomain = clientSlug;
     const demoDomain = `${demoSubdomain}.obzide.com`;
     const cnameSet = await setCnameRecord('obzide.com', demoSubdomain, 'cname.vercel-dns.com', projectId);
@@ -343,9 +510,15 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       }
     }
 
+    // ============================================================
+    // PHASE 5: QA
+    // ============================================================
+
+    const pages = architecture.pages || [];
+
     if (config.auto_qa && result.url) {
       await updateProject(projectId, { current_phase: 'qa' });
-      await logger.info('Phase 5: Multi-viewport QA with Vision analysis', 'qa', projectId);
+      await logger.info('Phase 5: Multi-viewport QA', 'qa', projectId);
       await sendChatMessage(projectId, 'Running multi-viewport QA (desktop, tablet, mobile)...');
 
       let qaVersion = 1;
@@ -373,17 +546,6 @@ export async function processBrief(projectId: string, briefId: string): Promise<
               (v) => v.issues.map((issue) => `[${v.viewport}] ${issue}`)
             );
             failedPages.push({ pageName: ss.pageName, issues: allIssues, score: qaResult.overallScore });
-            await logger.warn(
-              `QA failed for ${ss.pageName} (score: ${qaResult.overallScore}/100): ${allIssues.slice(0, 3).join('; ')}`,
-              'qa',
-              projectId
-            );
-          } else {
-            await logger.info(
-              `QA passed for ${ss.pageName} (score: ${qaResult.overallScore}/100)`,
-              'qa',
-              projectId
-            );
           }
         }
 
@@ -402,25 +564,26 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
         await sendChatMessage(projectId, `${failedPages.length} page(s) failed QA. Auto-correcting (round ${qaAttempt + 1})...`);
 
-        const allRepoFiles = await getRepoFiles(fullName);
-        const allCodePaths = allRepoFiles
+        const qaRepoFiles = await getRepoFiles(fullName);
+        const qaCodePaths = qaRepoFiles
           .filter((f) => f.type === 'file' && /\.(tsx?|jsx?|css|json)$/.test(f.path))
           .map((f) => f.path);
-        const allCode = await getMultipleFileContents(fullName, allCodePaths.slice(0, 50));
+        const qaCode = await getMultipleFileContents(fullName, qaCodePaths.slice(0, 60));
 
         const issueDescription = failedPages
           .map((fp) => `${fp.pageName} (score: ${fp.score}/100):\n${fp.issues.map((i) => `  - ${i}`).join('\n')}`)
           .join('\n\n');
 
-        const fixResult = await generateTaskCode(
-          {
-            title: 'Fix visual QA issues across all viewports',
-            description: `The following pages have visual issues detected by multi-viewport QA:\n\n${issueDescription}\n\nFix these visual problems for desktop, tablet, AND mobile while keeping existing functionality.`,
-          },
+        const fixResult = await generateBuildFix(
+          failedPages.flatMap((fp) => fp.issues),
+          issueDescription,
           project as unknown as Project,
           client,
-          analysis.architecture,
-          allCode
+          architecture as unknown as Record<string, unknown>,
+          qaCode,
+          [],
+          qaAttempt + 1,
+          config.max_corrections
         );
 
         if (fixResult.files.length > 0) {
@@ -476,14 +639,14 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     try {
       await supabase.from('briefs').update({ status: 'failed' }).eq('id', briefId);
       await logger.error(`Brief processing failed: ${errMsg}`, 'development', projectId);
-      await updateProject(projectId, { agent_status: 'error' });
+      await updateProject(projectId, { agent_status: 'idle', last_error_message: errMsg });
       await sendChatMessage(projectId, `An error occurred: ${errMsg}`);
       const { data: proj } = await supabase.from('projects').select('name').eq('id', projectId).maybeSingle();
       if (proj) await notifyError(proj.name, errMsg, projectId);
     } catch (innerErr) {
       console.error('Error in brief-processing catch block:', innerErr);
-      try { await supabase.from('briefs').update({ status: 'failed' }).eq('id', briefId); } catch {}
-      try { await supabase.from('projects').update({ agent_status: 'error' }).eq('id', projectId); } catch {}
+      try { await supabase.from('briefs').update({ status: 'failed' }).eq('id', briefId); } catch { /* ignore */ }
+      try { await supabase.from('projects').update({ agent_status: 'idle', last_error_message: errMsg }).eq('id', projectId); } catch { /* ignore */ }
     }
   }
 }

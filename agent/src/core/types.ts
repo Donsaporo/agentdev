@@ -27,6 +27,11 @@ export interface Project {
   technologies: string[];
   agent_status: AgentStatus;
   current_phase: ProjectPhase;
+  has_backend: boolean;
+  supabase_project_ref: string | null;
+  supabase_url: string | null;
+  supabase_anon_key: string | null;
+  last_error_message: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;
@@ -36,7 +41,7 @@ export interface Project {
 export type ProjectType = 'website' | 'ecommerce' | 'mobile_app' | 'crm' | 'custom';
 export type ProjectStatus = 'draft' | 'planning' | 'in_progress' | 'qa' | 'review' | 'approved' | 'deployed';
 export type AgentStatus = 'idle' | 'working' | 'waiting' | 'error';
-export type ProjectPhase = 'analysis' | 'scaffolding' | 'development' | 'qa' | 'deployment';
+export type ProjectPhase = 'analysis' | 'scaffolding' | 'backend_setup' | 'development' | 'completeness_check' | 'qa' | 'deployment';
 
 export interface Brief {
   id: string;
@@ -152,6 +157,95 @@ export interface AgentConfig {
   max_corrections: number;
   auto_qa: boolean;
   notification_email: string;
+  supabase_org_id: string;
+  supabase_db_region: string;
+}
+
+export interface ArchitectureDataField {
+  name: string;
+  type: 'uuid' | 'text' | 'integer' | 'numeric' | 'boolean' | 'timestamptz' | 'jsonb' | 'text[]';
+  pk?: boolean;
+  required?: boolean;
+  unique?: boolean;
+  default?: string;
+  reference?: { table: string; column: string };
+}
+
+export interface ArchitectureDataModel {
+  name: string;
+  fields: ArchitectureDataField[];
+  rls: {
+    select: string;
+    insert: string;
+    update: string;
+    delete: string;
+  };
+}
+
+export interface ArchitectureUserRole {
+  name: string;
+  permissions: string[];
+  description: string;
+}
+
+export interface ArchitectureFlow {
+  name: string;
+  role: string;
+  steps: string[];
+}
+
+export interface ArchitectureFeature {
+  name: string;
+  pages: string[];
+  role: string;
+  description: string;
+}
+
+export interface ArchitecturePage {
+  name: string;
+  route: string;
+  description: string;
+  role?: string;
+  module?: string;
+  requiresAuth?: boolean;
+}
+
+export interface ArchitectureDesignSystem {
+  primaryColor: string;
+  secondaryColor: string;
+  accentColor: string;
+  fonts: { heading: string; body: string };
+  style: string;
+}
+
+export interface FullArchitecture {
+  framework: string;
+  styling: string;
+  projectType: string;
+  requiresBackend: boolean;
+  userRoles: ArchitectureUserRole[];
+  dataModels: ArchitectureDataModel[];
+  features: ArchitectureFeature[];
+  pages: ArchitecturePage[];
+  flows: ArchitectureFlow[];
+  components: { name: string; description: string }[];
+  integrations: string[];
+  auth: { providers: string[]; requiresVerification: boolean };
+  storage: { buckets: string[] };
+  designSystem: ArchitectureDesignSystem;
+}
+
+export interface FeatureModule {
+  name: string;
+  pages: ArchitecturePage[];
+  role: string;
+  description: string;
+}
+
+export interface BuildFixAttempt {
+  errorHash: string;
+  attempt: number;
+  errorsText: string;
 }
 
 export interface QueueEvent {

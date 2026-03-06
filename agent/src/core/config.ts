@@ -7,6 +7,8 @@ const DEFAULTS: AgentConfig = {
   max_corrections: 3,
   auto_qa: true,
   notification_email: 'team@obzide.com',
+  supabase_org_id: '',
+  supabase_db_region: 'us-east-1',
 };
 
 let cached: AgentConfig | null = null;

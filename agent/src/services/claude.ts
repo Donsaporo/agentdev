@@ -3,7 +3,11 @@ import { logger } from '../core/logger.js';
 import { getConfig } from '../core/config.js';
 import { getSecretWithFallback } from '../core/secrets.js';
 import { getSupabase } from '../core/supabase.js';
-import type { GeneratedFile, ClaudeCodeResponse, Brief, Client, Project } from '../core/types.js';
+import type {
+  GeneratedFile, ClaudeCodeResponse, Brief, Client, Project,
+  FullArchitecture, ArchitecturePage, FeatureModule, BuildFixAttempt,
+} from '../core/types.js';
+import { getProjectTemplate, findMissingPages, findMissingModels } from './project-templates.js';
 
 const MODELS = {
   opus: 'claude-opus-4-20250514',
@@ -25,7 +29,7 @@ async function getClient(): Promise<Anthropic> {
 }
 
 function selectModel(task: string): string {
-  const complexTasks = ['brief_analysis', 'architecture', 'qa_fix_complex', 'complex_page'];
+  const complexTasks = ['brief_analysis', 'architecture', 'qa_fix_complex', 'complex_page', 'completeness_check', 'backend_schema'];
   const simpleTasks = ['screenshot_check', 'file_classify', 'status_check'];
 
   if (complexTasks.includes(task)) return MODELS.opus;
@@ -79,6 +83,10 @@ async function callWithRetry(
       return await fn();
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
+
+      const is400 = lastError.message.includes('400') || lastError.message.includes('invalid_request');
+      if (is400) throw lastError;
+
       const isRetryable = lastError.message.includes('overloaded') ||
         lastError.message.includes('rate_limit') ||
         lastError.message.includes('timeout') ||
@@ -209,39 +217,68 @@ export async function analyzeImage(
   }
 }
 
+// ============================================================
+// PHASE 1: BRIEF ANALYSIS (completely rewritten)
+// ============================================================
+
 export async function analyzeBrief(
   brief: Brief,
   client: Client,
   project: Project,
   attachmentContents?: string[]
-): Promise<{ requirements: string[]; architecture: Record<string, unknown>; questions: { question: string; category: string }[] }> {
+): Promise<{ requirements: string[]; architecture: FullArchitecture; questions: { question: string; category: string }[] }> {
   const ai = await getClient();
   const model = selectModel('brief_analysis');
 
-  const systemPrompt = `You are a senior web development architect at Obzide Tech, a premium web agency based in Panama City.
-Analyze client briefs to produce structured requirements, a detailed architecture plan, and clarifying questions ONLY when genuinely ambiguous.
+  const systemPrompt = `You are a senior full-stack architect at Obzide Tech, a premium web agency based in Panama City.
+You decompose client briefs into comprehensive, buildable architecture plans that cover EVERYTHING needed for a production-ready application.
 
-THINK STEP BY STEP:
-1. Identify the type of project (website, e-commerce, CRM, landing page, custom app)
-2. Determine all pages needed, including standard ones (404, privacy, terms, contact)
-3. For each page, plan the exact sections, content blocks, and interactions
-4. Identify required integrations (payment gateways, email, analytics, etc.)
-5. Plan the design system (colors, fonts, spacing, animation style)
-6. When a reference site is mentioned, infer standard pages and features for that industry
+DECOMPOSITION FRAMEWORK (follow this EXACTLY):
 
-ANALYSIS RULES:
-- Extract every detail from the brief and attached documents
-- The architecture must be comprehensive enough to build the entire site from it
-- Default to modern best practices for unspecified decisions
-- For Panama-based projects: consider local payment gateways (Banco General, CyberSource/Banistmo, Yappy/CLAVE)
+STEP 1 - CLASSIFY THE PROJECT:
+Determine the project type: website, landing, ecommerce, crm, lms, dashboard, saas, blog, portfolio, marketplace, or custom.
+If the brief mentions "demo" explicitly, mark it as a demo project.
 
-TECH STACK (always unless explicitly told otherwise):
+STEP 2 - IDENTIFY USER ROLES:
+List ALL distinct user roles (e.g., admin, customer, instructor, viewer). For each role, define what they can do.
+
+STEP 3 - DESIGN DATA MODELS WITH FULL FIELDS:
+For each entity, provide complete field definitions with types, constraints, and relationships.
+Field types must be one of: uuid, text, integer, numeric, boolean, timestamptz, jsonb, text[].
+Every table must have: id (uuid, pk), created_at (timestamptz).
+User-owned tables must have: user_id (uuid, FK to auth.users).
+Include all foreign keys as explicit references.
+
+STEP 4 - PLAN USER FLOWS:
+For each role, map the complete journey: registration -> first use -> core workflows -> edge cases.
+
+STEP 5 - LIST ALL PAGES:
+Generate a comprehensive page list. For apps with backends, this typically means 20-40+ pages.
+Every CRUD entity needs: List, Detail, Create, Edit pages (for the roles that manage it).
+Include: Auth pages (Login, Register), User pages (Profile, Settings), Admin pages, Support pages (404, Terms, Privacy).
+Assign each page to a module (e.g., "auth", "admin-courses", "student-dashboard") and a role.
+
+STEP 6 - GROUP INTO FEATURE MODULES:
+Group related pages into modules. Each module is a cohesive set of 2-5 pages that share state and data.
+
+STEP 7 - DETERMINE BACKEND NEEDS:
+If the project has user roles, data models, or any dynamic data beyond static content, set requiresBackend: true.
+Static websites and landing pages set requiresBackend: false.
+
+STEP 8 - PLAN INTEGRATIONS:
+List all third-party services needed (payments, email, storage, analytics, etc.).
+
+STEP 9 - DESIGN SYSTEM:
+Plan colors, fonts, spacing, and visual style. For Panama-based projects, consider local payment gateways (Yappy, Banco General, CyberSource/Banistmo).
+
+TECH STACK:
 - React + Vite + TypeScript + Tailwind CSS
 - react-router-dom for routing
 - lucide-react for icons
+- @supabase/supabase-js for backend/auth/database (when requiresBackend is true)
 - Responsive design (mobile-first)
-- Smooth animations and transitions for premium feel
-- @supabase/supabase-js when backend/auth/database needed
+- NEVER use React Native or Expo. For mobile requests, build a responsive PWA.
+- NEVER use purple/indigo unless brand colors specify them.
 
 QUESTION RULES:
 - ONLY ask if genuine ambiguity would BLOCK development
@@ -272,22 +309,57 @@ FULL BRIEF:
 ${brief.original_content}
 ${attachmentSection}
 
-Respond with this exact JSON structure:
+Respond with this exact JSON structure (fill ALL fields completely):
 {
-  "requirements": ["detailed requirement 1", ...],
+  "requirements": ["detailed requirement 1", "..."],
   "architecture": {
     "framework": "vite-react",
     "styling": "tailwindcss",
-    "pages": [{"name": "Home", "route": "/", "description": "detailed section-by-section description of content, layout, and interactions"}],
-    "components": [{"name": "Navbar", "description": "contents and behavior"}],
-    "dataModels": [{"name": "Product", "fields": ["id", "name", "price", "image"]}],
-    "integrations": ["stripe", "emailjs"],
+    "projectType": "lms|ecommerce|crm|website|landing|dashboard|saas|blog|portfolio|marketplace|custom",
+    "requiresBackend": true,
+    "userRoles": [
+      {"name": "student", "permissions": ["view_courses", "enroll", "track_progress"], "description": "End user learning on the platform"},
+      {"name": "admin", "permissions": ["manage_courses", "manage_users", "view_analytics"], "description": "Platform administrator"}
+    ],
+    "dataModels": [
+      {
+        "name": "courses",
+        "fields": [
+          {"name": "id", "type": "uuid", "pk": true},
+          {"name": "title", "type": "text", "required": true},
+          {"name": "description", "type": "text"},
+          {"name": "instructor_id", "type": "uuid", "reference": {"table": "auth.users", "column": "id"}},
+          {"name": "price", "type": "numeric", "default": "0"},
+          {"name": "is_published", "type": "boolean", "default": "false"},
+          {"name": "created_at", "type": "timestamptz", "default": "now()"}
+        ],
+        "rls": {"select": "authenticated", "insert": "admin", "update": "admin", "delete": "admin"}
+      }
+    ],
+    "features": [
+      {"name": "Course Management", "pages": ["AdminCourseList", "AdminCourseCreate", "AdminCourseEdit"], "role": "admin", "description": "Full CRUD for courses"}
+    ],
+    "pages": [
+      {"name": "Home", "route": "/", "description": "Landing page with hero, features, testimonials, CTA", "role": "public", "module": "marketing", "requiresAuth": false},
+      {"name": "Login", "route": "/login", "description": "Email/password login form with validation", "role": "public", "module": "auth", "requiresAuth": false},
+      {"name": "StudentDashboard", "route": "/dashboard", "description": "Overview of enrolled courses, progress, recommendations", "role": "student", "module": "student-dashboard", "requiresAuth": true}
+    ],
+    "flows": [
+      {"name": "Student Enrollment", "role": "student", "steps": ["Browse courses", "View course detail", "Click enroll", "Complete payment", "Access course content"]}
+    ],
+    "components": [
+      {"name": "Navbar", "description": "Sticky responsive nav with auth state, role-based menu items"},
+      {"name": "Footer", "description": "Professional footer with links, social, copyright"}
+    ],
+    "integrations": ["supabase-auth", "supabase-storage"],
+    "auth": {"providers": ["email"], "requiresVerification": false},
+    "storage": {"buckets": ["course-images", "avatars"]},
     "designSystem": {
       "primaryColor": "#hex",
       "secondaryColor": "#hex",
       "accentColor": "#hex",
-      "fonts": {"heading": "...", "body": "..."},
-      "style": "modern/minimal/bold/corporate/playful"
+      "fonts": {"heading": "Inter", "body": "Inter"},
+      "style": "modern|minimal|bold|corporate|playful"
     }
   },
   "questions": []
@@ -296,7 +368,7 @@ Respond with this exact JSON structure:
   const response = await callWithRetry(
     () => ai.messages.create({
       model,
-      max_tokens: 16384,
+      max_tokens: 32000,
       system: systemPrompt,
       messages: [{ role: 'user', content: userPrompt }],
     }),
@@ -312,26 +384,160 @@ Respond with this exact JSON structure:
     outputTokens: response.usage.output_tokens,
   });
 
-  const fallback = { requirements: [], architecture: {}, questions: [] };
-  return safeParseJSON(text, fallback);
+  const fallback = { requirements: [], architecture: {} as FullArchitecture, questions: [] };
+  const result = safeParseJSON(text, fallback);
+
+  if (result.architecture && result.architecture.pages) {
+    const expanded = await expandArchitectureCompleteness(result.architecture, project, client);
+    result.architecture = expanded;
+  }
+
+  return result;
 }
+
+// ============================================================
+// COMPLETENESS EXPANSION PASS
+// ============================================================
+
+async function expandArchitectureCompleteness(
+  architecture: FullArchitecture,
+  project: Project,
+  client: Client
+): Promise<FullArchitecture> {
+  const template = getProjectTemplate(architecture.projectType || project.type);
+  if (!template) return architecture;
+
+  const existingPageNames = (architecture.pages || []).map((p) => p.name);
+  const missingPages = findMissingPages(existingPageNames, template);
+
+  const existingModelNames = (architecture.dataModels || []).map((m) => m.name);
+  const missingModels = findMissingModels(existingModelNames, template);
+
+  if (missingPages.length === 0 && missingModels.length === 0) return architecture;
+
+  await logger.info(
+    `Completeness check: ${missingPages.length} missing pages, ${missingModels.length} missing models. Expanding...`,
+    'ai',
+    project.id
+  );
+
+  const ai = await getClient();
+  const model = MODELS.sonnet;
+
+  const expansionPrompt = `You are expanding an existing architecture to fill in missing pages and data models.
+
+EXISTING ARCHITECTURE:
+${JSON.stringify(architecture, null, 2)}
+
+MISSING PAGES (must be added):
+${missingPages.map((p) => `- ${p}`).join('\n')}
+
+MISSING DATA MODELS (must be added):
+${missingModels.map((m) => `- ${m}`).join('\n')}
+
+CLIENT: ${client.name} (${client.industry})
+PROJECT TYPE: ${architecture.projectType}
+
+For each missing page, create a complete page entry with: name, route, description (detailed section-by-section), role, module, requiresAuth.
+For each missing data model, create a complete model with all fields, types, and RLS rules.
+
+IMPORTANT: Only output the NEW items to add. Do not repeat existing items.
+Output valid JSON only:
+{
+  "additionalPages": [...],
+  "additionalDataModels": [...],
+  "additionalFeatures": [...],
+  "additionalComponents": [...]
+}`;
+
+  try {
+    const response = await callWithRetry(
+      () => ai.messages.create({
+        model,
+        max_tokens: 16384,
+        messages: [{ role: 'user', content: expansionPrompt }],
+      }),
+      2,
+      'architecture_expansion'
+    );
+
+    const text = extractText(response);
+    await trackUsage(model, response.usage.input_tokens, response.usage.output_tokens, 'architecture_expansion', project.id);
+
+    const additions = safeParseJSON<{
+      additionalPages?: ArchitecturePage[];
+      additionalDataModels?: FullArchitecture['dataModels'];
+      additionalFeatures?: FullArchitecture['features'];
+      additionalComponents?: FullArchitecture['components'];
+    }>(text, {});
+
+    if (additions.additionalPages?.length) {
+      architecture.pages = [...(architecture.pages || []), ...additions.additionalPages];
+    }
+    if (additions.additionalDataModels?.length) {
+      architecture.dataModels = [...(architecture.dataModels || []), ...additions.additionalDataModels];
+    }
+    if (additions.additionalFeatures?.length) {
+      architecture.features = [...(architecture.features || []), ...additions.additionalFeatures];
+    }
+    if (additions.additionalComponents?.length) {
+      architecture.components = [...(architecture.components || []), ...additions.additionalComponents];
+    }
+
+    await logger.info(
+      `Architecture expanded: +${additions.additionalPages?.length || 0} pages, +${additions.additionalDataModels?.length || 0} models`,
+      'ai',
+      project.id
+    );
+  } catch (err) {
+    await logger.warn(`Architecture expansion failed, continuing with original: ${err instanceof Error ? err.message : String(err)}`, 'ai', project.id);
+  }
+
+  return architecture;
+}
+
+// ============================================================
+// PHASE 2: SCAFFOLD GENERATION (improved)
+// ============================================================
 
 export async function generateProjectScaffold(
   project: Project,
   client: Client,
-  architecture: Record<string, unknown>
+  architecture: FullArchitecture
 ): Promise<ClaudeCodeResponse> {
   const ai = await getClient();
   const model = MODELS.sonnet;
 
-  const systemPrompt = `You are a senior frontend developer at Obzide Tech building production websites.
-Generate a complete project scaffold with all configuration, shared layout, and page stubs.
+  const hasBackend = architecture.requiresBackend;
+
+  const backendFiles = hasBackend ? `
+- src/lib/supabase.ts (Supabase client singleton using VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY env vars)
+- src/lib/types.ts (TypeScript interfaces for ALL data models: ${(architecture.dataModels || []).map((m) => m.name).join(', ')})
+- src/lib/api.ts (CRUD helper functions for each data model using Supabase client - getAll, getById, create, update, delete)
+- src/contexts/AuthContext.tsx (Supabase Auth context with signUp, signIn, signOut, session management, role from user metadata)
+- src/hooks/useAuth.ts (hook wrapping AuthContext for easy consumption)
+- .env.example (VITE_SUPABASE_URL=your-project-url, VITE_SUPABASE_ANON_KEY=your-anon-key)` : `
+- src/lib/mock-data.ts (realistic mock data for all entities, shared by all pages - NOT lorem ipsum)
+- src/contexts/AppContext.tsx (local state management for the demo with all mock data)`;
+
+  const authInstructions = hasBackend ? `
+AUTH INTEGRATION:
+- Wrap App in AuthProvider from AuthContext
+- Login page must use supabase.auth.signInWithPassword()
+- Register page must use supabase.auth.signUp()
+- Protected routes check auth state and redirect to /login if not authenticated
+- Navbar shows user info when logged in, Login/Register when not
+- Use role from user_metadata to show/hide admin-only navigation` : '';
+
+  const systemPrompt = `You are a senior full-stack developer at Obzide Tech building production websites.
+Generate a complete project scaffold with all configuration, shared components, and infrastructure.
 
 THINK BEFORE CODING:
-1. Review the architecture plan and identify ALL files needed
+1. Review the architecture plan - identify ALL files needed
 2. Plan the component hierarchy and shared styles
 3. Ensure brand colors and fonts are properly configured
 4. Plan responsive breakpoints and animation approach
+5. Ensure package.json has CORRECT dependency versions
 
 FILE OUTPUT FORMAT:
 - Every file MUST start with: // FILE: path/to/file.ext
@@ -339,19 +545,32 @@ FILE OUTPUT FORMAT:
 - Use the exact path relative to project root
 
 REQUIRED FILES:
-- package.json (react, react-dom, react-router-dom, lucide-react, tailwindcss, etc.)
+- package.json (MUST include: react, react-dom, react-router-dom, lucide-react, tailwindcss, postcss, autoprefixer, @vitejs/plugin-react, vite, typescript${hasBackend ? ', @supabase/supabase-js' : ''})
+- package.json MUST have scripts: {"dev": "vite", "build": "vite build", "preview": "vite preview"}
 - vite.config.ts
 - tsconfig.json, tsconfig.app.json, tsconfig.node.json
 - tailwind.config.js (with brand colors as custom theme colors)
 - postcss.config.js
 - index.html (with Google Fonts link if custom fonts specified)
-- src/main.tsx (with BrowserRouter)
-- src/App.tsx (with routes for ALL pages)
+- src/main.tsx (with BrowserRouter, ${hasBackend ? 'AuthProvider wrapping everything' : 'AppProvider if using context'})
+- src/App.tsx (with routes for ALL ${(architecture.pages || []).length} pages from the architecture)
 - src/index.css (Tailwind directives + custom fonts + base styles + scroll animations)
 - src/components/Layout.tsx (shared layout with nav + footer, responsive hamburger)
-- src/components/Navbar.tsx (sticky, responsive, brand-colored)
+- src/components/Navbar.tsx (sticky, responsive, brand-colored${hasBackend ? ', auth-aware with role-based navigation' : ''})
 - src/components/Footer.tsx (professional with links, social, copyright)
-- One file per page in src/pages/ (realistic stub content, not lorem ipsum)
+${backendFiles}
+- One STUB file per page in src/pages/ (each page file should export a functional component with realistic placeholder content indicating what will be built)
+
+CRITICAL RULES:
+- NEVER use React Native, Expo, or any mobile-native libraries
+- NEVER include react-native or expo in package.json
+- package.json dependencies must be REAL npm packages with valid versions
+- Use "react": "^18.3.1", "react-dom": "^18.3.1", "react-router-dom": "^7.1.0"
+- Use "lucide-react": "^0.344.0", "tailwindcss": "^3.4.1"${hasBackend ? ', "@supabase/supabase-js": "^2.57.4"' : ''}
+- Use "@vitejs/plugin-react": "^4.3.1", "vite": "^5.4.2", "typescript": "^5.5.3"
+- Every page component must be exported as default
+- App.tsx must import ALL page components and define routes for them
+${authInstructions}
 
 DESIGN RULES:
 - Brand colors: ${JSON.stringify(client.brand_colors)} - use as primary/accent in Tailwind config
@@ -367,7 +586,7 @@ DESIGN RULES:
   const response = await callWithRetry(
     () => ai.messages.create({
       model,
-      max_tokens: 16384,
+      max_tokens: 32000,
       system: systemPrompt,
       messages: [{ role: 'user', content: `Generate the complete scaffold for:\n\n${JSON.stringify(architecture, null, 2)}` }],
     }),
@@ -385,6 +604,381 @@ DESIGN RULES:
     tokensUsed: { input: response.usage.input_tokens, output: response.usage.output_tokens },
   };
 }
+
+// ============================================================
+// BACKEND: DATABASE SCHEMA GENERATION
+// ============================================================
+
+export async function generateDatabaseSchema(
+  architecture: FullArchitecture,
+  projectId: string
+): Promise<string> {
+  const ai = await getClient();
+  const model = selectModel('backend_schema');
+
+  const systemPrompt = `You are a senior database architect generating PostgreSQL migrations for a Supabase project.
+
+RULES:
+- Generate CREATE TABLE statements for ALL data models
+- Use uuid PRIMARY KEY DEFAULT gen_random_uuid() for id columns
+- Use timestamptz DEFAULT now() for created_at columns
+- Add updated_at timestamptz DEFAULT now() where appropriate
+- Add proper FOREIGN KEY constraints
+- Add indexes on frequently queried columns (foreign keys, status fields)
+- Enable RLS on EVERY table: ALTER TABLE tablename ENABLE ROW LEVEL SECURITY;
+- Create RLS policies based on the rls rules provided for each model
+- Use auth.uid() for user ownership checks
+- Add a trigger function for auto-updating updated_at columns
+- Generate realistic seed data (10-20 rows per table) unless the brief says "demo" or seed data is inappropriate
+- DO NOT wrap in transaction blocks (no BEGIN/COMMIT)
+- Use IF NOT EXISTS where possible
+
+Output ONLY raw SQL, no markdown wrapping, no explanations.`;
+
+  const userPrompt = `Generate the complete PostgreSQL schema for these data models:
+
+USER ROLES:
+${JSON.stringify(architecture.userRoles, null, 2)}
+
+DATA MODELS:
+${JSON.stringify(architecture.dataModels, null, 2)}
+
+STORAGE BUCKETS NEEDED:
+${JSON.stringify(architecture.storage?.buckets || [], null, 2)}
+
+AUTH SETUP:
+${JSON.stringify(architecture.auth, null, 2)}
+
+Generate:
+1. All CREATE TABLE statements with proper types, constraints, and defaults
+2. All foreign key relationships
+3. All indexes
+4. RLS enabled on every table
+5. RLS policies matching the defined roles
+6. updated_at trigger function
+7. Storage bucket creation if needed`;
+
+  const response = await callWithRetry(
+    () => ai.messages.create({
+      model,
+      max_tokens: 16384,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userPrompt }],
+    }),
+    3,
+    'backend_schema'
+  );
+
+  const text = extractText(response);
+  await trackUsage(model, response.usage.input_tokens, response.usage.output_tokens, 'backend_schema', projectId);
+
+  let sql = text.trim();
+  sql = sql.replace(/^```sql\n?/g, '').replace(/^```\n?/g, '').replace(/\n?```$/g, '').trim();
+
+  return sql;
+}
+
+// ============================================================
+// PHASE 3: MODULE-BASED PAGE GENERATION (improved)
+// ============================================================
+
+export function groupPagesIntoModules(architecture: FullArchitecture): FeatureModule[] {
+  const pages = architecture.pages || [];
+  const moduleMap = new Map<string, ArchitecturePage[]>();
+
+  for (const page of pages) {
+    const moduleName = page.module || inferModule(page);
+    const existing = moduleMap.get(moduleName) || [];
+    existing.push(page);
+    moduleMap.set(moduleName, existing);
+  }
+
+  const modules: FeatureModule[] = [];
+  for (const [name, modulePages] of moduleMap) {
+    const role = modulePages[0]?.role || 'public';
+    modules.push({
+      name,
+      pages: modulePages,
+      role,
+      description: `${name} module (${modulePages.length} pages) for ${role} role`,
+    });
+  }
+
+  return modules;
+}
+
+function inferModule(page: ArchitecturePage): string {
+  const name = page.name.toLowerCase();
+  if (name.includes('login') || name.includes('register') || name.includes('forgot') || name.includes('verify')) return 'auth';
+  if (name.includes('admin')) return 'admin';
+  if (name.includes('dashboard')) return 'dashboard';
+  if (name.includes('setting') || name.includes('profile')) return 'settings';
+  if (name.includes('404') || name.includes('terms') || name.includes('privacy')) return 'support';
+  return 'main';
+}
+
+export async function generateModuleCode(
+  module: FeatureModule,
+  project: Project,
+  client: Client,
+  architecture: FullArchitecture,
+  coreFiles: { path: string; content: string }[],
+  allFilePaths: string[]
+): Promise<ClaudeCodeResponse> {
+  const ai = await getClient();
+  const model = MODELS.sonnet;
+
+  const hasBackend = architecture.requiresBackend;
+
+  const coreContext = coreFiles
+    .map((f) => `--- ${f.path} ---\n${f.content}`)
+    .join('\n\n');
+
+  const pageList = module.pages
+    .map((p) => `- ${p.name} (${p.route}): ${p.description}`)
+    .join('\n');
+
+  const relevantModels = hasBackend
+    ? (architecture.dataModels || []).filter((m) => {
+        const modulePages = module.pages.map((p) => p.name.toLowerCase()).join(' ');
+        return modulePages.includes(m.name.toLowerCase().replace(/_/g, ''));
+      })
+    : [];
+
+  const systemPrompt = `You are a senior full-stack developer at Obzide Tech implementing a feature module.
+You are building ALL pages in this module together to ensure consistency.
+
+MODULE: ${module.name} (${module.pages.length} pages)
+ROLE: ${module.role}
+
+THINK BEFORE CODING:
+1. Study the existing components to match patterns exactly
+2. Plan shared state/hooks within this module
+3. Plan consistent styling across all pages in this module
+4. Ensure forms have real validation and call real API functions
+5. Ensure tables have search, filter, and pagination
+
+FILE OUTPUT FORMAT:
+- Every file MUST start with: // FILE: path/to/file.ext
+- Wrap each file in a code block
+- Output ONLY files that need to be created or modified
+
+IMPLEMENTATION RULES:
+- Follow existing code patterns, component structure, and styling conventions
+- Use the shared Layout, Navbar, Footer components already in the project
+- Use brand colors defined in tailwind.config.js as Tailwind classes
+- Every page must be fully responsive (mobile, tablet, desktop)
+- Include meaningful, realistic content (NOT lorem ipsum)
+- Add hover states, focus states, transitions, and micro-interactions
+- Use lucide-react for all icons
+- Use react-router-dom Link/useNavigate for navigation
+- Brand colors: ${JSON.stringify(client.brand_colors)}
+- Brand fonts: ${JSON.stringify(client.brand_fonts)}
+${hasBackend ? `
+BACKEND INTEGRATION (CRITICAL):
+- Import and use Supabase client from src/lib/supabase.ts
+- Import types from src/lib/types.ts
+- Import API functions from src/lib/api.ts
+- Forms MUST call real API functions (create, update, delete) with proper error handling
+- Lists MUST fetch data using getAll/getById from api.ts with loading and error states
+- Tables MUST have: search input, column sorting, pagination (10-20 per page)
+- Protected pages MUST use useAuth() hook to check authentication and role
+- Show loading spinners during API calls
+- Show toast/alert on success and error
+- Modals for create/edit forms where appropriate` : `
+DEMO DATA:
+- Import mock data from src/lib/mock-data.ts
+- Use local state for filtering, searching, and sorting
+- Forms should update local state (demo mode)`}
+
+QUALITY STANDARDS:
+- Production-ready code - this ships to real clients
+- Clean TypeScript types for all props and state
+- Accessible: aria labels, semantic HTML, keyboard navigation
+- Proper heading hierarchy
+- Each page component must be fully featured, minimum 150 lines
+- Create sub-components when sections get complex (put them in the same module directory or components/)
+- NEVER use purple/indigo unless brand colors include them`;
+
+  const userPrompt = `IMPLEMENT THIS MODULE COMPLETELY:
+
+MODULE: ${module.name}
+PAGES TO BUILD:
+${pageList}
+
+${relevantModels.length > 0 ? `RELEVANT DATA MODELS:\n${JSON.stringify(relevantModels, null, 2)}` : ''}
+
+FULL ARCHITECTURE:
+${JSON.stringify(architecture, null, 2)}
+
+EXISTING CORE FILES:
+${coreContext}
+
+OTHER FILES IN PROJECT (for reference):
+${allFilePaths.join(', ')}
+
+Generate ALL ${module.pages.length} pages completely. Every page must be production-ready with full functionality.`;
+
+  const response = await callWithRetry(
+    () => ai.messages.create({
+      model,
+      max_tokens: 32000,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userPrompt }],
+    }),
+    3,
+    'module_code'
+  );
+
+  const text = extractText(response);
+  const files = parseCodeBlocks(text);
+  await trackUsage(model, response.usage.input_tokens, response.usage.output_tokens, 'module_code', project.id);
+
+  return {
+    files,
+    explanation: text.replace(/```[\s\S]*?```/g, '').trim().slice(0, 500),
+    tokensUsed: { input: response.usage.input_tokens, output: response.usage.output_tokens },
+  };
+}
+
+// ============================================================
+// COMPLETENESS VERIFICATION
+// ============================================================
+
+export async function verifyProjectCompleteness(
+  architecture: FullArchitecture,
+  repoFiles: { path: string; content: string }[],
+  projectId: string
+): Promise<{ missingFiles: string[]; brokenImports: string[]; missingRoutes: string[]; fixFiles: GeneratedFile[] }> {
+  const ai = await getClient();
+  const model = selectModel('completeness_check');
+
+  const filePaths = repoFiles.map((f) => f.path);
+  const appTsx = repoFiles.find((f) => f.path.includes('App.tsx'));
+  const navbarFile = repoFiles.find((f) => f.path.toLowerCase().includes('navbar'));
+
+  const systemPrompt = `You are a QA engineer verifying that a generated project is complete and has no broken references.
+
+Analyze the project and identify:
+1. Pages in the architecture that don't have a corresponding file
+2. Routes in App.tsx that import files that don't exist
+3. Navbar links pointing to routes that don't exist in App.tsx
+4. Any import statements referencing files that don't exist in the project
+
+Also generate fix files for any critical issues (missing App.tsx routes, broken imports).
+
+Output JSON only:
+{
+  "missingFiles": ["path/to/missing/file.tsx"],
+  "brokenImports": ["ComponentX imported in App.tsx but file not found"],
+  "missingRoutes": ["PageY exists but has no route in App.tsx"],
+  "fixFiles": [{"path": "src/App.tsx", "content": "complete fixed file content"}]
+}`;
+
+  const fileListStr = filePaths.join('\n');
+  const appContent = appTsx?.content || 'NOT FOUND';
+  const navContent = navbarFile?.content || 'NOT FOUND';
+
+  const archPages = (architecture.pages || []).map((p) => `${p.name} -> ${p.route}`).join('\n');
+
+  const response = await callWithRetry(
+    () => ai.messages.create({
+      model,
+      max_tokens: 16384,
+      system: systemPrompt,
+      messages: [{
+        role: 'user',
+        content: `ARCHITECTURE PAGES:\n${archPages}\n\nALL FILES IN REPO:\n${fileListStr}\n\nApp.tsx:\n${appContent}\n\nNavbar:\n${navContent}`,
+      }],
+    }),
+    2,
+    'completeness_check'
+  );
+
+  const text = extractText(response);
+  await trackUsage(model, response.usage.input_tokens, response.usage.output_tokens, 'completeness_check', projectId);
+
+  return safeParseJSON(text, { missingFiles: [], brokenImports: [], missingRoutes: [], fixFiles: [] });
+}
+
+// ============================================================
+// BUILD FIX (improved with cycle detection)
+// ============================================================
+
+export async function generateBuildFix(
+  buildErrors: string[],
+  buildOutput: string,
+  project: Project,
+  client: Client,
+  architecture: Record<string, unknown>,
+  existingFiles: { path: string; content: string }[],
+  previousAttempts: BuildFixAttempt[],
+  attempt: number,
+  maxAttempts: number
+): Promise<ClaudeCodeResponse> {
+  const ai = await getClient();
+  const useOpus = attempt >= maxAttempts - 1;
+  const model = useOpus ? MODELS.opus : MODELS.sonnet;
+
+  const previousAttemptsContext = previousAttempts.length > 0
+    ? `\n\nPREVIOUS FIX ATTEMPTS THAT FAILED:\n${previousAttempts.map((a, i) => `--- Attempt ${i + 1} ---\nErrors: ${a.errorsText}`).join('\n\n')}\n\nIMPORTANT: The above approaches did NOT work. Try a DIFFERENT strategy.`
+    : '';
+
+  const existingContext = existingFiles
+    .map((f) => `--- ${f.path} ---\n${f.content}`)
+    .join('\n\n');
+
+  const systemPrompt = `You are a senior developer fixing build errors in a React + Vite + TypeScript project.
+${useOpus ? 'This is the FINAL attempt. Apply the most robust fix possible.' : ''}
+
+RULES:
+- Output ONLY files that need changes
+- Every file MUST start with: // FILE: path/to/file.ext
+- Wrap each file in a code block
+- Output COMPLETE file contents (not partial patches)
+- Fix the root cause, not just the symptom
+- If a dependency doesn't exist in npm, REMOVE it from package.json
+- If an import references a file that doesn't exist, either create the file or remove the import
+- NEVER introduce React Native or Expo dependencies
+${previousAttempts.length > 0 ? '- Previous fix attempts failed. You MUST take a different approach.' : ''}`;
+
+  const userPrompt = `BUILD ERRORS (attempt ${attempt}/${maxAttempts}):
+${buildErrors.join('\n')}
+
+FULL BUILD OUTPUT:
+${buildOutput.slice(0, 4000)}
+${previousAttemptsContext}
+
+EXISTING CODE:
+${existingContext}
+
+Fix all errors. Output complete corrected files.`;
+
+  const response = await callWithRetry(
+    () => ai.messages.create({
+      model,
+      max_tokens: 32000,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userPrompt }],
+    }),
+    3,
+    'build_fix'
+  );
+
+  const text = extractText(response);
+  const files = parseCodeBlocks(text);
+  await trackUsage(model, response.usage.input_tokens, response.usage.output_tokens, 'build_fix', project.id);
+
+  return {
+    files,
+    explanation: text.replace(/```[\s\S]*?```/g, '').trim().slice(0, 500),
+    tokensUsed: { input: response.usage.input_tokens, output: response.usage.output_tokens },
+  };
+}
+
+// ============================================================
+// LEGACY: generateTaskCode (kept for backwards compat with chat/QA)
+// ============================================================
 
 export async function generateTaskCode(
   task: { title: string; description: string },
@@ -405,7 +999,11 @@ export async function generateTaskCode(
       fileLower.includes('navbar') ||
       fileLower.includes('footer') ||
       fileLower.includes('index.css') ||
-      fileLower.includes('tailwind.config');
+      fileLower.includes('tailwind.config') ||
+      fileLower.includes('supabase') ||
+      fileLower.includes('types') ||
+      fileLower.includes('api.ts') ||
+      fileLower.includes('auth');
   });
 
   const allOtherPaths = existingFiles
@@ -416,13 +1014,7 @@ export async function generateTaskCode(
     .map((f) => `--- ${f.path} ---\n${f.content}`)
     .join('\n\n');
 
-  const systemPrompt = `You are a senior frontend developer at Obzide Tech implementing a specific page.
-
-THINK BEFORE CODING:
-1. Study the existing components (Layout, Navbar, Footer) to match patterns
-2. Plan the page structure: hero section, content sections, CTAs
-3. Decide which sub-components to extract for clarity
-4. Plan responsive behavior for each section
+  const systemPrompt = `You are a senior full-stack developer at Obzide Tech implementing a specific task.
 
 FILE OUTPUT FORMAT:
 - Every file MUST start with: // FILE: path/to/file.ext
@@ -430,26 +1022,15 @@ FILE OUTPUT FORMAT:
 - Output ONLY files that need to be created or modified
 
 IMPLEMENTATION RULES:
-- Follow existing code patterns, component structure, and styling conventions
-- Use the shared Layout, Navbar, Footer components already in the project
-- Use brand colors defined in tailwind.config.js as Tailwind classes
-- Every page must be fully responsive (mobile, tablet, desktop)
-- Include meaningful, realistic content (not lorem ipsum)
-- Add hover states, focus states, transitions, and micro-interactions
-- Add scroll-triggered animations where appropriate
-- Include proper loading and empty states
-- Use lucide-react for all icons
-- Use react-router-dom Link for internal navigation
-- Create sub-components when sections get complex
-- Brand colors: ${JSON.stringify(client.brand_colors)}
-- Brand fonts: ${JSON.stringify(client.brand_fonts)}
-
-QUALITY STANDARDS:
-- Production-ready code - this ships to real clients
-- Clean TypeScript types
-- Accessible: aria labels, semantic HTML, keyboard navigation
-- Proper heading hierarchy
-- Minimum 200 lines per page file (unless the page is genuinely simple)`;
+- Follow existing code patterns
+- Use brand colors: ${JSON.stringify(client.brand_colors)}
+- Use brand fonts: ${JSON.stringify(client.brand_fonts)}
+- Fully responsive (mobile, tablet, desktop)
+- Include meaningful content (NOT lorem ipsum)
+- Add transitions and micro-interactions
+- Use lucide-react for icons
+- NEVER use purple/indigo unless brand colors specify them
+- NEVER use React Native or Expo`;
 
   const userPrompt = `TASK: ${task.title}
 DESCRIPTION: ${task.description}
@@ -457,18 +1038,18 @@ DESCRIPTION: ${task.description}
 ARCHITECTURE:
 ${JSON.stringify(architecture, null, 2)}
 
-EXISTING CODE (key files):
+EXISTING CODE:
 ${existingContext}
 
-OTHER FILES IN PROJECT (for reference, not shown):
+OTHER FILES:
 ${allOtherPaths.join(', ')}
 
-Generate the complete, production-ready implementation.`;
+Generate the complete implementation.`;
 
   const response = await callWithRetry(
     () => ai.messages.create({
       model,
-      max_tokens: 16384,
+      max_tokens: 32000,
       system: systemPrompt,
       messages: [{ role: 'user', content: userPrompt }],
     }),
@@ -487,10 +1068,18 @@ Generate the complete, production-ready implementation.`;
   };
 }
 
+// ============================================================
+// CHAT RESPONSE
+// ============================================================
+
 export async function generateChatResponse(
   messages: { role: 'user' | 'assistant'; content: string }[],
   projectContext: string
 ): Promise<{ response: string; files: GeneratedFile[]; shouldRedeploy: boolean }> {
+  if (!messages || messages.length === 0) {
+    return { response: 'No messages to respond to.', files: [], shouldRedeploy: false };
+  }
+
   const ai = await getClient();
   const model = MODELS.sonnet;
 
@@ -510,6 +1099,7 @@ RULES:
 - Be concise and direct
 - If you modify code, output complete files (not diffs)
 - Use the same conventions as the existing codebase
+- NEVER use React Native or Expo
 - End your response with a JSON metadata block:
 \`\`\`json
 {"shouldRedeploy": true/false}
@@ -519,7 +1109,7 @@ RULES:
   const response = await callWithRetry(
     () => ai.messages.create({
       model,
-      max_tokens: 8192,
+      max_tokens: 16384,
       system: systemPrompt,
       messages: messages.map((m) => ({ role: m.role, content: m.content })),
     }),
@@ -547,6 +1137,10 @@ RULES:
   return { response: responseText || 'Done. Changes applied.', files, shouldRedeploy };
 }
 
+// ============================================================
+// QA FUNCTIONS (kept from original)
+// ============================================================
+
 export async function analyzeQARejection(
   rejectionNotes: string,
   pageName: string,
@@ -564,19 +1158,14 @@ export async function analyzeQARejection(
   const systemPrompt = `You are a senior frontend developer at Obzide Tech fixing QA issues.
 A QA screenshot was rejected. Fix the exact issues described in the rejection notes.
 
-THINK BEFORE CODING:
-1. Analyze each screenshot viewport to understand the visual issue
-2. Identify which CSS/component code causes the problem
-3. Plan the minimal fix that resolves the issue without side effects
-4. Verify the fix works for all viewports (desktop, tablet, mobile)
-
 RULES:
 - Only output files that need changes
 - Every file MUST start with: // FILE: path/to/file.ext
 - Wrap each file in a code block
-- Fix what was flagged precisely, don't rewrite unrelated code
-- Maintain existing code style and patterns
-- Ensure fixes are responsive across all viewports`;
+- Fix what was flagged precisely
+- Maintain existing code style
+- Ensure fixes are responsive across all viewports
+- NEVER use purple/indigo unless brand colors specify them`;
 
   const userContent: Array<Record<string, unknown>> = [];
 
@@ -601,7 +1190,7 @@ ${briefContext}
 CURRENT CODE:
 ${codeContext}
 
-Analyze ALL viewport screenshots above. Fix the problems described in the rejection notes, ensuring the fix works across all screen sizes.`,
+Fix the problems described in the rejection notes.`,
   });
 
   const response = await callWithRetry(
@@ -644,9 +1233,9 @@ export async function analyzeScreenshotAllViewports(
   const entries = Object.entries(screenshotUrls).filter(([, url]) => url);
 
   const viewportCriteria: Record<string, string> = {
-    desktop: `Desktop-specific checks: overall layout balance, whitespace usage, content hierarchy, proper grid alignment, consistent section heights, brand consistency, CTA visibility above fold`,
-    tablet: `Tablet-specific checks: proper responsive breakpoints at ~768px, navigation adaptation, touch-friendly button sizing (min 44px), balanced content columns, readable font sizes`,
-    mobile: `Mobile-specific checks: hamburger menu present and functional, text readable without zooming (min 16px body), buttons full-width and tap-friendly, no horizontal overflow, proper vertical stacking, images properly scaled`,
+    desktop: `Desktop-specific checks: overall layout balance, whitespace usage, content hierarchy, proper grid alignment`,
+    tablet: `Tablet-specific checks: proper responsive breakpoints at ~768px, touch-friendly sizing`,
+    mobile: `Mobile-specific checks: hamburger menu, text readable without zooming, no horizontal overflow`,
   };
 
   for (const [viewport, url] of entries) {
@@ -657,11 +1246,7 @@ EXPECTED: ${expectedDescription}
 ${viewportCriteria[viewport] || ''}
 
 Score each category 0-100:
-- layout: alignment, spacing, grid consistency
-- typography: readability, hierarchy, sizes
-- colors: brand consistency, contrast ratios
-- responsiveness: viewport-appropriate rendering
-- quality: professional polish, no placeholder content
+- layout, typography, colors, responsiveness, quality
 
 Respond with JSON only:
 {"issues": ["specific issue 1", ...], "pass": true/false, "scores": {"layout": 90, "typography": 85, "colors": 90, "responsiveness": 85, "quality": 80}}
@@ -709,15 +1294,10 @@ export async function analyzeScreenshot(
   const result = await analyzeImage(
     screenshotUrl,
     `You are reviewing a QA screenshot of the "${pageName}" page.
-
 EXPECTED: ${expectedDescription}
-
-Analyze for: layout problems, typography issues, color problems, responsive issues, missing content, general quality.
-
+Analyze for: layout, typography, colors, responsive, content, quality.
 Respond with JSON only:
-{"issues": ["issue 1", "issue 2"], "pass": true/false}
-
-If no issues found: {"issues": [], "pass": true}`,
+{"issues": ["issue 1"], "pass": true/false}`,
     projectId,
     'haiku'
   );

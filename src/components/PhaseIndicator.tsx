@@ -1,10 +1,12 @@
-import { Check, Search, Blocks, Code2, MonitorCheck, Rocket } from 'lucide-react';
+import { Check, Search, Blocks, Code2, MonitorCheck, Rocket, Database, CheckCircle2 } from 'lucide-react';
 import type { ProjectPhase } from '../lib/types';
 
 const phases: { key: ProjectPhase; label: string; icon: typeof Search }[] = [
   { key: 'analysis', label: 'Analysis', icon: Search },
   { key: 'scaffolding', label: 'Scaffold', icon: Blocks },
+  { key: 'backend_setup', label: 'Backend', icon: Database },
   { key: 'development', label: 'Develop', icon: Code2 },
+  { key: 'completeness_check', label: 'Verify', icon: CheckCircle2 },
   { key: 'qa', label: 'QA', icon: MonitorCheck },
   { key: 'deployment', label: 'Deploy', icon: Rocket },
 ];

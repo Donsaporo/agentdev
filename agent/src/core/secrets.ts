@@ -58,6 +58,8 @@ const ENV_FALLBACKS: Record<string, string> = {
   namecheap_user: 'NAMECHEAP_API_USER',
   resend: 'RESEND_API_KEY',
   brave: 'BRAVE_API_KEY',
+  supabase_management: 'SUPABASE_MANAGEMENT_TOKEN',
+  supabase_org_id: 'SUPABASE_ORG_ID',
 };
 
 export async function getSecretWithFallback(serviceName: string): Promise<string> {
