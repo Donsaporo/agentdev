@@ -18,6 +18,8 @@ const MODELS = {
 type ModelTier = keyof typeof MODELS;
 
 let anthropic: Anthropic | null = null;
+let lastApiCallTimestamp = 0;
+const MIN_CALL_INTERVAL_MS = 3000;
 
 async function getClient(): Promise<Anthropic> {
   const key = await getSecretWithFallback('anthropic');
@@ -26,6 +28,15 @@ async function getClient(): Promise<Anthropic> {
     anthropic = new Anthropic({ apiKey: key, timeout: 30 * 60 * 1000 });
   }
   return anthropic;
+}
+
+async function throttle(): Promise<void> {
+  const now = Date.now();
+  const elapsed = now - lastApiCallTimestamp;
+  if (elapsed < MIN_CALL_INTERVAL_MS) {
+    await new Promise((r) => setTimeout(r, MIN_CALL_INTERVAL_MS - elapsed));
+  }
+  lastApiCallTimestamp = Date.now();
 }
 
 function selectModel(task: string): string {
@@ -76,6 +87,9 @@ interface ThinkingConfig {
   budgetTokens: number;
 }
 
+const RATE_LIMIT_WAIT_MS = 62_000;
+const RATE_LIMIT_MAX_RETRIES = 5;
+
 async function callWithRetry(
   fn: () => PromiseLike<unknown>,
   maxRetries: number = 3,
@@ -83,26 +97,49 @@ async function callWithRetry(
 ): Promise<Anthropic.Message> {
   let lastError: Error | null = null;
 
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+  await throttle();
+
+  const effectiveMaxRetries = maxRetries;
+
+  for (let attempt = 0; attempt <= effectiveMaxRetries; attempt++) {
     try {
-      return await fn() as Anthropic.Message;
+      const result = await fn() as Anthropic.Message;
+      lastApiCallTimestamp = Date.now();
+      return result;
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
 
       const is400 = lastError.message.includes('400') || lastError.message.includes('invalid_request');
       if (is400) throw lastError;
 
-      const isRetryable = lastError.message.includes('overloaded') ||
-        lastError.message.includes('rate_limit') ||
+      const isRateLimit = lastError.message.includes('rate_limit') || lastError.message.includes('429');
+      const isRetryable = isRateLimit ||
+        lastError.message.includes('overloaded') ||
         lastError.message.includes('timeout') ||
         lastError.message.includes('529') ||
         lastError.message.includes('500');
 
-      if (!isRetryable || attempt === maxRetries) throw lastError;
+      if (!isRetryable) throw lastError;
+
+      if (isRateLimit) {
+        const rateLimitRetries = RATE_LIMIT_MAX_RETRIES;
+        if (attempt >= rateLimitRetries) throw lastError;
+
+        const waitMs = RATE_LIMIT_WAIT_MS + Math.random() * 5000;
+        await logger.warn(
+          `Rate limited. Waiting ${Math.round(waitMs / 1000)}s before retry ${attempt + 1}/${rateLimitRetries} for ${operation}`,
+          'ai'
+        );
+        await new Promise((r) => setTimeout(r, waitMs));
+        lastApiCallTimestamp = Date.now();
+        continue;
+      }
+
+      if (attempt === effectiveMaxRetries) throw lastError;
 
       const delay = Math.min(1000 * Math.pow(2, attempt) + Math.random() * 500, 30_000);
       await logger.warn(
-        `Claude API retry ${attempt + 1}/${maxRetries} for ${operation}: ${lastError.message}`,
+        `Claude API retry ${attempt + 1}/${effectiveMaxRetries} for ${operation}: ${lastError.message.slice(0, 200)}`,
         'ai'
       );
       await new Promise((r) => setTimeout(r, delay));
@@ -798,6 +835,8 @@ export async function generateDatabaseSchema(
   const ai = await getClient();
   const model = selectModel('backend_schema');
 
+  const dataModelNames = (architecture.dataModels || []).map((m) => m.name);
+
   const systemPrompt = `You are a senior database architect generating PostgreSQL migrations for a Supabase project.
 
 RULES:
@@ -813,7 +852,11 @@ RULES:
 - Add a trigger function for auto-updating updated_at columns
 - Generate realistic seed data (10-20 rows per table) unless the brief says "demo" or seed data is inappropriate
 - DO NOT wrap in transaction blocks (no BEGIN/COMMIT)
-- Use IF NOT EXISTS where possible
+- Use IF NOT EXISTS on ALL CREATE TABLE and CREATE INDEX statements
+- Create tables in DEPENDENCY ORDER: tables with no foreign keys first, then tables that reference them
+- ONLY reference tables that exist in the provided DATA MODELS list or are Supabase system tables (auth.users, storage.objects, storage.buckets)
+- Do NOT create a "profiles" table unless it is EXPLICITLY listed in the data models below
+- The ONLY valid table names you may create are: ${dataModelNames.join(', ')}
 
 Output ONLY raw SQL, no markdown wrapping, no explanations.`;
 
@@ -860,7 +903,36 @@ Generate:
   let sql = text.trim();
   sql = sql.replace(/^```sql\n?/g, '').replace(/^```\n?/g, '').replace(/\n?```$/g, '').trim();
 
+  const validationIssues = validateGeneratedSql(sql, dataModelNames);
+  if (validationIssues.length > 0) {
+    await logger.warn(`SQL validation issues: ${validationIssues.join('; ')}`, 'ai', projectId);
+  }
+
   return sql;
+}
+
+function validateGeneratedSql(sql: string, allowedModelNames: string[]): string[] {
+  const issues: string[] = [];
+  const systemTables = ['auth.users', 'storage.objects', 'storage.buckets'];
+
+  const createTableRegex = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:public\.)?(\w+)/gi;
+  const createdTables = new Set<string>();
+  let match: RegExpExecArray | null;
+  while ((match = createTableRegex.exec(sql)) !== null) {
+    createdTables.add(match[1].toLowerCase());
+  }
+
+  const referencesRegex = /REFERENCES\s+(?:public\.)?(\S+?)[\s(]/gi;
+  while ((match = referencesRegex.exec(sql)) !== null) {
+    const ref = match[1].replace(/['"]/g, '').toLowerCase();
+    const isSystem = systemTables.some((st) => st.toLowerCase() === ref || ref === st.split('.')[1]);
+    const isCreated = createdTables.has(ref);
+    if (!isSystem && !isCreated) {
+      issues.push(`References non-existent table: ${ref}`);
+    }
+  }
+
+  return issues;
 }
 
 // ============================================================

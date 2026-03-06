@@ -254,18 +254,40 @@ export async function processBrief(projectId: string, briefId: string): Promise<
           });
 
           await sendChatMessage(projectId, 'Generating and executing database schema...');
-          const sql = await generateDatabaseSchema(architecture, projectId);
+          let sql = await generateDatabaseSchema(architecture, projectId);
+          let sqlExecuted = false;
+          const MAX_SQL_RETRIES = 2;
 
           if (sql && sql.length > 10) {
-            await executeSqlOnProject(sbProject.ref, sql, projectId);
-            await logger.success('Database schema executed', 'development', projectId);
+            for (let sqlAttempt = 1; sqlAttempt <= MAX_SQL_RETRIES + 1; sqlAttempt++) {
+              try {
+                await executeSqlOnProject(sbProject.ref, sql, projectId);
+                await logger.success('Database schema executed', 'development', projectId);
+                sqlExecuted = true;
+                break;
+              } catch (sqlErr) {
+                const sqlErrMsg = sqlErr instanceof Error ? sqlErr.message : String(sqlErr);
+                await logger.warn(`SQL execution failed (attempt ${sqlAttempt}/${MAX_SQL_RETRIES + 1}): ${sqlErrMsg}`, 'development', projectId);
+
+                if (sqlAttempt > MAX_SQL_RETRIES) {
+                  await sendChatMessage(projectId, `Database schema failed after ${MAX_SQL_RETRIES + 1} attempts. Error: ${sqlErrMsg.slice(0, 300)}. Continuing without database -- configure manually after deployment.`);
+                  await saveCheckpoint(projectId, briefId, 'backend_setup_partial', { failedSql: sql.slice(0, 5000), sqlError: sqlErrMsg.slice(0, 500) }, [], fullName);
+                  break;
+                }
+
+                await sendChatMessage(projectId, `Database schema error: ${sqlErrMsg.slice(0, 200)}. Regenerating fix...`);
+                sql = await generateDatabaseSchema(architecture, projectId);
+              }
+            }
           }
 
-          await sendChatMessage(projectId, `Database ready: ${sbUrl}`);
+          if (sqlExecuted) {
+            await sendChatMessage(projectId, `Database ready: ${sbUrl}`);
+          }
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
           await logger.warn(`Backend setup failed (will continue without real DB): ${errMsg}`, 'development', projectId);
-          await sendChatMessage(projectId, `Note: Could not auto-create Supabase project (${errMsg}). The project will use placeholder env vars - configure them manually in Vercel after deployment.`);
+          await sendChatMessage(projectId, `Note: Could not auto-create Supabase project (${errMsg.slice(0, 300)}). The project will use placeholder env vars - configure them manually in Vercel after deployment.`);
         }
       } else {
         await sendChatMessage(projectId, 'Supabase Management API not configured. The project will use placeholder env vars. Configure VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in Vercel after deployment.');
@@ -301,7 +323,11 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     const phase1Tasks = moduleTasks.filter((t) => priorityModules.some((p) => t.module.name.toLowerCase().includes(p)));
     const phase2Tasks = moduleTasks.filter((t) => !phase1Tasks.includes(t));
 
-    const MODULE_CONCURRENCY = 2;
+    const MODULE_CONCURRENCY = 1;
+    const INTER_BATCH_COOLDOWN_MS = 15_000;
+    const MAX_RECOVERY_PASSES = 2;
+    const RECOVERY_COOLDOWN_MS = 65_000;
+    const ABORT_FAILURE_THRESHOLD = 0.4;
 
     async function buildModuleBatch(
       tasks: typeof moduleTasks,
@@ -309,6 +335,10 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       completedBefore: number
     ): Promise<void> {
       for (let i = 0; i < tasks.length; i += MODULE_CONCURRENCY) {
+        if (i > 0) {
+          await new Promise((r) => setTimeout(r, INTER_BATCH_COOLDOWN_MS));
+        }
+
         const batch = tasks.slice(i, i + MODULE_CONCURRENCY);
 
         const repoFiles = await getRepoTree(fullName);
@@ -380,6 +410,110 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     }
     if (phase2Tasks.length > 0) {
       await buildModuleBatch(phase2Tasks, 'feature modules', phase1Tasks.length);
+    }
+
+    // --- Recovery pass for failed modules ---
+    for (let recoveryPass = 1; recoveryPass <= MAX_RECOVERY_PASSES; recoveryPass++) {
+      const { data: failedTasks } = await supabase
+        .from('project_tasks')
+        .select('id, title, description')
+        .eq('project_id', projectId)
+        .eq('status', 'failed');
+
+      if (!failedTasks || failedTasks.length === 0) break;
+
+      await logger.info(`Recovery pass ${recoveryPass}/${MAX_RECOVERY_PASSES}: retrying ${failedTasks.length} failed module(s)`, 'development', projectId);
+      await sendChatMessage(projectId, `Retrying ${failedTasks.length} failed module(s) (recovery pass ${recoveryPass})... Waiting for rate limit window to reset.`);
+      await new Promise((r) => setTimeout(r, RECOVERY_COOLDOWN_MS));
+
+      for (const failedTask of failedTasks) {
+        const matchingModule = moduleTasks.find((mt) => mt.id === failedTask.id);
+        if (!matchingModule) continue;
+
+        await supabase.from('project_tasks').update({
+          status: 'in_progress',
+          error_log: null,
+          started_at: new Date().toISOString(),
+        }).eq('id', failedTask.id);
+
+        const repoFiles = await getRepoTree(fullName);
+        const coreFilePaths = getCoreFilePaths(repoFiles);
+        const coreFiles = await getMultipleFileContents(fullName, coreFilePaths.slice(0, 30));
+        const allPaths = repoFiles.filter((f) => f.type === 'file').map((f) => f.path);
+
+        const taskStartTime = Date.now();
+        try {
+          const codeResult = await generateModuleCode(
+            matchingModule.module,
+            project as unknown as Project,
+            client,
+            architecture,
+            coreFiles,
+            allPaths
+          );
+
+          const durationSeconds = Math.round((Date.now() - taskStartTime) / 1000);
+          if (codeResult.files.length > 0) {
+            await pushFiles(fullName, codeResult.files, `feat: implement ${matchingModule.module.name} (recovery)`, projectId);
+          }
+          await supabase.from('project_tasks').update({
+            status: 'completed',
+            completed_at: new Date().toISOString(),
+            duration_seconds: durationSeconds,
+          }).eq('id', failedTask.id);
+          await logger.info(`Recovery: ${matchingModule.module.name} succeeded`, 'development', projectId);
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          await supabase.from('project_tasks').update({
+            status: 'failed',
+            error_log: errMsg,
+          }).eq('id', failedTask.id);
+          await logger.error(`Recovery: ${matchingModule.module.name} failed again: ${errMsg.slice(0, 200)}`, 'development', projectId);
+        }
+
+        await new Promise((r) => setTimeout(r, INTER_BATCH_COOLDOWN_MS));
+      }
+    }
+
+    // --- Abort threshold check ---
+    const { data: finalTaskStates } = await supabase
+      .from('project_tasks')
+      .select('status')
+      .eq('project_id', projectId);
+
+    const totalTasks = finalTaskStates?.length || 0;
+    const failedCount = finalTaskStates?.filter((t) => t.status === 'failed').length || 0;
+
+    if (totalTasks > 0 && failedCount / totalTasks > ABORT_FAILURE_THRESHOLD) {
+      const failedNames = moduleTasks
+        .filter((mt) => finalTaskStates?.find((ft, idx) => idx < moduleTasks.length && ft.status === 'failed'))
+        .map((mt) => mt.module.name);
+
+      await supabase.from('briefs').update({ status: 'failed' }).eq('id', briefId);
+      await updateProject(projectId, {
+        agent_status: 'idle',
+        current_phase: 'aborted',
+        last_error_message: `Pipeline aborted: ${failedCount}/${totalTasks} modules failed (${Math.round(failedCount / totalTasks * 100)}%)`,
+      });
+      await sendChatMessage(
+        projectId,
+        `Pipeline aborted: ${failedCount} of ${totalTasks} modules failed even after recovery attempts. ` +
+        `This is above the ${Math.round(ABORT_FAILURE_THRESHOLD * 100)}% threshold. ` +
+        `Most likely cause: API rate limits. Please retry later or check your Anthropic rate limit tier.`
+      );
+      await notifyError(project.name, `Pipeline aborted: ${failedCount}/${totalTasks} modules failed`, projectId);
+      await clearCheckpoint(projectId, 'failed');
+      return;
+    }
+
+    if (failedCount > 0) {
+      const { data: stillFailed } = await supabase
+        .from('project_tasks')
+        .select('title')
+        .eq('project_id', projectId)
+        .eq('status', 'failed');
+      const failedModuleNames = stillFailed?.map((t) => t.title).join(', ') || '';
+      await sendChatMessage(projectId, `Warning: ${failedCount} module(s) could not be built: ${failedModuleNames}. Continuing with available modules.`);
     }
 
     // ============================================================
