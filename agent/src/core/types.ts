@@ -54,7 +54,7 @@ export interface Brief {
   projects?: Project;
 }
 
-export type BriefStatus = 'pending_review' | 'questions_pending' | 'approved' | 'in_progress';
+export type BriefStatus = 'pending_review' | 'questions_pending' | 'approved' | 'in_progress' | 'processing' | 'completed' | 'failed';
 
 export interface BriefQuestion {
   id: string;

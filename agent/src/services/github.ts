@@ -25,6 +25,14 @@ export async function createRepo(
   const gh = await getClient();
   const org = (await getSecretWithFallback('github_org')) || env.GITHUB_ORG;
 
+  try {
+    const { data: existing } = await gh.rest.repos.get({ owner: org, repo: name });
+    await logger.info(`Repo ${existing.full_name} already exists, reusing`, 'github', projectId);
+    return { repoUrl: existing.html_url, fullName: existing.full_name };
+  } catch {
+    // repo does not exist, create it
+  }
+
   const { data } = await gh.rest.repos.createInOrg({
     org,
     name,

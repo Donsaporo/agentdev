@@ -155,7 +155,9 @@ export default function BriefsPage() {
           <option value="pending_review">Pending Review</option>
           <option value="approved">Approved</option>
           <option value="in_progress">In Progress</option>
+          <option value="processing">Processing</option>
           <option value="completed">Completed</option>
+          <option value="failed">Failed</option>
         </select>
       </div>
 
@@ -191,7 +193,7 @@ export default function BriefsPage() {
                     <span className="text-xs text-slate-600">{formatDistanceToNow(new Date(brief.created_at), { addSuffix: true })}</span>
                   </div>
                 </Link>
-                {(brief.status === 'approved' || brief.status === 'pending_review') && (
+                {(brief.status === 'approved' || brief.status === 'pending_review' || brief.status === 'failed') && (
                   <button
                     onClick={() => handleSendToAgent(brief.id, brief.project_id)}
                     disabled={sendingId === brief.id}

@@ -89,13 +89,30 @@ export function extractBuildErrors(output: string): string[] {
       trimmed.includes('Error:') ||
       trimmed.includes('SyntaxError') ||
       trimmed.includes('TypeError') ||
+      trimmed.includes('ReferenceError') ||
       trimmed.includes('Cannot find') ||
       trimmed.includes('Module not found') ||
       trimmed.includes('is not assignable') ||
-      trimmed.includes('has no exported member')
+      trimmed.includes('has no exported member') ||
+      trimmed.includes('has no default export') ||
+      trimmed.includes('ENOENT') ||
+      trimmed.includes('ERR!') ||
+      trimmed.includes('FATAL') ||
+      trimmed.includes('Could not resolve') ||
+      trimmed.includes('Failed to resolve') ||
+      trimmed.includes('[vite]') ||
+      trimmed.includes('[rollup]') ||
+      trimmed.includes('Unexpected token') ||
+      trimmed.includes('is not a function') ||
+      (trimmed.includes('Property') && trimmed.includes('does not exist'))
     ) {
       errors.push(trimmed);
     }
+  }
+
+  if (errors.length === 0 && output.trim().length > 0) {
+    const tail = output.trim().split('\n').slice(-30).join('\n');
+    errors.push(tail.slice(0, 3000));
   }
 
   return errors;

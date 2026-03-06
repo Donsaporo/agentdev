@@ -10,6 +10,10 @@ let processing = false;
 let handler: EventHandler | null = null;
 let channels: RealtimeChannel[] = [];
 
+const activeBriefs = new Set<string>();
+const briefRetryCount = new Map<string, number>();
+const MAX_BRIEF_RETRIES = 2;
+
 const channelReconnectState: Map<string, { timer: NodeJS.Timeout | null; attempt: number }> = new Map();
 
 export function setEventHandler(fn: EventHandler): void {
@@ -22,15 +26,24 @@ async function processQueue(): Promise<void> {
 
   while (queue.length > 0) {
     const event = queue.shift()!;
+    const briefId = event.type === 'brief_approved' ? event.payload.briefId as string : null;
+
+    if (briefId) activeBriefs.add(briefId);
+
     try {
       await handler(event);
     } catch (err) {
+      if (briefId) {
+        briefRetryCount.set(briefId, (briefRetryCount.get(briefId) || 0) + 1);
+      }
       await logger.error(
         `Event handler failed: ${err instanceof Error ? err.message : String(err)}`,
         'system',
         event.projectId,
         { eventType: event.type }
       );
+    } finally {
+      if (briefId) activeBriefs.delete(briefId);
     }
   }
 
@@ -38,6 +51,26 @@ async function processQueue(): Promise<void> {
 }
 
 function enqueue(event: QueueEvent): void {
+  if (event.type === 'brief_approved') {
+    const briefId = event.payload.briefId as string;
+
+    if (activeBriefs.has(briefId)) {
+      logger.warn(`Brief ${briefId} already being processed, skipping duplicate`, 'system');
+      return;
+    }
+
+    if (queue.some(e => e.type === 'brief_approved' && e.payload.briefId === briefId)) {
+      logger.warn(`Brief ${briefId} already queued, skipping duplicate`, 'system');
+      return;
+    }
+
+    const retries = briefRetryCount.get(briefId) || 0;
+    if (retries >= MAX_BRIEF_RETRIES) {
+      logger.warn(`Brief ${briefId} exceeded max retries (${MAX_BRIEF_RETRIES}), ignoring`, 'system');
+      return;
+    }
+  }
+
   queue.push(event);
   processQueue();
 }
@@ -145,7 +178,10 @@ function createBriefsChannel(): RealtimeChannel {
       },
       (payload) => {
         const brief = payload.new as { id: string; project_id: string; status: string };
-        if (brief.status === 'in_progress') {
+        const oldBrief = payload.old as { status?: string } | undefined;
+        const previousStatus = oldBrief?.status;
+
+        if (brief.status === 'in_progress' && previousStatus !== 'in_progress') {
           enqueue({
             type: 'brief_approved',
             projectId: brief.project_id,
@@ -236,6 +272,11 @@ export function startHeartbeat(): NodeJS.Timeout {
       console.error('Heartbeat failed');
     }
   }, 60_000);
+}
+
+export function clearBriefRetries(): void {
+  activeBriefs.clear();
+  briefRetryCount.clear();
 }
 
 export async function markOffline(): Promise<void> {

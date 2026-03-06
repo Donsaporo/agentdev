@@ -9,7 +9,7 @@ config({ path: resolve(__dirname, '..', '.env') });
 import { logger } from './core/logger.js';
 import { getConfig } from './core/config.js';
 import { loadSecrets } from './core/secrets.js';
-import { startListening, startHeartbeat, setEventHandler, markOffline } from './core/event-listener.js';
+import { startListening, startHeartbeat, setEventHandler, markOffline, clearBriefRetries } from './core/event-listener.js';
 import { processBrief } from './pipelines/brief-processing.js';
 import { handleChatMessage } from './pipelines/chat-response.js';
 import { handleQARejection } from './pipelines/qa-correction.js';
@@ -60,6 +60,24 @@ async function checkStuckProjects(): Promise<void> {
       await supabase.from('projects').update({ agent_status: 'idle' }).eq('id', project.id);
     }
   }
+
+  const { data: stuckBriefs } = await supabase
+    .from('briefs')
+    .select('id, project_id')
+    .eq('status', 'processing');
+
+  if (stuckBriefs && stuckBriefs.length > 0) {
+    for (const brief of stuckBriefs) {
+      await logger.warn(
+        `Found brief stuck in "processing" state: ${brief.id}. Resetting to failed.`,
+        'system',
+        brief.project_id
+      );
+      await supabase.from('briefs').update({ status: 'failed' }).eq('id', brief.id);
+    }
+  }
+
+  clearBriefRetries();
 }
 
 async function main(): Promise<void> {

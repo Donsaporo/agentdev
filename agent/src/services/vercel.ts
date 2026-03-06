@@ -35,6 +35,13 @@ export async function createProject(
 ): Promise<string> {
   const [owner, repo] = repoFullName.split('/');
 
+  const existingRes = await vercelFetch(`/v9/projects/${name}`);
+  if (existingRes.ok) {
+    const existing = await existingRes.json();
+    await logger.info(`Vercel project ${name} already exists, reusing`, 'vercel', projectId);
+    return existing.id;
+  }
+
   const res = await vercelFetch('/v10/projects', {
     method: 'POST',
     body: JSON.stringify({

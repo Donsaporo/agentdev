@@ -14,6 +14,7 @@ const statusStyles: Record<string, string> = {
   pending: 'bg-slate-500/10 text-slate-400 ring-slate-500/20',
   pending_review: 'bg-cyan-500/10 text-cyan-400 ring-cyan-500/20',
   questions_pending: 'bg-amber-500/10 text-amber-400 ring-amber-500/20',
+  processing: 'bg-blue-500/10 text-blue-400 ring-blue-500/20',
   completed: 'bg-green-500/10 text-green-400 ring-green-500/20',
   failed: 'bg-red-500/10 text-red-400 ring-red-500/20',
   blocked: 'bg-rose-500/10 text-rose-400 ring-rose-500/20',

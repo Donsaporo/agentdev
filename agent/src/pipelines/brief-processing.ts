@@ -59,6 +59,8 @@ export async function processBrief(projectId: string, briefId: string): Promise<
   const config = await getConfig();
 
   try {
+    await supabase.from('briefs').update({ status: 'processing' }).eq('id', briefId);
+
     await updateProject(projectId, { agent_status: 'working', current_phase: 'analysis', status: 'in_progress' });
     await sendChatMessage(projectId, 'Starting to process your brief. Analyzing requirements...');
 
@@ -273,6 +275,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     }
 
     if (!buildPassed) {
+      await supabase.from('briefs').update({ status: 'failed' }).eq('id', briefId);
       await updateProject(projectId, { agent_status: 'error' });
       await sendChatMessage(projectId, `Build failed after ${config.max_corrections} attempts. Manual intervention needed.`);
       await notifyError(project.name, 'Build failed after max correction attempts', projectId);
@@ -280,6 +283,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     }
 
     if (!config.auto_deploy) {
+      await supabase.from('briefs').update({ status: 'completed' }).eq('id', briefId);
       await updateProject(projectId, { status: 'review', progress: 100, agent_status: 'idle', current_phase: 'complete' });
       await sendChatMessage(projectId, `Build verified successfully. Auto-deploy is disabled. Repo: ${repoUrl}\nReady for manual deployment.`);
       await notifyBuildComplete(project.name, repoUrl, projectId);
@@ -299,6 +303,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     const result = await waitForDeployment(deployment.deploymentId, projectId);
 
     if (result.status !== 'ready') {
+      await supabase.from('briefs').update({ status: 'failed' }).eq('id', briefId);
       await updateProject(projectId, { agent_status: 'error' });
       await sendChatMessage(projectId, `Deployment failed: ${result.buildLogs || 'Unknown error'}. Check the logs.`);
       await notifyError(project.name, result.buildLogs || 'Deployment failed', projectId);
@@ -315,16 +320,25 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     if (cnameSet) {
       const domainAdded = await addDomain(vercelProjectId, demoDomain, projectId);
       if (domainAdded) {
-        await supabase.from('domains').insert({
-          project_id: projectId,
-          client_id: project.client_id,
-          domain_name: demoDomain,
-          subdomain: demoSubdomain,
-          is_demo: true,
-          dns_status: 'propagating',
-          ssl_status: 'pending',
-          registrar: 'namecheap',
-        }).maybeSingle();
+        const { data: existingDomain } = await supabase
+          .from('domains')
+          .select('id')
+          .eq('project_id', projectId)
+          .eq('domain_name', demoDomain)
+          .maybeSingle();
+
+        if (!existingDomain) {
+          await supabase.from('domains').insert({
+            project_id: projectId,
+            client_id: project.client_id,
+            domain_name: demoDomain,
+            subdomain: demoSubdomain,
+            is_demo: true,
+            dns_status: 'propagating',
+            ssl_status: 'pending',
+            registrar: 'namecheap',
+          }).maybeSingle();
+        }
         await sendChatMessage(projectId, `Custom domain configured: ${demoDomain}`);
       }
     }
@@ -455,14 +469,21 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       await notifyBuildComplete(project.name, result.url, projectId);
     }
 
+    await supabase.from('briefs').update({ status: 'completed' }).eq('id', briefId);
     await logger.success('Brief processing pipeline complete', 'development', projectId);
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
-    await logger.error(`Brief processing failed: ${errMsg}`, 'development', projectId);
-    await updateProject(projectId, { agent_status: 'error' });
-    await sendChatMessage(projectId, `An error occurred: ${errMsg}`);
-
-    const { data: project } = await supabase.from('projects').select('name').eq('id', projectId).maybeSingle();
-    if (project) await notifyError(project.name, errMsg, projectId);
+    try {
+      await supabase.from('briefs').update({ status: 'failed' }).eq('id', briefId);
+      await logger.error(`Brief processing failed: ${errMsg}`, 'development', projectId);
+      await updateProject(projectId, { agent_status: 'error' });
+      await sendChatMessage(projectId, `An error occurred: ${errMsg}`);
+      const { data: proj } = await supabase.from('projects').select('name').eq('id', projectId).maybeSingle();
+      if (proj) await notifyError(proj.name, errMsg, projectId);
+    } catch (innerErr) {
+      console.error('Error in brief-processing catch block:', innerErr);
+      await supabase.from('briefs').update({ status: 'failed' }).eq('id', briefId).catch(() => {});
+      await supabase.from('projects').update({ agent_status: 'error' }).eq('id', projectId).catch(() => {});
+    }
   }
 }
