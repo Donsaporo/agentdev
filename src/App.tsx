@@ -12,6 +12,7 @@ import AgentChatPage from './pages/AgentChatPage';
 import QAReviewPage from './pages/QAReviewPage';
 import DomainsPage from './pages/DomainsPage';
 import ActivityPage from './pages/ActivityPage';
+import InfrastructurePage from './pages/InfrastructurePage';
 import SettingsPage from './pages/SettingsPage';
 import type { ReactNode } from 'react';
 
@@ -60,6 +61,7 @@ function AppRoutes() {
         <Route path="qa" element={<QAReviewPage />} />
         <Route path="qa/:projectId" element={<QAReviewPage />} />
         <Route path="domains" element={<DomainsPage />} />
+        <Route path="infrastructure" element={<InfrastructurePage />} />
         <Route path="activity" element={<ActivityPage />} />
         <Route path="settings" element={<SettingsPage />} />
       </Route>

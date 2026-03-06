@@ -390,9 +390,126 @@ Respond with this exact JSON structure (fill ALL fields completely):
   if (result.architecture && result.architecture.pages) {
     const expanded = await expandArchitectureCompleteness(result.architecture, project, client);
     result.architecture = expanded;
+
+    result.architecture = await validateArchitectureCrossCheck(
+      result.architecture,
+      brief,
+      attachmentContents || [],
+      project
+    );
   }
 
   return result;
+}
+
+// ============================================================
+// PASS 3: VALIDATION CROSS-CHECK
+// ============================================================
+
+async function validateArchitectureCrossCheck(
+  architecture: FullArchitecture,
+  brief: Brief,
+  attachmentContents: string[],
+  project: Project
+): Promise<FullArchitecture> {
+  const ai = await getClient();
+  const model = MODELS.sonnet;
+
+  const visualAnalysis = attachmentContents
+    .filter((c) => c.includes('[VISUAL ANALYSIS]'))
+    .join('\n\n');
+
+  const validationPrompt = `You are performing a final validation pass on a project architecture before code generation begins.
+
+ORIGINAL BRIEF:
+${brief.original_content.slice(0, 3000)}
+
+${visualAnalysis ? `VISUAL REFERENCES FROM ATTACHMENTS:\n${visualAnalysis.slice(0, 4000)}` : ''}
+
+ARCHITECTURE TO VALIDATE:
+${JSON.stringify(architecture, null, 2)}
+
+Validate that:
+1. Every requirement from the brief has a corresponding page, feature, or data model
+2. Every data model has all necessary fields for the features that use it
+3. User flows are complete (no dead-ends or missing steps)
+4. If visual references were provided, the designSystem colors and style match what was shown
+5. All foreign key relationships between data models are present and correct
+6. No critical pages are missing for the project type
+
+If EVERYTHING is correct, respond: {"valid": true, "fixes": {}}
+
+If issues are found, respond with specific fixes:
+{
+  "valid": false,
+  "fixes": {
+    "designSystem": {"primaryColor": "#corrected", ...},
+    "additionalFields": [{"model": "courses", "field": {"name": "thumbnail_url", "type": "text"}}],
+    "additionalPages": [...],
+    "missingFlows": [...]
+  }
+}
+
+Output valid JSON only.`;
+
+  try {
+    const response = await callWithRetry(
+      () => ai.messages.create({
+        model,
+        max_tokens: 8192,
+        messages: [{ role: 'user', content: validationPrompt }],
+      }),
+      2,
+      'architecture_validation'
+    );
+
+    const text = extractText(response);
+    await trackUsage(model, response.usage.input_tokens, response.usage.output_tokens, 'architecture_validation', project.id);
+
+    const validation = safeParseJSON<{
+      valid: boolean;
+      fixes?: {
+        designSystem?: FullArchitecture['designSystem'];
+        additionalFields?: { model: string; field: { name: string; type: string } }[];
+        additionalPages?: ArchitecturePage[];
+        missingFlows?: FullArchitecture['flows'];
+      };
+    }>(text, { valid: true });
+
+    if (!validation.valid && validation.fixes) {
+      if (validation.fixes.designSystem) {
+        architecture.designSystem = { ...architecture.designSystem, ...validation.fixes.designSystem };
+      }
+
+      if (validation.fixes.additionalFields) {
+        for (const af of validation.fixes.additionalFields) {
+          const model = (architecture.dataModels || []).find((m) => m.name === af.model);
+          if (model && model.fields) {
+            const exists = model.fields.some((f) => f.name === af.field.name);
+            if (!exists) {
+              model.fields.push(af.field as typeof model.fields[number]);
+            }
+          }
+        }
+      }
+
+      if (validation.fixes.additionalPages?.length) {
+        architecture.pages = [...(architecture.pages || []), ...validation.fixes.additionalPages];
+      }
+
+      if (validation.fixes.missingFlows?.length) {
+        architecture.flows = [...(architecture.flows || []), ...validation.fixes.missingFlows];
+      }
+
+      await logger.info('Architecture validation: applied fixes from cross-check', 'ai', project.id);
+    } else {
+      await logger.info('Architecture validation: all checks passed', 'ai', project.id);
+    }
+  } catch (err) {
+    await logger.warn(`Architecture validation failed (non-critical): ${err instanceof Error ? err.message : String(err)}`, 'ai', project.id);
+  }
+
+  return architecture;
 }
 
 // ============================================================
@@ -1238,8 +1355,9 @@ export async function analyzeScreenshotAllViewports(
     mobile: `Mobile-specific checks: hamburger menu, text readable without zooming, no horizontal overflow`,
   };
 
-  for (const [viewport, url] of entries) {
-    const prompt = `You are performing QA review of the "${pageName}" page - ${viewport.toUpperCase()} viewport.
+  const viewportAnalysis = await Promise.all(
+    entries.map(async ([viewport, url]) => {
+      const prompt = `You are performing QA review of the "${pageName}" page - ${viewport.toUpperCase()} viewport.
 
 EXPECTED: ${expectedDescription}
 
@@ -1253,26 +1371,29 @@ Respond with JSON only:
 
 Pass threshold: all scores >= 75 and no critical issues.`;
 
-    const result = await analyzeImage(url!, prompt, projectId, 'haiku');
+      const result = await analyzeImage(url!, prompt, projectId, 'haiku');
 
-    const parsed = safeParseJSON<{
-      issues: string[];
-      pass: boolean;
-      scores?: Record<string, number>;
-    }>(result, { issues: [], pass: true, scores: {} });
+      const parsed = safeParseJSON<{
+        issues: string[];
+        pass: boolean;
+        scores?: Record<string, number>;
+      }>(result, { issues: [], pass: true, scores: {} });
 
-    const scores = parsed.scores || {};
-    const avgScore = Object.values(scores).length > 0
-      ? Math.round(Object.values(scores).reduce((a, b) => a + b, 0) / Object.values(scores).length)
-      : parsed.pass ? 90 : 60;
+      const scores = parsed.scores || {};
+      const avgScore = Object.values(scores).length > 0
+        ? Math.round(Object.values(scores).reduce((a, b) => a + b, 0) / Object.values(scores).length)
+        : parsed.pass ? 90 : 60;
 
-    viewports.push({
-      viewport,
-      issues: parsed.issues,
-      pass: parsed.pass && avgScore >= 75,
-      score: avgScore,
-    });
-  }
+      return {
+        viewport,
+        issues: parsed.issues,
+        pass: parsed.pass && avgScore >= 75,
+        score: avgScore,
+      };
+    })
+  );
+
+  viewports.push(...viewportAnalysis);
 
   const overallScore = viewports.length > 0
     ? Math.round(viewports.reduce((a, v) => a + v.score, 0) / viewports.length)

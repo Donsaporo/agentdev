@@ -134,31 +134,27 @@ export async function capturePageScreenshots(
 
   await logger.info(`Capturing screenshots for ${pageName}`, 'qa', projectId);
 
-  const results: Record<string, string> = {};
-
-  for (const viewport of VIEWPORTS) {
-    try {
-      const buffer = await captureViewport(url, viewport.width, viewport.height);
-      if (!buffer) {
-        results[viewport.name] = '';
-        continue;
+  const viewportResults = await Promise.all(
+    VIEWPORTS.map(async (viewport) => {
+      try {
+        const buffer = await captureViewport(url, viewport.width, viewport.height);
+        if (!buffer) return { name: viewport.name, url: '' };
+        const publicUrl = await uploadToStorage(projectId, pageName, viewport.name, version, buffer);
+        return { name: viewport.name, url: publicUrl };
+      } catch (err) {
+        await logger.error(
+          `Screenshot failed for ${pageName} (${viewport.name}): ${err instanceof Error ? err.message : String(err)}`,
+          'qa',
+          projectId
+        );
+        return { name: viewport.name, url: '' };
       }
-      const publicUrl = await uploadToStorage(
-        projectId,
-        pageName,
-        viewport.name,
-        version,
-        buffer
-      );
-      results[viewport.name] = publicUrl;
-    } catch (err) {
-      await logger.error(
-        `Screenshot failed for ${pageName} (${viewport.name}): ${err instanceof Error ? err.message : String(err)}`,
-        'qa',
-        projectId
-      );
-      results[viewport.name] = '';
-    }
+    })
+  );
+
+  const results: Record<string, string> = {};
+  for (const vr of viewportResults) {
+    results[vr.name] = vr.url;
   }
 
   await logger.success(`Screenshots captured for ${pageName}`, 'qa', projectId);
@@ -172,6 +168,8 @@ export async function capturePageScreenshots(
   };
 }
 
+const PAGE_CONCURRENCY = 3;
+
 export async function captureAllPages(
   baseUrl: string,
   pages: { name: string; route: string }[],
@@ -180,17 +178,25 @@ export async function captureAllPages(
 ): Promise<ScreenshotResult[]> {
   const results: ScreenshotResult[] = [];
 
-  for (const page of pages) {
-    const url = `${baseUrl.replace(/\/$/, '')}${page.route}`;
-    try {
-      const result = await capturePageScreenshots(url, page.name, projectId, version);
-      results.push(result);
-    } catch (err) {
-      await logger.error(
-        `Failed to capture ${page.name}: ${err instanceof Error ? err.message : String(err)}`,
-        'qa',
-        projectId
-      );
+  for (let i = 0; i < pages.length; i += PAGE_CONCURRENCY) {
+    const batch = pages.slice(i, i + PAGE_CONCURRENCY);
+    const batchResults = await Promise.all(
+      batch.map(async (page) => {
+        const url = `${baseUrl.replace(/\/$/, '')}${page.route}`;
+        try {
+          return await capturePageScreenshots(url, page.name, projectId, version);
+        } catch (err) {
+          await logger.error(
+            `Failed to capture ${page.name}: ${err instanceof Error ? err.message : String(err)}`,
+            'qa',
+            projectId
+          );
+          return null;
+        }
+      })
+    );
+    for (const r of batchResults) {
+      if (r) results.push(r);
     }
   }
 

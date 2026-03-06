@@ -8,6 +8,7 @@ import {
   MessageSquare,
   MonitorCheck,
   Globe,
+  Server,
   Activity,
   Settings,
   LogOut,
@@ -26,6 +27,7 @@ const navItems = [
   { to: '/chat', icon: MessageSquare, label: 'Agent Chat', badgeKey: 'chat' as const },
   { to: '/qa', icon: MonitorCheck, label: 'QA Review', badgeKey: 'qa' as const },
   { to: '/domains', icon: Globe, label: 'Domains' },
+  { to: '/infrastructure', icon: Server, label: 'Infrastructure' },
   { to: '/activity', icon: Activity, label: 'Activity' },
   { to: '/settings', icon: Settings, label: 'Settings' },
 ];

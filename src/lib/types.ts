@@ -220,3 +220,32 @@ export interface TokenUsage {
   operation: string;
   created_at: string;
 }
+
+export interface Deployment {
+  id: string;
+  project_id: string;
+  vercel_deployment_id: string;
+  commit_sha: string;
+  url: string;
+  status: 'building' | 'ready' | 'error' | 'cancelled';
+  build_duration_seconds: number;
+  triggered_by: string;
+  build_logs: string;
+  created_at: string;
+  projects?: Project;
+}
+
+export interface PipelineState {
+  id: string;
+  project_id: string;
+  brief_id: string;
+  current_phase: string;
+  phase_data: Record<string, unknown>;
+  modules_completed: string[];
+  repo_full_name: string;
+  started_at: string;
+  last_checkpoint: string;
+  status: 'running' | 'paused' | 'failed' | 'completed';
+  created_at: string;
+  projects?: Project;
+}

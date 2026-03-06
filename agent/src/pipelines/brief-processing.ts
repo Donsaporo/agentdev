@@ -18,6 +18,7 @@ import {
   createSupabaseProject, waitForProjectReady, getProjectApiKeys,
   getProjectUrl, executeSqlOnProject, isManagementAvailable,
 } from '../services/supabase-management.js';
+import { saveCheckpoint, clearCheckpoint, recordDeployment } from '../core/pipeline-state.js';
 import type { Brief, Client, Project, FullArchitecture, BuildFixAttempt } from '../core/types.js';
 
 const CORE_FILE_PATTERNS = [
@@ -161,6 +162,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     }).eq('id', briefId);
 
     await sendChatMessage(projectId, `Analysis complete. Found ${totalPages} pages to build${architecture.requiresBackend ? ' with full backend' : ''}. Setting up the repository...`);
+    await saveCheckpoint(projectId, briefId, 'analysis_complete', { totalPages }, [], '');
 
     // ============================================================
     // PHASE 2: SCAFFOLDING
@@ -201,6 +203,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
     await updateProject(projectId, { progress: 15 });
     await sendChatMessage(projectId, `Repository created: ${repoUrl}\nScaffold pushed with ${scaffold.files.length} files.`);
+    await saveCheckpoint(projectId, briefId, 'scaffolding_complete', {}, [], fullName);
 
     // ============================================================
     // PHASE 2.5: BACKEND SETUP (if needed)
@@ -282,54 +285,89 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       if (task) moduleTasks.push({ ...task, module: mod });
     }
 
-    for (let i = 0; i < moduleTasks.length; i++) {
-      const task = moduleTasks[i];
-      const mod = task.module;
-      const taskStartTime = Date.now();
+    const priorityModules = ['auth', 'support'];
+    const phase1Tasks = moduleTasks.filter((t) => priorityModules.some((p) => t.module.name.toLowerCase().includes(p)));
+    const phase2Tasks = moduleTasks.filter((t) => !phase1Tasks.includes(t));
 
-      await supabase.from('project_tasks').update({
-        status: 'in_progress',
-        started_at: new Date().toISOString(),
-      }).eq('id', task.id);
+    const MODULE_CONCURRENCY = 2;
 
-      await sendChatMessage(projectId, `Building ${mod.name} module (${mod.pages.length} pages) [${i + 1}/${moduleTasks.length}]...`);
+    async function buildModuleBatch(
+      tasks: typeof moduleTasks,
+      batchLabel: string,
+      completedBefore: number
+    ): Promise<void> {
+      for (let i = 0; i < tasks.length; i += MODULE_CONCURRENCY) {
+        const batch = tasks.slice(i, i + MODULE_CONCURRENCY);
 
-      try {
         const repoFiles = await getRepoFiles(fullName);
         const coreFilePaths = getCoreFilePaths(repoFiles);
         const coreFiles = await getMultipleFileContents(fullName, coreFilePaths.slice(0, 30));
         const allPaths = repoFiles.filter((f) => f.type === 'file').map((f) => f.path);
 
-        const codeResult = await generateModuleCode(
-          mod,
-          project as unknown as Project,
-          client,
-          architecture,
-          coreFiles,
-          allPaths
-        );
-
-        if (codeResult.files.length > 0) {
-          await pushFiles(fullName, codeResult.files, `feat: implement ${mod.name} module (${mod.pages.map((p) => p.name).join(', ')})`, projectId);
+        for (const task of batch) {
+          await supabase.from('project_tasks').update({
+            status: 'in_progress',
+            started_at: new Date().toISOString(),
+          }).eq('id', task.id);
         }
 
-        const durationSeconds = Math.round((Date.now() - taskStartTime) / 1000);
-        await supabase.from('project_tasks').update({
-          status: 'completed',
-          completed_at: new Date().toISOString(),
-          duration_seconds: durationSeconds,
-        }).eq('id', task.id);
+        const batchNames = batch.map((t) => t.module.name).join(', ');
+        await sendChatMessage(projectId, `Building ${batchLabel}: ${batchNames} [${Math.min(i + MODULE_CONCURRENCY, tasks.length)}/${tasks.length}]...`);
 
-        const progress = 20 + Math.round(((i + 1) / moduleTasks.length) * 45);
+        const batchResults = await Promise.all(
+          batch.map(async (task) => {
+            const taskStartTime = Date.now();
+            try {
+              const codeResult = await generateModuleCode(
+                task.module,
+                project as unknown as Project,
+                client,
+                architecture,
+                coreFiles,
+                allPaths
+              );
+
+              const durationSeconds = Math.round((Date.now() - taskStartTime) / 1000);
+              return { task, files: codeResult.files, durationSeconds, error: null };
+            } catch (err) {
+              const errMsg = err instanceof Error ? err.message : String(err);
+              return { task, files: [], durationSeconds: 0, error: errMsg };
+            }
+          })
+        );
+
+        const allFiles = batchResults.flatMap((r) => r.files);
+        if (allFiles.length > 0) {
+          await pushFiles(fullName, allFiles, `feat: implement ${batchNames}`, projectId);
+        }
+
+        for (const result of batchResults) {
+          if (result.error) {
+            await supabase.from('project_tasks').update({
+              status: 'failed',
+              error_log: result.error,
+            }).eq('id', result.task.id);
+            await logger.error(`Module failed: ${result.task.module.name}: ${result.error}`, 'development', projectId);
+          } else {
+            await supabase.from('project_tasks').update({
+              status: 'completed',
+              completed_at: new Date().toISOString(),
+              duration_seconds: result.durationSeconds,
+            }).eq('id', result.task.id);
+          }
+        }
+
+        const completed = completedBefore + Math.min(i + MODULE_CONCURRENCY, tasks.length);
+        const progress = 20 + Math.round((completed / moduleTasks.length) * 45);
         await updateProject(projectId, { progress });
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        await supabase.from('project_tasks').update({
-          status: 'failed',
-          error_log: errMsg,
-        }).eq('id', task.id);
-        await logger.error(`Module failed: ${mod.name}: ${errMsg}`, 'development', projectId);
       }
+    }
+
+    if (phase1Tasks.length > 0) {
+      await buildModuleBatch(phase1Tasks, 'foundation modules', 0);
+    }
+    if (phase2Tasks.length > 0) {
+      await buildModuleBatch(phase2Tasks, 'feature modules', phase1Tasks.length);
     }
 
     // ============================================================
@@ -465,14 +503,28 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       await logger.info('Set Supabase env vars on Vercel project', 'deployment', projectId);
     }
 
+    const deployStartTime = Date.now();
     const deployment = await triggerDeployment(repoName, projectId);
     const result = await waitForDeployment(deployment.deploymentId, projectId);
+    const deployDuration = Math.round((Date.now() - deployStartTime) / 1000);
+
+    await recordDeployment(
+      projectId,
+      deployment.deploymentId,
+      '',
+      result.url || '',
+      result.status === 'ready' ? 'ready' : 'error',
+      deployDuration,
+      'auto',
+      result.buildLogs || ''
+    );
 
     if (result.status !== 'ready') {
       await supabase.from('briefs').update({ status: 'failed' }).eq('id', briefId);
       await updateProject(projectId, { agent_status: 'idle', last_error_message: result.buildLogs || 'Deployment failed' });
       await sendChatMessage(projectId, `Deployment failed: ${result.buildLogs || 'Unknown error'}. Check the logs.`);
       await notifyError(project.name, result.buildLogs || 'Deployment failed', projectId);
+      await clearCheckpoint(projectId, 'failed');
       return;
     }
 
@@ -633,6 +685,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     }
 
     await supabase.from('briefs').update({ status: 'completed' }).eq('id', briefId);
+    await clearCheckpoint(projectId, 'completed');
     await logger.success('Brief processing pipeline complete', 'development', projectId);
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
@@ -641,6 +694,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       await logger.error(`Brief processing failed: ${errMsg}`, 'development', projectId);
       await updateProject(projectId, { agent_status: 'idle', last_error_message: errMsg });
       await sendChatMessage(projectId, `An error occurred: ${errMsg}`);
+      await clearCheckpoint(projectId, 'failed');
       const { data: proj } = await supabase.from('projects').select('name').eq('id', projectId).maybeSingle();
       if (proj) await notifyError(proj.name, errMsg, projectId);
     } catch (innerErr) {

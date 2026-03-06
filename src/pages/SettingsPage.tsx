@@ -20,12 +20,6 @@ const sections: SettingsSection[] = [
   { id: 'security', label: 'Security', icon: Shield },
 ];
 
-const MODEL_OPTIONS = [
-  { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4 (Balanced)' },
-  { value: 'claude-opus-4-20250514', label: 'Claude Opus 4 (Complex tasks)' },
-  { value: 'claude-haiku-3-20250515', label: 'Claude Haiku 3 (Fast/Simple)' },
-];
-
 const CORRECTION_OPTIONS = [
   { value: 3, label: '3 attempts' },
   { value: 5, label: '5 attempts' },
@@ -247,13 +241,6 @@ export default function SettingsPage() {
                 </div>
               ) : (
                 <div className="space-y-5">
-                  <div>
-                    <label className="block text-sm font-medium text-slate-300 mb-1.5">Default AI Model</label>
-                    <p className="text-xs text-slate-500 mb-2">Which Claude model to use for code generation</p>
-                    <select value={(getValue('default_model', 'claude-sonnet-4-20250514') as string)} onChange={e => handleSaveConfig('default_model', e.target.value)} className="w-full glass-select">
-                      {MODEL_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
-                    </select>
-                  </div>
                   <div>
                     <label className="block text-sm font-medium text-slate-300 mb-1.5">Auto-deploy to demo</label>
                     <p className="text-xs text-slate-500 mb-2">Automatically deploy to Vercel after QA passes</p>

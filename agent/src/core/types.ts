@@ -249,10 +249,37 @@ export interface BuildFixAttempt {
 }
 
 export interface QueueEvent {
-  type: 'brief_approved' | 'chat_message' | 'qa_rejected';
+  type: 'brief_approved' | 'chat_message' | 'qa_rejected' | 'redeploy_project' | 'delete_project' | 'pause_project';
   projectId: string;
   payload: Record<string, unknown>;
   timestamp: number;
+}
+
+export interface Deployment {
+  id: string;
+  project_id: string;
+  vercel_deployment_id: string;
+  commit_sha: string;
+  url: string;
+  status: 'building' | 'ready' | 'error' | 'cancelled';
+  build_duration_seconds: number;
+  triggered_by: 'auto' | 'manual' | 'qa_fix';
+  build_logs: string;
+  created_at: string;
+}
+
+export interface PipelineState {
+  id: string;
+  project_id: string;
+  brief_id: string;
+  current_phase: string;
+  phase_data: Record<string, unknown>;
+  modules_completed: string[];
+  repo_full_name: string;
+  started_at: string;
+  last_checkpoint: string;
+  status: 'running' | 'paused' | 'failed' | 'completed';
+  created_at: string;
 }
 
 export interface GeneratedFile {

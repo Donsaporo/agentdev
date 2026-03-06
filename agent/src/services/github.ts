@@ -158,13 +158,61 @@ export async function getMultipleFileContents(
   filePaths: string[]
 ): Promise<{ path: string; content: string }[]> {
   const results: { path: string; content: string }[] = [];
+  const BATCH_SIZE = 15;
 
-  for (const filePath of filePaths) {
-    const content = await getFileContent(repoFullName, filePath);
-    if (content !== null) {
-      results.push({ path: filePath, content });
+  for (let i = 0; i < filePaths.length; i += BATCH_SIZE) {
+    const batch = filePaths.slice(i, i + BATCH_SIZE);
+    const batchResults = await Promise.all(
+      batch.map(async (filePath) => {
+        const content = await getFileContent(repoFullName, filePath);
+        return content !== null ? { path: filePath, content } : null;
+      })
+    );
+    for (const r of batchResults) {
+      if (r) results.push(r);
     }
   }
 
   return results;
+}
+
+export async function getRepoTree(
+  repoFullName: string
+): Promise<{ path: string; type: string; size: number }[]> {
+  const gh = await getClient();
+  const [owner, repo] = repoFullName.split('/');
+
+  try {
+    const { data } = await gh.rest.git.getTree({ owner, repo, tree_sha: 'main', recursive: '1' });
+    return (data.tree || [])
+      .filter((item): item is typeof item & { path: string } => !!item.path)
+      .map((item) => ({
+        path: item.path,
+        type: item.type === 'blob' ? 'file' : 'dir',
+        size: item.size || 0,
+      }));
+  } catch {
+    return getRepoFiles(repoFullName);
+  }
+}
+
+export async function deleteRepo(
+  repoFullName: string,
+  projectId: string
+): Promise<boolean> {
+  const gh = await getClient();
+  const [owner, repo] = repoFullName.split('/');
+
+  try {
+    await gh.rest.repos.delete({ owner, repo });
+    await logger.success(`Deleted repo ${repoFullName}`, 'github', projectId);
+    return true;
+  } catch (err) {
+    await logger.error(
+      `Failed to delete repo ${repoFullName}: ${err instanceof Error ? err.message : String(err)}`,
+      'github',
+      projectId
+    );
+    return false;
+  }
 }
