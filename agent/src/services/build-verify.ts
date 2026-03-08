@@ -240,7 +240,8 @@ export function hashErrors(errors: string[]): string {
 }
 
 export async function validateScaffold(
-  files: { path: string; content: string }[]
+  files: { path: string; content: string }[],
+  architecture?: { pages?: { name: string; route: string }[]; requiresBackend?: boolean }
 ): Promise<{ valid: boolean; issues: string[]; fixedFiles: { path: string; content: string }[] }> {
   const issues: string[] = [];
   const fixedFiles: { path: string; content: string }[] = [];
@@ -248,52 +249,280 @@ export async function validateScaffold(
   const pkgFile = files.find((f) => f.path === 'package.json');
   if (!pkgFile) {
     issues.push('Missing package.json');
-    return { valid: false, issues, fixedFiles };
+    fixedFiles.push({ path: 'package.json', content: JSON.stringify(generateFallbackPackageJson(architecture?.requiresBackend), null, 2) });
   }
 
-  try {
-    const pkg = JSON.parse(pkgFile.content);
+  const pkgContent = pkgFile?.content || fixedFiles.find((f) => f.path === 'package.json')?.content;
+  if (pkgContent) {
+    try {
+      const pkg = JSON.parse(pkgContent);
+      let modified = false;
 
-    if (!pkg.scripts?.build) {
-      pkg.scripts = pkg.scripts || {};
-      pkg.scripts.build = 'vite build';
-      issues.push('Added missing "build" script');
-    }
-    if (!pkg.scripts?.dev) {
-      pkg.scripts = pkg.scripts || {};
-      pkg.scripts.dev = 'vite';
-      issues.push('Added missing "dev" script');
-    }
+      if (!pkg.scripts?.build) {
+        pkg.scripts = pkg.scripts || {};
+        pkg.scripts.build = 'vite build';
+        issues.push('Added missing "build" script');
+        modified = true;
+      }
+      if (!pkg.scripts?.dev) {
+        pkg.scripts = pkg.scripts || {};
+        pkg.scripts.dev = 'vite';
+        issues.push('Added missing "dev" script');
+        modified = true;
+      }
 
-    const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
-    for (const key of Object.keys(allDeps)) {
-      for (const rnPkg of REACT_NATIVE_PACKAGES) {
-        if (key === rnPkg || key.startsWith(rnPkg)) {
-          if (pkg.dependencies?.[key]) delete pkg.dependencies[key];
-          if (pkg.devDependencies?.[key]) delete pkg.devDependencies[key];
-          issues.push(`Removed React Native package: ${key}`);
+      const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
+      for (const key of Object.keys(allDeps)) {
+        for (const rnPkg of REACT_NATIVE_PACKAGES) {
+          if (key === rnPkg || key.startsWith(rnPkg)) {
+            if (pkg.dependencies?.[key]) delete pkg.dependencies[key];
+            if (pkg.devDependencies?.[key]) delete pkg.devDependencies[key];
+            issues.push(`Removed React Native package: ${key}`);
+            modified = true;
+          }
         }
       }
-    }
 
-    if (issues.length > 0) {
-      fixedFiles.push({ path: 'package.json', content: JSON.stringify(pkg, null, 2) });
+      if (!pkg.dependencies?.react) { pkg.dependencies = pkg.dependencies || {}; pkg.dependencies.react = '^18.3.1'; modified = true; }
+      if (!pkg.dependencies?.['react-dom']) { pkg.dependencies['react-dom'] = '^18.3.1'; modified = true; }
+      if (!pkg.dependencies?.['react-router-dom']) { pkg.dependencies['react-router-dom'] = '^7.1.0'; modified = true; }
+      if (!pkg.dependencies?.['lucide-react']) { pkg.dependencies['lucide-react'] = '^0.344.0'; modified = true; }
+      if (!pkg.devDependencies?.vite) { pkg.devDependencies = pkg.devDependencies || {}; pkg.devDependencies.vite = '^5.4.2'; modified = true; }
+      if (!pkg.devDependencies?.['@vitejs/plugin-react']) { pkg.devDependencies['@vitejs/plugin-react'] = '^4.3.1'; modified = true; }
+      if (!pkg.devDependencies?.typescript) { pkg.devDependencies.typescript = '^5.5.3'; modified = true; }
+      if (!pkg.devDependencies?.tailwindcss && !pkg.dependencies?.tailwindcss) { pkg.devDependencies.tailwindcss = '^3.4.1'; modified = true; }
+
+      if (modified) {
+        const existing = fixedFiles.findIndex((f) => f.path === 'package.json');
+        if (existing >= 0) fixedFiles[existing] = { path: 'package.json', content: JSON.stringify(pkg, null, 2) };
+        else fixedFiles.push({ path: 'package.json', content: JSON.stringify(pkg, null, 2) });
+      }
+    } catch {
+      issues.push('Invalid package.json JSON');
     }
-  } catch {
-    issues.push('Invalid package.json JSON');
   }
 
   const hasViteConfig = files.some((f) => f.path.includes('vite.config'));
-  if (!hasViteConfig) issues.push('Missing vite.config.ts');
+  if (!hasViteConfig) {
+    issues.push('Missing vite.config.ts -- auto-generated');
+    fixedFiles.push({ path: 'vite.config.ts', content: FALLBACK_VITE_CONFIG });
+  }
 
   const hasIndexHtml = files.some((f) => f.path === 'index.html');
-  if (!hasIndexHtml) issues.push('Missing index.html');
+  if (!hasIndexHtml) {
+    issues.push('Missing index.html -- auto-generated');
+    fixedFiles.push({ path: 'index.html', content: FALLBACK_INDEX_HTML });
+  }
 
   const hasMainTsx = files.some((f) => f.path.includes('src/main.tsx'));
-  if (!hasMainTsx) issues.push('Missing src/main.tsx');
+  if (!hasMainTsx) {
+    issues.push('Missing src/main.tsx -- auto-generated');
+    fixedFiles.push({ path: 'src/main.tsx', content: generateFallbackMain(architecture?.requiresBackend) });
+  }
 
   const hasAppTsx = files.some((f) => f.path.includes('src/App.tsx'));
-  if (!hasAppTsx) issues.push('Missing src/App.tsx');
+  if (!hasAppTsx) {
+    issues.push('Missing src/App.tsx -- auto-generated');
+    fixedFiles.push({ path: 'src/App.tsx', content: generateFallbackApp(architecture?.pages) });
+  }
+
+  const hasTsConfig = files.some((f) => f.path === 'tsconfig.json');
+  if (!hasTsConfig) {
+    issues.push('Missing tsconfig.json -- auto-generated');
+    fixedFiles.push({ path: 'tsconfig.json', content: FALLBACK_TSCONFIG });
+    fixedFiles.push({ path: 'tsconfig.app.json', content: FALLBACK_TSCONFIG_APP });
+    fixedFiles.push({ path: 'tsconfig.node.json', content: FALLBACK_TSCONFIG_NODE });
+  }
+
+  const hasTailwindConfig = files.some((f) => f.path.includes('tailwind.config'));
+  if (!hasTailwindConfig) {
+    issues.push('Missing tailwind.config.js -- auto-generated');
+    fixedFiles.push({ path: 'tailwind.config.js', content: FALLBACK_TAILWIND_CONFIG });
+  }
+
+  const hasPostcssConfig = files.some((f) => f.path.includes('postcss.config'));
+  if (!hasPostcssConfig) {
+    fixedFiles.push({ path: 'postcss.config.js', content: FALLBACK_POSTCSS_CONFIG });
+  }
+
+  const hasIndexCss = files.some((f) => f.path === 'src/index.css');
+  if (!hasIndexCss) {
+    fixedFiles.push({ path: 'src/index.css', content: FALLBACK_INDEX_CSS });
+  }
 
   return { valid: issues.length === 0, issues, fixedFiles };
 }
+
+function generateFallbackPackageJson(hasBackend?: boolean): Record<string, unknown> {
+  const deps: Record<string, string> = {
+    'react': '^18.3.1',
+    'react-dom': '^18.3.1',
+    'react-router-dom': '^7.1.0',
+    'lucide-react': '^0.344.0',
+  };
+  if (hasBackend) deps['@supabase/supabase-js'] = '^2.57.4';
+  return {
+    name: 'project',
+    private: true,
+    version: '0.0.0',
+    type: 'module',
+    scripts: { dev: 'vite', build: 'vite build', preview: 'vite preview' },
+    dependencies: deps,
+    devDependencies: {
+      '@vitejs/plugin-react': '^4.3.1',
+      'autoprefixer': '^10.4.18',
+      'postcss': '^8.4.35',
+      'tailwindcss': '^3.4.1',
+      'typescript': '^5.5.3',
+      'vite': '^5.4.2',
+      '@types/react': '^18.3.5',
+      '@types/react-dom': '^18.3.0',
+    },
+  };
+}
+
+function generateFallbackMain(hasBackend?: boolean): string {
+  if (hasBackend) {
+    return `import React from 'react';
+import ReactDOM from 'react-dom/client';
+import { BrowserRouter } from 'react-router-dom';
+import App from './App';
+import './index.css';
+
+ReactDOM.createRoot(document.getElementById('root')!).render(
+  <React.StrictMode>
+    <BrowserRouter>
+      <App />
+    </BrowserRouter>
+  </React.StrictMode>
+);`;
+  }
+  return `import React from 'react';
+import ReactDOM from 'react-dom/client';
+import { BrowserRouter } from 'react-router-dom';
+import App from './App';
+import './index.css';
+
+ReactDOM.createRoot(document.getElementById('root')!).render(
+  <React.StrictMode>
+    <BrowserRouter>
+      <App />
+    </BrowserRouter>
+  </React.StrictMode>
+);`;
+}
+
+function generateFallbackApp(pages?: { name: string; route: string }[]): string {
+  if (!pages || pages.length === 0) {
+    return `import { Routes, Route } from 'react-router-dom';
+
+export default function App() {
+  return (
+    <Routes>
+      <Route path="/" element={<div className="min-h-screen flex items-center justify-center"><h1 className="text-2xl font-bold">Welcome</h1></div>} />
+    </Routes>
+  );
+}`;
+  }
+  const imports = pages.map((p) => {
+    const componentName = p.name.replace(/[^a-zA-Z0-9]/g, '');
+    const fileName = componentName;
+    return { componentName, fileName, route: p.route };
+  });
+  const importLines = imports.map((i) => `import ${i.componentName} from './pages/${i.fileName}';`).join('\n');
+  const routeLines = imports.map((i) => `      <Route path="${i.route}" element={<${i.componentName} />} />`).join('\n');
+  return `import { Routes, Route } from 'react-router-dom';
+${importLines}
+
+export default function App() {
+  return (
+    <Routes>
+${routeLines}
+    </Routes>
+  );
+}`;
+}
+
+const FALLBACK_VITE_CONFIG = `import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+
+export default defineConfig({
+  plugins: [react()],
+});`;
+
+const FALLBACK_INDEX_HTML = `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>App</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>`;
+
+const FALLBACK_TSCONFIG = `{
+  "files": [],
+  "references": [
+    { "path": "./tsconfig.app.json" },
+    { "path": "./tsconfig.node.json" }
+  ]
+}`;
+
+const FALLBACK_TSCONFIG_APP = `{
+  "compilerOptions": {
+    "target": "ES2020",
+    "useDefineForClassFields": true,
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["src"]
+}`;
+
+const FALLBACK_TSCONFIG_NODE = `{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "strict": true
+  },
+  "include": ["vite.config.ts"]
+}`;
+
+const FALLBACK_TAILWIND_CONFIG = `/** @type {import('tailwindcss').Config} */
+export default {
+  content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
+  theme: { extend: {} },
+  plugins: [],
+};`;
+
+const FALLBACK_POSTCSS_CONFIG = `export default {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {},
+  },
+};`;
+
+const FALLBACK_INDEX_CSS = `@tailwind base;
+@tailwind components;
+@tailwind utilities;`;

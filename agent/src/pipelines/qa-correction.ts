@@ -41,8 +41,18 @@ export async function handleQARejection(
   const supabase = getSupabase();
   const config = await getConfig();
 
+  let isPipelineRunning = false;
   try {
-    await supabase.from('projects').update({ agent_status: 'working' }).eq('id', projectId);
+    const { data: currentProject } = await supabase
+      .from('projects')
+      .select('agent_status')
+      .eq('id', projectId)
+      .maybeSingle();
+    isPipelineRunning = currentProject?.agent_status === 'working';
+
+    if (!isPipelineRunning) {
+      await supabase.from('projects').update({ agent_status: 'working' }).eq('id', projectId);
+    }
     await sendChatMessage(projectId, `Working on QA fix for "${pageName}": ${rejectionNotes}`);
 
     const { data: screenshot } = await supabase
@@ -143,12 +153,16 @@ export async function handleQARejection(
       }
     }
 
-    await supabase.from('projects').update({ agent_status: 'idle' }).eq('id', projectId);
+    if (!isPipelineRunning) {
+      await supabase.from('projects').update({ agent_status: 'idle' }).eq('id', projectId);
+    }
     await logger.success(`QA correction complete for ${pageName}`, 'qa', projectId);
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     await logger.error(`QA correction failed: ${errMsg}`, 'qa', projectId);
     await sendChatMessage(projectId, `QA correction failed: ${errMsg}`);
-    await supabase.from('projects').update({ agent_status: 'idle', last_error_message: errMsg }).eq('id', projectId);
+    if (!isPipelineRunning) {
+      await supabase.from('projects').update({ agent_status: 'idle', last_error_message: errMsg }).eq('id', projectId);
+    }
   }
 }

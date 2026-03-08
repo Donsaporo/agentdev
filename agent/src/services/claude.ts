@@ -335,7 +335,8 @@ You decompose client briefs into comprehensive, buildable architecture plans tha
 DECOMPOSITION FRAMEWORK (follow this EXACTLY):
 
 STEP 1 - CLASSIFY THE PROJECT:
-Determine the project type: website, landing, ecommerce, crm, lms, dashboard, saas, blog, portfolio, marketplace, or custom.
+Determine the project type: website, landing, ecommerce, crm, lms, dashboard, saas, blog, portfolio, marketplace, pwa, or custom.
+If the brief mentions "mobile app", "iOS", "Android", or "app", ALWAYS set projectType to "pwa" and design as a Progressive Web App with mobile-first responsive design, bottom navigation, and installable PWA manifest.
 If the brief mentions "demo" explicitly, mark it as a demo project.
 
 STEP 2 - IDENTIFY USER ROLES:
@@ -414,7 +415,7 @@ Respond with this exact JSON structure (fill ALL fields completely):
   "architecture": {
     "framework": "vite-react",
     "styling": "tailwindcss",
-    "projectType": "lms|ecommerce|crm|website|landing|dashboard|saas|blog|portfolio|marketplace|custom",
+    "projectType": "lms|ecommerce|crm|website|landing|dashboard|saas|blog|portfolio|marketplace|pwa|custom",
     "requiresBackend": true,
     "userRoles": [
       {"name": "student", "permissions": ["view_courses", "enroll", "track_progress"], "description": "End user learning on the platform"},
@@ -1174,19 +1175,37 @@ export async function generateBuildFix(
   existingFiles: { path: string; content: string }[],
   previousAttempts: BuildFixAttempt[],
   attempt: number,
-  maxAttempts: number
+  maxAttempts: number,
+  options?: { forceOpus?: boolean; strategy?: 'standard' | 'simplify' | 'regenerate' }
 ): Promise<ClaudeCodeResponse> {
   const ai = await getClient();
-  const useOpus = attempt >= maxAttempts - 1;
+  const useOpus = options?.forceOpus || attempt >= maxAttempts - 1;
   const model = useOpus ? MODELS.opus : MODELS.sonnet;
+  const strategy = options?.strategy || 'standard';
 
   const previousAttemptsContext = previousAttempts.length > 0
-    ? `\n\nPREVIOUS FIX ATTEMPTS THAT FAILED:\n${previousAttempts.map((a, i) => `--- Attempt ${i + 1} ---\nErrors: ${a.errorsText}`).join('\n\n')}\n\nIMPORTANT: The above approaches did NOT work. Try a DIFFERENT strategy.`
+    ? `\n\nPREVIOUS FIX ATTEMPTS THAT FAILED:\n${previousAttempts.map((a, i) => `--- Attempt ${i + 1} ---\nErrors: ${a.errorsText}`).join('\n\n')}\n\nIMPORTANT: The above approaches did NOT work. Try a COMPLETELY DIFFERENT strategy.`
     : '';
 
   const existingContext = existingFiles
     .map((f) => `--- ${f.path} ---\n${f.content}`)
     .join('\n\n');
+
+  const strategyInstructions: Record<string, string> = {
+    standard: `Fix the root cause, not just the symptom.
+- If a dependency doesn't exist in npm, REMOVE it from package.json
+- If an import references a file that doesn't exist, either create the file or remove the import`,
+    simplify: `SIMPLIFICATION STRATEGY: Remove complexity to make the build pass.
+- Remove ALL imports that reference non-existent files instead of creating them
+- Replace complex components with simple placeholder implementations
+- Remove unused dependencies from package.json
+- Goal: make the build PASS even if some features are simplified`,
+    regenerate: `REGENERATION STRATEGY: Rewrite broken files from scratch.
+- Do NOT try to patch existing code -- write fresh implementations
+- Use ONLY imports that you can verify exist in the files provided below
+- Keep implementations simple but functional
+- Every component must compile independently`,
+  };
 
   const systemPrompt = `You are a senior developer fixing build errors in a React + Vite + TypeScript project.
 ${useOpus ? 'This is the FINAL attempt. Apply the most robust fix possible.' : ''}
@@ -1196,17 +1215,15 @@ RULES:
 - Every file MUST start with: // FILE: path/to/file.ext
 - Wrap each file in a code block
 - Output COMPLETE file contents (not partial patches)
-- Fix the root cause, not just the symptom
-- If a dependency doesn't exist in npm, REMOVE it from package.json
-- If an import references a file that doesn't exist, either create the file or remove the import
+- ${strategyInstructions[strategy] || strategyInstructions.standard}
 - NEVER introduce React Native or Expo dependencies
-${previousAttempts.length > 0 ? '- Previous fix attempts failed. You MUST take a different approach.' : ''}`;
+${previousAttempts.length > 0 ? '- Previous fix attempts failed. You MUST take a COMPLETELY different approach.' : ''}`;
 
-  const userPrompt = `BUILD ERRORS (attempt ${attempt}/${maxAttempts}):
+  const userPrompt = `BUILD ERRORS (attempt ${attempt}/${maxAttempts}, strategy: ${strategy}):
 ${buildErrors.join('\n')}
 
 FULL BUILD OUTPUT:
-${buildOutput.slice(0, 4000)}
+${buildOutput.slice(0, 5000)}
 ${previousAttemptsContext}
 
 EXISTING CODE:
@@ -1214,18 +1231,21 @@ ${existingContext}
 
 Fix all errors. Output complete corrected files.`;
 
+  const thinkingParams = useOpus ? buildThinkingParams({ enabled: true, budgetTokens: 10000 }) : {};
+
   const response = await callWithRetry(
     () => ai.messages.create({
       model,
       max_tokens: 32000,
       system: systemPrompt,
       messages: [{ role: 'user', content: userPrompt }],
+      ...thinkingParams,
     }),
     3,
     'build_fix'
   );
 
-  const text = extractText(response);
+  const { text } = extractThinkingAndText(response);
   const files = parseCodeBlocks(text);
   await trackUsage(model, response.usage.input_tokens, response.usage.output_tokens, 'build_fix', project.id);
 

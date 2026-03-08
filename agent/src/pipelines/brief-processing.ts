@@ -17,6 +17,7 @@ import { setCnameRecord } from '../services/namecheap.js';
 import {
   createSupabaseProject, waitForProjectReady, getProjectApiKeys,
   getProjectUrl, executeSqlOnProject, isManagementAvailable,
+  findExistingProject, executeSqlStatements,
 } from '../services/supabase-management.js';
 import { saveCheckpoint, clearCheckpoint, recordDeployment, getCheckpoint } from '../core/pipeline-state.js';
 import type { Brief, Client, Project, FullArchitecture, BuildFixAttempt } from '../core/types.js';
@@ -83,20 +84,35 @@ export async function processBrief(projectId: string, briefId: string): Promise<
   const supabase = getSupabase();
   const config = await getConfig();
 
-  const existingCheckpoint = await getCheckpoint(projectId);
-  if (existingCheckpoint && existingCheckpoint.brief_id === briefId) {
+  const checkpoint = await getCheckpoint(projectId);
+  const isResuming = !!(checkpoint && checkpoint.brief_id === briefId);
+  const CHECKPOINT_TTL_HOURS = 12;
+
+  const checkpointExpired = checkpoint && checkpoint.last_checkpoint
+    ? (Date.now() - new Date(checkpoint.last_checkpoint).getTime()) > CHECKPOINT_TTL_HOURS * 60 * 60 * 1000
+    : false;
+
+  if (isResuming && !checkpointExpired) {
     await logger.info(
-      `Found checkpoint at phase "${existingCheckpoint.current_phase}" for project ${projectId}. Resuming...`,
+      `Found checkpoint at phase "${checkpoint.current_phase}" for project ${projectId}. Resuming...`,
       'development',
       projectId
     );
-    await sendChatMessage(projectId, `Resuming from checkpoint: ${existingCheckpoint.current_phase}. Previous progress preserved.`);
+    await sendChatMessage(projectId, `Resuming from checkpoint: ${checkpoint.current_phase}. Previous progress preserved.`);
+  } else if (isResuming && checkpointExpired) {
+    await logger.info('Checkpoint expired (>12h), starting fresh', 'development', projectId);
+    await clearCheckpoint(projectId, 'failed');
   }
+
+  const resumePhase = (isResuming && !checkpointExpired) ? checkpoint.current_phase : null;
+  const skipAnalysis = resumePhase && ['scaffolding', 'scaffolding_complete', 'backend_setup', 'development', 'completeness_check'].includes(resumePhase);
+  const skipScaffolding = resumePhase && ['backend_setup', 'development', 'completeness_check'].includes(resumePhase);
+  const skipBackend = resumePhase && ['development', 'completeness_check'].includes(resumePhase);
 
   try {
     await supabase.from('briefs').update({ status: 'processing' }).eq('id', briefId);
     await updateProject(projectId, { agent_status: 'working', current_phase: 'analysis', status: 'in_progress', last_error_message: null });
-    await sendChatMessage(projectId, 'Starting to process your brief. Analyzing requirements...');
+    await sendChatMessage(projectId, skipAnalysis ? 'Resuming build from checkpoint...' : 'Starting to process your brief. Analyzing requirements...');
 
     const { data: brief } = await supabase.from('briefs').select('*').eq('id', briefId).maybeSingle();
     if (!brief) throw new Error(`Brief ${briefId} not found`);
@@ -111,174 +127,224 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     const client = project.clients as Client;
 
     // ============================================================
-    // PHASE 1: ANALYSIS
+    // PHASE 1: ANALYSIS (skip if resuming past this phase)
     // ============================================================
 
-    const { data: attachments } = await supabase
-      .from('brief_attachments')
-      .select('file_name, file_url, file_type')
-      .eq('brief_id', briefId);
-
-    let attachmentContents: string[] = [];
-    if (attachments && attachments.length > 0) {
-      await sendChatMessage(projectId, `Processing ${attachments.length} attached file(s)...`);
-      const processed = await processAttachments(attachments, projectId);
-      attachmentContents = processed.map(p => `[${p.fileName} (${p.fileType})]\n${p.content}`);
-
-      for (const p of processed) {
-        await supabase
-          .from('brief_attachments')
-          .update({ processing_status: 'processed', extracted_content: p.content.slice(0, 10000) })
-          .eq('brief_id', briefId)
-          .eq('file_name', p.fileName);
-      }
-    }
-
-    const referenceContents = await researchReferenceUrls(brief.original_content, projectId, client.name, client.industry);
-    if (referenceContents.length > 0) {
-      await sendChatMessage(projectId, `Analyzed ${referenceContents.length} reference website(s) from the brief.`);
-      attachmentContents = [...attachmentContents, ...referenceContents];
-    }
-
-    await logger.info('Phase 1: Analyzing brief', 'development', projectId);
-    const analysis = await analyzeBrief(brief as Brief, client, project as unknown as Project, attachmentContents);
-
-    if (analysis.questions.length > 0) {
-      await supabase.from('briefs').update({
-        parsed_requirements: analysis.requirements,
-        architecture_plan: analysis.architecture as unknown as Record<string, unknown>,
-        questions: analysis.questions.map((q, i) => ({
-          id: `q-${i}`,
-          question: q.question,
-          category: q.category,
-          answered: false,
-        })),
-        status: 'questions_pending',
-      }).eq('id', briefId);
-
-      await updateProject(projectId, { agent_status: 'waiting' });
-      const questionList = analysis.questions.map((q) => `- ${q.question}`).join('\n');
-      await sendChatMessage(projectId, `I have some questions before I can start building:\n\n${questionList}\n\nPlease answer these in the Brief section and send the brief back to me.`);
-      await logger.info('Questions sent to team, waiting for answers', 'development', projectId);
-      return;
-    }
-
-    const architecture = analysis.architecture as FullArchitecture;
-    const totalPages = (architecture.pages || []).length;
-
-    await supabase.from('briefs').update({
-      parsed_requirements: analysis.requirements,
-      architecture_plan: architecture as unknown as Record<string, unknown>,
-    }).eq('id', briefId);
-
-    await sendChatMessage(projectId, `Analysis complete. Found ${totalPages} pages to build${architecture.requiresBackend ? ' with full backend' : ''}. Setting up the repository...`);
-    await saveCheckpoint(projectId, briefId, 'analysis_complete', { totalPages }, [], '');
-
-    // ============================================================
-    // PHASE 2: SCAFFOLDING
-    // ============================================================
-
-    await updateProject(projectId, { current_phase: 'scaffolding', progress: 5, has_backend: architecture.requiresBackend || false });
-    await logger.info('Phase 2: Scaffolding project', 'development', projectId);
-
+    let architecture: FullArchitecture;
+    let fullName: string;
+    let repoUrl: string;
     const clientSlug = client.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+$/, '');
     const projectSlug = project.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+$/, '');
     const repoName = `${clientSlug}-${projectSlug}`;
 
-    const { repoUrl, fullName } = await createRepo(
-      repoName,
-      `${project.name} - ${client.name} | Built by Obzide Agent`,
-      projectId
-    );
-    await updateProject(projectId, { git_repo_url: repoUrl });
+    if (skipAnalysis && brief.architecture_plan && Object.keys(brief.architecture_plan).length > 0) {
+      architecture = brief.architecture_plan as unknown as FullArchitecture;
+      await logger.info('Skipping analysis -- using existing architecture from checkpoint', 'development', projectId);
+    } else {
+      const { data: attachments } = await supabase
+        .from('brief_attachments')
+        .select('file_name, file_url, file_type')
+        .eq('brief_id', briefId);
 
-    const scaffold = await generateProjectScaffold(
-      project as unknown as Project,
-      client,
-      architecture
-    );
+      let attachmentContents: string[] = [];
+      if (attachments && attachments.length > 0) {
+        await sendChatMessage(projectId, `Processing ${attachments.length} attached file(s)...`);
+        const processed = await processAttachments(attachments, projectId);
+        attachmentContents = processed.map(p => `[${p.fileName} (${p.fileType})]\n${p.content}`);
 
-    if (scaffold.files.length > 0) {
-      const validation = await validateScaffold(scaffold.files);
-      if (validation.issues.length > 0) {
-        await logger.warn(`Scaffold validation: ${validation.issues.join('; ')}`, 'development', projectId);
-        for (const fix of validation.fixedFiles) {
-          const idx = scaffold.files.findIndex((f) => f.path === fix.path);
-          if (idx >= 0) scaffold.files[idx] = fix;
-          else scaffold.files.push(fix);
+        for (const p of processed) {
+          await supabase
+            .from('brief_attachments')
+            .update({ processing_status: 'processed', extracted_content: p.content.slice(0, 10000) })
+            .eq('brief_id', briefId)
+            .eq('file_name', p.fileName);
         }
       }
-      await pushFiles(fullName, scaffold.files, 'Initial scaffold', projectId);
+
+      const referenceContents = await researchReferenceUrls(brief.original_content, projectId, client.name, client.industry);
+      if (referenceContents.length > 0) {
+        await sendChatMessage(projectId, `Analyzed ${referenceContents.length} reference website(s) from the brief.`);
+        attachmentContents = [...attachmentContents, ...referenceContents];
+      }
+
+      await logger.info('Phase 1: Analyzing brief', 'development', projectId);
+      const analysis = await analyzeBrief(brief as Brief, client, project as unknown as Project, attachmentContents);
+
+      if (analysis.questions.length > 0) {
+        await supabase.from('briefs').update({
+          parsed_requirements: analysis.requirements,
+          architecture_plan: analysis.architecture as unknown as Record<string, unknown>,
+          questions: analysis.questions.map((q, i) => ({
+            id: `q-${i}`,
+            question: q.question,
+            category: q.category,
+            answered: false,
+          })),
+          status: 'questions_pending',
+        }).eq('id', briefId);
+
+        await updateProject(projectId, { agent_status: 'waiting' });
+        const questionList = analysis.questions.map((q) => `- ${q.question}`).join('\n');
+        await sendChatMessage(projectId, `I have some questions before I can start building:\n\n${questionList}\n\nPlease answer these in the Brief section and send the brief back to me.`);
+        await logger.info('Questions sent to team, waiting for answers', 'development', projectId);
+        return;
+      }
+
+      architecture = analysis.architecture as FullArchitecture;
+      const totalPages = (architecture.pages || []).length;
+
+      await supabase.from('briefs').update({
+        parsed_requirements: analysis.requirements,
+        architecture_plan: architecture as unknown as Record<string, unknown>,
+      }).eq('id', briefId);
+
+      await sendChatMessage(projectId, `Analysis complete. Found ${totalPages} pages to build${architecture.requiresBackend ? ' with full backend' : ''}. Setting up the repository...`);
+      await saveCheckpoint(projectId, briefId, 'analysis_complete', { totalPages }, [], '');
     }
 
-    await updateProject(projectId, { progress: 15 });
-    await sendChatMessage(projectId, `Repository created: ${repoUrl}\nScaffold pushed with ${scaffold.files.length} files.`);
-    await saveCheckpoint(projectId, briefId, 'scaffolding_complete', {}, [], fullName);
-
     // ============================================================
-    // PHASE 2.5: BACKEND SETUP (if needed)
+    // PHASE 2: SCAFFOLDING (skip if resuming past this phase)
     // ============================================================
 
-    if (architecture.requiresBackend) {
+    if (skipScaffolding && checkpoint?.repo_full_name) {
+      fullName = checkpoint.repo_full_name;
+      repoUrl = `https://github.com/${fullName}`;
+      await logger.info(`Skipping scaffolding -- reusing repo ${fullName}`, 'development', projectId);
+    } else {
+      await updateProject(projectId, { current_phase: 'scaffolding', progress: 5, has_backend: architecture.requiresBackend || false });
+      await logger.info('Phase 2: Scaffolding project', 'development', projectId);
+
+      const repoResult = await createRepo(
+        repoName,
+        `${project.name} - ${client.name} | Built by Obzide Agent`,
+        projectId,
+        true
+      );
+      repoUrl = repoResult.repoUrl;
+      fullName = repoResult.fullName;
+      await updateProject(projectId, { git_repo_url: repoUrl });
+
+      const scaffold = await generateProjectScaffold(
+        project as unknown as Project,
+        client,
+        architecture
+      );
+
+      {
+        const validation = await validateScaffold(scaffold.files, architecture);
+        if (validation.issues.length > 0) {
+          await logger.warn(`Scaffold validation: ${validation.issues.join('; ')}`, 'development', projectId);
+          for (const fix of validation.fixedFiles) {
+            const idx = scaffold.files.findIndex((f) => f.path === fix.path);
+            if (idx >= 0) scaffold.files[idx] = fix;
+            else scaffold.files.push(fix);
+          }
+        }
+        if (scaffold.files.length > 0) {
+          await pushFiles(fullName, scaffold.files, 'Initial scaffold', projectId);
+        }
+      }
+
+      await updateProject(projectId, { progress: 15 });
+      await sendChatMessage(projectId, `Repository created: ${repoUrl}\nScaffold pushed with ${scaffold.files.length} files.`);
+      await saveCheckpoint(projectId, briefId, 'scaffolding_complete', {}, [], fullName);
+    }
+
+    // ============================================================
+    // PHASE 2.5: BACKEND SETUP (skip if resuming past this phase)
+    // ============================================================
+
+    if (architecture.requiresBackend && !skipBackend) {
       await updateProject(projectId, { current_phase: 'backend_setup', progress: 18 });
       await logger.info('Phase 2.5: Setting up backend', 'development', projectId);
 
       const hasManagement = await isManagementAvailable();
 
       if (hasManagement) {
-        await sendChatMessage(projectId, 'Creating Supabase database for this project...');
-
         try {
           const orgId = config.supabase_org_id || (await import('../core/secrets.js').then(s => s.getSecretWithFallback('supabase_org_id')));
           if (!orgId) throw new Error('Supabase org ID not configured');
 
-          const sbProject = await createSupabaseProject(
-            `obz-${projectSlug}`.slice(0, 40),
-            orgId,
-            config.supabase_db_region || 'us-east-1',
-            projectId
-          );
+          const sbNamePrefix = `obz-${projectSlug}`;
+          let sbRef: string | null = null;
+          let sbDbPassword: string | null = null;
 
-          await sendChatMessage(projectId, 'Waiting for database to be ready...');
-          await waitForProjectReady(sbProject.ref, projectId);
+          const { data: existingProject } = await supabase
+            .from('projects')
+            .select('supabase_project_ref, supabase_url, supabase_anon_key')
+            .eq('id', projectId)
+            .maybeSingle();
 
-          const keys = await getProjectApiKeys(sbProject.ref, projectId);
-          const sbUrl = getProjectUrl(sbProject.ref);
+          if (existingProject?.supabase_project_ref) {
+            await sendChatMessage(projectId, 'Reusing existing Supabase database from previous build...');
+            sbRef = existingProject.supabase_project_ref;
+            await logger.info(`Reusing existing Supabase project: ${sbRef}`, 'development', projectId);
+          } else {
+            const found = await findExistingProject(sbNamePrefix, projectId);
+            if (found && found.status === 'ACTIVE_HEALTHY') {
+              sbRef = found.ref;
+              await sendChatMessage(projectId, `Found existing Supabase project "${found.name}". Reusing...`);
+            } else {
+              await sendChatMessage(projectId, 'Creating Supabase database for this project...');
+              const sbProject = await createSupabaseProject(
+                `${sbNamePrefix}-${projectId.slice(0, 6)}`.slice(0, 40),
+                orgId,
+                config.supabase_db_region || 'us-east-1',
+                projectId
+              );
+              sbRef = sbProject.ref;
+              sbDbPassword = sbProject.dbPassword;
 
-          await updateProject(projectId, {
-            supabase_project_ref: sbProject.ref,
+              await sendChatMessage(projectId, 'Waiting for database to be ready...');
+              await waitForProjectReady(sbRef, projectId);
+            }
+          }
+
+          if (!sbRef) throw new Error('Supabase project ref is null after setup');
+          const keys = await getProjectApiKeys(sbRef, projectId);
+          const sbUrl = getProjectUrl(sbRef);
+
+          const sbUpdate: Record<string, unknown> = {
+            supabase_project_ref: sbRef,
             supabase_url: sbUrl,
             supabase_anon_key: keys.anonKey,
             supabase_service_role_key: keys.serviceRoleKey,
-            supabase_db_password: sbProject.dbPassword,
-          });
+          };
+          if (sbDbPassword) sbUpdate.supabase_db_password = sbDbPassword;
+          await updateProject(projectId, sbUpdate);
 
           await sendChatMessage(projectId, 'Generating and executing database schema...');
-          let sql = await generateDatabaseSchema(architecture, projectId);
-          let sqlExecuted = false;
           const MAX_SQL_RETRIES = 2;
+          let sqlExecuted = false;
 
-          if (sql && sql.length > 10) {
-            for (let sqlAttempt = 1; sqlAttempt <= MAX_SQL_RETRIES + 1; sqlAttempt++) {
-              try {
-                await executeSqlOnProject(sbProject.ref, sql, projectId);
-                await logger.success('Database schema executed', 'development', projectId);
-                sqlExecuted = true;
-                break;
-              } catch (sqlErr) {
-                const sqlErrMsg = sqlErr instanceof Error ? sqlErr.message : String(sqlErr);
-                await logger.warn(`SQL execution failed (attempt ${sqlAttempt}/${MAX_SQL_RETRIES + 1}): ${sqlErrMsg}`, 'development', projectId);
-
-                if (sqlAttempt > MAX_SQL_RETRIES) {
-                  await sendChatMessage(projectId, `Database schema failed after ${MAX_SQL_RETRIES + 1} attempts. Error: ${sqlErrMsg.slice(0, 300)}. Continuing without database -- configure manually after deployment.`);
-                  await saveCheckpoint(projectId, briefId, 'backend_setup_partial', { failedSql: sql.slice(0, 5000), sqlError: sqlErrMsg.slice(0, 500) }, [], fullName);
-                  break;
-                }
-
-                await sendChatMessage(projectId, `Database schema error: ${sqlErrMsg.slice(0, 200)}. Regenerating fix...`);
-                sql = await generateDatabaseSchema(architecture, projectId);
-              }
+          for (let sqlAttempt = 1; sqlAttempt <= MAX_SQL_RETRIES + 1; sqlAttempt++) {
+            const sql = await generateDatabaseSchema(architecture, projectId);
+            if (!sql || sql.length < 10) {
+              await logger.warn('Empty SQL generated, skipping schema', 'development', projectId);
+              break;
             }
+
+            const result = await executeSqlStatements(sbRef, sql, projectId);
+
+            if (result.failed === 0) {
+              await logger.success(`Database schema executed: ${result.succeeded} statements`, 'development', projectId);
+              sqlExecuted = true;
+              break;
+            }
+
+            if (result.succeeded > 0 && result.failed <= 2) {
+              await logger.info(`Schema partially applied: ${result.succeeded} ok, ${result.failed} failed. Retrying failures...`, 'development', projectId);
+              sqlExecuted = true;
+              break;
+            }
+
+            if (sqlAttempt > MAX_SQL_RETRIES) {
+              await sendChatMessage(projectId, `Database schema had ${result.failed} failing statement(s) after ${MAX_SQL_RETRIES + 1} attempts: ${result.errors.slice(0, 3).join('; ')}. ${result.succeeded} statements applied successfully. Continuing.`);
+              if (result.succeeded > 0) sqlExecuted = true;
+              break;
+            }
+
+            await sendChatMessage(projectId, `Schema had ${result.failed} error(s). Regenerating (attempt ${sqlAttempt + 1})...`);
           }
 
           if (sqlExecuted) {
@@ -303,6 +369,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     await logger.info('Phase 3: Module-based development', 'development', projectId);
 
     const modules = groupPagesIntoModules(architecture);
+    const totalPages = (architecture.pages || []).length;
     await sendChatMessage(projectId, `Starting module-based development: ${modules.length} modules, ${totalPages} total pages.`);
 
     const moduleTasks: { id: string; module: (typeof modules)[number] }[] = [];
@@ -319,15 +386,27 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       if (task) moduleTasks.push({ ...task, module: mod });
     }
 
+    const completedModuleNames = new Set(checkpoint?.modules_completed || []);
+    if (completedModuleNames.size > 0) {
+      await logger.info(`Skipping ${completedModuleNames.size} already-completed modules from checkpoint`, 'development', projectId);
+      for (const mt of moduleTasks) {
+        if (completedModuleNames.has(mt.module.name)) {
+          await supabase.from('project_tasks').update({ status: 'completed' }).eq('id', mt.id);
+        }
+      }
+    }
+
+    const pendingModuleTasks = moduleTasks.filter((t) => !completedModuleNames.has(t.module.name));
     const priorityModules = ['auth', 'support'];
-    const phase1Tasks = moduleTasks.filter((t) => priorityModules.some((p) => t.module.name.toLowerCase().includes(p)));
-    const phase2Tasks = moduleTasks.filter((t) => !phase1Tasks.includes(t));
+    const phase1Tasks = pendingModuleTasks.filter((t) => priorityModules.some((p) => t.module.name.toLowerCase().includes(p)));
+    const phase2Tasks = pendingModuleTasks.filter((t) => !phase1Tasks.includes(t));
 
     const MODULE_CONCURRENCY = 1;
     const INTER_BATCH_COOLDOWN_MS = 15_000;
     const MAX_RECOVERY_PASSES = 2;
     const RECOVERY_COOLDOWN_MS = 65_000;
     const ABORT_FAILURE_THRESHOLD = 0.4;
+    const completedModuleExports: string[] = [];
 
     async function buildModuleBatch(
       tasks: typeof moduleTasks,
@@ -343,7 +422,12 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
         const repoFiles = await getRepoTree(fullName);
         const coreFilePaths = getCoreFilePaths(repoFiles);
-        const coreFiles = await getMultipleFileContents(fullName, coreFilePaths.slice(0, 30));
+
+        const previousModulePaths = completedModuleExports
+          .filter((p) => !coreFilePaths.includes(p))
+          .slice(0, 20);
+        const allContextPaths = [...new Set([...coreFilePaths, ...previousModulePaths])];
+        const coreFiles = await getMultipleFileContents(fullName, allContextPaths.slice(0, 50));
         const allPaths = repoFiles.filter((f) => f.type === 'file').map((f) => f.path);
 
         for (const task of batch) {
@@ -381,6 +465,12 @@ export async function processBrief(projectId: string, briefId: string): Promise<
         const allFiles = batchResults.flatMap((r) => r.files);
         if (allFiles.length > 0) {
           await pushFiles(fullName, allFiles, `feat: implement ${batchNames}`, projectId);
+
+          for (const f of allFiles) {
+            if (f.path.endsWith('.tsx') || f.path.endsWith('.ts')) {
+              completedModuleExports.push(f.path);
+            }
+          }
         }
 
         for (const result of batchResults) {
@@ -396,6 +486,11 @@ export async function processBrief(projectId: string, briefId: string): Promise<
               completed_at: new Date().toISOString(),
               duration_seconds: result.durationSeconds,
             }).eq('id', result.task.id);
+
+            await saveCheckpoint(projectId, briefId, 'development', {},
+              [...(checkpoint?.modules_completed || []), result.task.module.name],
+              fullName
+            );
           }
         }
 
@@ -517,36 +612,91 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     }
 
     // ============================================================
-    // PHASE 3.5: COMPLETENESS CHECK
+    // PHASE 3.5: COMPLETENESS CHECK (multi-pass)
     // ============================================================
 
     await updateProject(projectId, { current_phase: 'completeness_check', progress: 68 });
     await logger.info('Phase 3.5: Completeness verification', 'development', projectId);
     await sendChatMessage(projectId, 'Verifying project completeness...');
 
-    try {
-      const allRepoFiles = await getRepoTree(fullName);
-      const allCodePaths = allRepoFiles
-        .filter((f) => f.type === 'file' && /\.(tsx?|jsx?|css|json)$/.test(f.path))
-        .map((f) => f.path);
-      const allCode = await getMultipleFileContents(fullName, allCodePaths.slice(0, 60));
+    const MAX_COMPLETENESS_PASSES = 2;
+    for (let completenessPass = 0; completenessPass < MAX_COMPLETENESS_PASSES; completenessPass++) {
+      try {
+        const allRepoFiles = await getRepoTree(fullName);
+        const allCodePaths = allRepoFiles
+          .filter((f) => f.type === 'file' && /\.(tsx?|jsx?|css|json)$/.test(f.path))
+          .map((f) => f.path);
+        const allCode = await getMultipleFileContents(fullName, allCodePaths.slice(0, 80));
 
-      const completeness = await verifyProjectCompleteness(architecture, allCode, projectId);
+        const completeness = await verifyProjectCompleteness(architecture, allCode, projectId);
+        const totalIssues = completeness.missingFiles.length + completeness.brokenImports.length + completeness.missingRoutes.length;
 
-      const totalIssues = completeness.missingFiles.length + completeness.brokenImports.length + completeness.missingRoutes.length;
+        if (totalIssues === 0) {
+          await sendChatMessage(projectId, completenessPass === 0
+            ? 'All pages accounted for. No missing routes or broken imports.'
+            : `Completeness verified after ${completenessPass} fix pass(es).`);
+          break;
+        }
 
-      if (totalIssues > 0) {
-        await sendChatMessage(projectId, `Found ${totalIssues} completeness issue(s). Auto-fixing...`);
+        await sendChatMessage(projectId, `Found ${totalIssues} completeness issue(s) (pass ${completenessPass + 1}). Auto-fixing...`);
         await logger.info(`Completeness issues: ${totalIssues} (${completeness.missingFiles.length} missing, ${completeness.brokenImports.length} broken imports, ${completeness.missingRoutes.length} missing routes)`, 'development', projectId);
 
         if (completeness.fixFiles.length > 0) {
-          await pushFiles(fullName, completeness.fixFiles, 'fix: resolve completeness issues (missing routes, broken imports)', projectId);
+          await pushFiles(fullName, completeness.fixFiles, `fix: resolve completeness issues (pass ${completenessPass + 1})`, projectId);
         }
-      } else {
-        await sendChatMessage(projectId, 'All pages accounted for. No missing routes or broken imports.');
+
+        if (completeness.missingFiles.length > 0) {
+          const BATCH_SIZE = 5;
+          const missingPages = completeness.missingFiles
+            .map((f) => f.replace(/^src\/pages\//, '').replace(/\.tsx$/, ''))
+            .filter((f) => f.length > 0);
+
+          for (let batchStart = 0; batchStart < missingPages.length; batchStart += BATCH_SIZE) {
+            const batch = missingPages.slice(batchStart, batchStart + BATCH_SIZE);
+            const batchPages = batch.map((name) => {
+              const archPage = (architecture.pages || []).find((p) =>
+                p.name.replace(/[^a-zA-Z0-9]/g, '').toLowerCase() === name.replace(/[^a-zA-Z0-9]/g, '').toLowerCase()
+              );
+              return archPage || { name, route: `/${name.toLowerCase()}`, description: name, module: 'main' };
+            });
+
+            const tempModule = {
+              name: `completeness-fix-${batchStart}`,
+              pages: batchPages,
+              role: 'public',
+              description: `Auto-generated missing pages batch ${Math.floor(batchStart / BATCH_SIZE) + 1}`,
+            };
+
+            const repoFilesNow = await getRepoTree(fullName);
+            const coreFilePaths = getCoreFilePaths(repoFilesNow);
+            const coreFiles = await getMultipleFileContents(fullName, coreFilePaths.slice(0, 40));
+            const allPaths = repoFilesNow.filter((f) => f.type === 'file').map((f) => f.path);
+
+            try {
+              const codeResult = await generateModuleCode(
+                tempModule,
+                project as unknown as Project,
+                client,
+                architecture,
+                coreFiles,
+                allPaths
+              );
+              if (codeResult.files.length > 0) {
+                await pushFiles(fullName, codeResult.files, `fix: generate missing pages (${batch.join(', ')})`, projectId);
+              }
+            } catch (err) {
+              await logger.warn(`Failed to generate missing pages batch: ${err instanceof Error ? err.message : String(err)}`, 'development', projectId);
+            }
+
+            if (batchStart + BATCH_SIZE < missingPages.length) {
+              await new Promise((r) => setTimeout(r, 5000));
+            }
+          }
+        }
+      } catch (err) {
+        await logger.warn(`Completeness check failed (non-critical): ${err instanceof Error ? err.message : String(err)}`, 'development', projectId);
+        break;
       }
-    } catch (err) {
-      await logger.warn(`Completeness check failed (non-critical): ${err instanceof Error ? err.message : String(err)}`, 'development', projectId);
     }
 
     // ============================================================
@@ -559,6 +709,8 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
     let buildPassed = false;
     const previousAttempts: BuildFixAttempt[] = [];
+    const strategies: Array<'standard' | 'simplify' | 'regenerate'> = ['standard', 'simplify', 'regenerate', 'simplify', 'regenerate'];
+    let duplicateCount = 0;
 
     for (let attempt = 1; attempt <= config.max_corrections + 1; attempt++) {
       const buildResult = await verifyBuild(fullName, projectId);
@@ -574,9 +726,15 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       const errorHash = hashErrors(buildErrors);
 
       const isDuplicate = previousAttempts.some((a) => a.errorHash === errorHash);
+      let forceOpus = false;
+      let strategy = strategies[Math.min(attempt - 1, strategies.length - 1)];
+
       if (isDuplicate) {
-        await sendChatMessage(projectId, `Same errors persisting after fix attempt. Escalating to more powerful model...`);
-        await logger.warn('Duplicate error hash detected, escalating', 'development', projectId);
+        duplicateCount++;
+        forceOpus = true;
+        strategy = duplicateCount >= 2 ? 'regenerate' : 'simplify';
+        await sendChatMessage(projectId, `Same errors persisting. Switching to ${strategy} strategy with Opus model...`);
+        await logger.warn(`Duplicate error hash #${duplicateCount}, escalating to Opus + ${strategy}`, 'development', projectId);
       }
 
       previousAttempts.push({
@@ -585,13 +743,14 @@ export async function processBrief(projectId: string, briefId: string): Promise<
         errorsText: buildErrors.slice(0, 10).join('\n'),
       });
 
-      await sendChatMessage(projectId, `Build failed (attempt ${attempt}/${config.max_corrections}): ${buildErrors.length} error(s). Auto-fixing...`);
+      await sendChatMessage(projectId, `Build failed (attempt ${attempt}/${config.max_corrections}): ${buildErrors.length} error(s). Auto-fixing (${strategy})...`);
 
       const allRepoFiles = await getRepoTree(fullName);
       const allCodePaths = allRepoFiles
         .filter((f) => f.type === 'file' && /\.(tsx?|jsx?|css|json)$/.test(f.path))
         .map((f) => f.path);
-      const allCode = await getMultipleFileContents(fullName, allCodePaths.slice(0, 60));
+      const contextLimit = isDuplicate ? allCodePaths.length : 80;
+      const allCode = await getMultipleFileContents(fullName, allCodePaths.slice(0, contextLimit));
 
       const fixResult = await generateBuildFix(
         buildErrors,
@@ -602,11 +761,12 @@ export async function processBrief(projectId: string, briefId: string): Promise<
         allCode,
         previousAttempts,
         attempt,
-        config.max_corrections
+        config.max_corrections,
+        { forceOpus, strategy }
       );
 
       if (fixResult.files.length > 0) {
-        await pushFiles(fullName, fixResult.files, `fix: resolve build errors (attempt ${attempt})`, projectId);
+        await pushFiles(fullName, fixResult.files, `fix: resolve build errors (attempt ${attempt}, ${strategy})`, projectId);
       } else {
         await logger.warn('No fix generated, stopping build loop', 'development', projectId);
         break;

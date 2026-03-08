@@ -136,6 +136,107 @@ export async function isManagementAvailable(): Promise<boolean> {
   return !!token;
 }
 
+export async function listProjects(
+  projectId?: string
+): Promise<{ id: string; name: string; ref: string; status: string }[]> {
+  const res = await supabaseFetch('/v1/projects');
+  if (!res.ok) {
+    if (projectId) await logger.warn(`Failed to list Supabase projects: ${res.status}`, 'supabase', projectId);
+    return [];
+  }
+  const data = await res.json();
+  return (data as { id: string; name: string; ref?: string; status: string }[]).map((p) => ({
+    id: p.id,
+    name: p.name,
+    ref: p.ref || p.id,
+    status: p.status,
+  }));
+}
+
+export async function findExistingProject(
+  namePrefix: string,
+  projectId: string
+): Promise<{ ref: string; name: string; status: string } | null> {
+  const projects = await listProjects(projectId);
+  const match = projects.find((p) => p.name.startsWith(namePrefix));
+  if (match) {
+    await logger.info(`Found existing Supabase project: ${match.name} (${match.ref})`, 'supabase', projectId);
+    return { ref: match.ref, name: match.name, status: match.status };
+  }
+  return null;
+}
+
+export async function executeSqlStatements(
+  projectRef: string,
+  sql: string,
+  projectId: string
+): Promise<{ succeeded: number; failed: number; errors: string[] }> {
+  const statements = splitSqlStatements(sql);
+  let succeeded = 0;
+  let failed = 0;
+  const errors: string[] = [];
+
+  for (const stmt of statements) {
+    const trimmed = stmt.trim();
+    if (!trimmed || trimmed.length < 5) continue;
+
+    try {
+      await executeSqlOnProject(projectRef, trimmed, projectId);
+      succeeded++;
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      if (errMsg.includes('already exists')) {
+        succeeded++;
+        continue;
+      }
+      failed++;
+      errors.push(`${errMsg.slice(0, 200)} [SQL: ${trimmed.slice(0, 100)}...]`);
+      await logger.warn(`SQL statement failed: ${errMsg.slice(0, 200)}`, 'supabase', projectId);
+    }
+  }
+
+  return { succeeded, failed, errors };
+}
+
+function splitSqlStatements(sql: string): string[] {
+  const statements: string[] = [];
+  let current = '';
+  let inDollarBlock = false;
+  const lines = sql.split('\n');
+
+  for (const line of lines) {
+    if (line.includes('$$') && !inDollarBlock) {
+      inDollarBlock = true;
+      current += line + '\n';
+      if ((line.match(/\$\$/g) || []).length >= 2) {
+        inDollarBlock = false;
+      }
+      continue;
+    }
+
+    if (inDollarBlock) {
+      current += line + '\n';
+      if (line.includes('$$')) {
+        inDollarBlock = false;
+      }
+      continue;
+    }
+
+    current += line + '\n';
+
+    if (line.trim().endsWith(';') && !inDollarBlock) {
+      statements.push(current.trim());
+      current = '';
+    }
+  }
+
+  if (current.trim()) {
+    statements.push(current.trim());
+  }
+
+  return statements;
+}
+
 function generateDbPassword(): string {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*';
   let result = '';

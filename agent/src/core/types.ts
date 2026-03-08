@@ -38,10 +38,10 @@ export interface Project {
   clients?: Client;
 }
 
-export type ProjectType = 'website' | 'ecommerce' | 'mobile_app' | 'crm' | 'custom';
+export type ProjectType = 'website' | 'landing' | 'ecommerce' | 'crm' | 'lms' | 'dashboard' | 'saas' | 'blog' | 'portfolio' | 'marketplace' | 'pwa' | 'custom';
 export type ProjectStatus = 'draft' | 'planning' | 'in_progress' | 'qa' | 'review' | 'approved' | 'deployed';
 export type AgentStatus = 'idle' | 'working' | 'waiting' | 'error';
-export type ProjectPhase = 'analysis' | 'scaffolding' | 'backend_setup' | 'development' | 'completeness_check' | 'qa' | 'deployment';
+export type ProjectPhase = 'analysis' | 'scaffolding' | 'backend_setup' | 'development' | 'completeness_check' | 'qa' | 'deployment' | 'aborted';
 
 export interface Brief {
   id: string;

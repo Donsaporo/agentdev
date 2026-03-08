@@ -12,9 +12,16 @@ import { formatDistanceToNow } from 'date-fns';
 
 const projectTypes: { value: ProjectType; label: string }[] = [
   { value: 'website', label: 'Website' },
+  { value: 'landing', label: 'Landing Page' },
   { value: 'ecommerce', label: 'E-Commerce' },
-  { value: 'mobile_app', label: 'Mobile App' },
   { value: 'crm', label: 'CRM / System' },
+  { value: 'lms', label: 'LMS / Education' },
+  { value: 'dashboard', label: 'Dashboard' },
+  { value: 'saas', label: 'SaaS Platform' },
+  { value: 'blog', label: 'Blog' },
+  { value: 'portfolio', label: 'Portfolio' },
+  { value: 'marketplace', label: 'Marketplace' },
+  { value: 'pwa', label: 'PWA / Mobile App' },
   { value: 'custom', label: 'Custom' },
 ];
 

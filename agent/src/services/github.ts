@@ -20,7 +20,8 @@ async function getClient(): Promise<Octokit> {
 export async function createRepo(
   name: string,
   description: string,
-  projectId: string
+  projectId: string,
+  cleanIfExists: boolean = false
 ): Promise<{ repoUrl: string; fullName: string }> {
   const gh = await getClient();
   const org = (await getSecretWithFallback('github_org')) || env.GITHUB_ORG;
@@ -28,6 +29,11 @@ export async function createRepo(
   try {
     const { data: existing } = await gh.rest.repos.get({ owner: org, repo: name });
     await logger.info(`Repo ${existing.full_name} already exists, reusing`, 'github', projectId);
+
+    if (cleanIfExists) {
+      await cleanRepoContents(existing.full_name, projectId);
+    }
+
     return { repoUrl: existing.html_url, fullName: existing.full_name };
   } catch {
     // repo does not exist, create it
@@ -44,6 +50,57 @@ export async function createRepo(
   await logger.success(`Created repo ${data.full_name}`, 'github', projectId);
 
   return { repoUrl: data.html_url, fullName: data.full_name };
+}
+
+async function cleanRepoContents(repoFullName: string, projectId: string): Promise<void> {
+  const gh = await getClient();
+  const [owner, repo] = repoFullName.split('/');
+
+  try {
+    const tree = await getRepoTree(repoFullName);
+    const fileCount = tree.filter((f) => f.type === 'file').length;
+
+    if (fileCount <= 1) return;
+
+    await logger.info(`Cleaning existing repo (${fileCount} files) for fresh scaffold`, 'github', projectId);
+
+    const { data: ref } = await gh.rest.git.getRef({ owner, repo, ref: 'heads/main' });
+    const latestCommitSha = ref.object.sha;
+
+    const { data: emptyTree } = await gh.rest.git.createTree({
+      owner,
+      repo,
+      tree: [{
+        path: '.gitkeep',
+        mode: '100644' as const,
+        type: 'blob' as const,
+        content: '',
+      }],
+    });
+
+    const { data: newCommit } = await gh.rest.git.createCommit({
+      owner,
+      repo,
+      message: 'chore: clean repo for fresh build',
+      tree: emptyTree.sha,
+      parents: [latestCommitSha],
+    });
+
+    await gh.rest.git.updateRef({
+      owner,
+      repo,
+      ref: 'heads/main',
+      sha: newCommit.sha,
+    });
+
+    await logger.success('Repo cleaned for fresh scaffold', 'github', projectId);
+  } catch (err) {
+    await logger.warn(
+      `Failed to clean repo (non-critical): ${err instanceof Error ? err.message : String(err)}`,
+      'github',
+      projectId
+    );
+  }
 }
 
 export async function pushFiles(

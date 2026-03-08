@@ -96,6 +96,21 @@ const TEMPLATES: Record<string, ProjectTypeChecklist> = {
     requiredFeatures: ['Authentication', 'Listing CRUD', 'Search/Filter', 'Messaging', 'Reviews', 'User Profiles'],
     commonComponents: ['Navbar', 'Footer', 'ListingCard', 'SearchBar', 'CategoryFilter', 'MessageThread'],
   },
+  pwa: {
+    requiredPages: [
+      'Home', 'Login', 'Register', 'Dashboard', 'Settings', 'Profile',
+      'Notifications', 'Offline', '404', 'Terms', 'Privacy',
+    ],
+    requiredDataModels: ['users', 'settings', 'notifications'],
+    requiredFeatures: ['Authentication', 'Push Notifications', 'Offline Support', 'Install Prompt', 'Responsive Navigation'],
+    commonComponents: ['Navbar', 'BottomNavigation', 'InstallBanner', 'OfflineBanner', 'PullToRefresh', 'Footer'],
+  },
+  custom: {
+    requiredPages: ['Home', 'Login', 'Dashboard', 'Settings', '404'],
+    requiredDataModels: ['users'],
+    requiredFeatures: ['Authentication', 'Responsive Navigation'],
+    commonComponents: ['Navbar', 'Footer'],
+  },
 };
 
 export function getProjectTemplate(projectType: string): ProjectTypeChecklist | null {

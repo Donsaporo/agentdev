@@ -28,8 +28,19 @@ export async function handleChatMessage(
 ): Promise<void> {
   const supabase = getSupabase();
 
+  let previousStatus: string | null = null;
   try {
-    await supabase.from('projects').update({ agent_status: 'working' }).eq('id', projectId);
+    const { data: currentProject } = await supabase
+      .from('projects')
+      .select('agent_status')
+      .eq('id', projectId)
+      .maybeSingle();
+    previousStatus = currentProject?.agent_status || null;
+
+    const isPipelineRunning = previousStatus === 'working';
+    if (!isPipelineRunning) {
+      await supabase.from('projects').update({ agent_status: 'working' }).eq('id', projectId);
+    }
 
     const { data: project } = await supabase
       .from('projects')
@@ -135,13 +146,17 @@ export async function handleChatMessage(
       await sendReply(conversationId, result.response);
     }
 
-    await supabase.from('projects').update({ agent_status: 'idle' }).eq('id', projectId);
+    if (previousStatus !== 'working') {
+      await supabase.from('projects').update({ agent_status: 'idle' }).eq('id', projectId);
+    }
     await logger.info('Chat response sent', 'chat', projectId);
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     await logger.error(`Chat response failed: ${errMsg}`, 'chat', projectId);
     await sendReply(conversationId, `Sorry, I encountered an error: ${errMsg}`);
-    await supabase.from('projects').update({ agent_status: 'idle' }).eq('id', projectId);
+    if (previousStatus !== 'working') {
+      await supabase.from('projects').update({ agent_status: 'idle' }).eq('id', projectId);
+    }
   }
 }
 
