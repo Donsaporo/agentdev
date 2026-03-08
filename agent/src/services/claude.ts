@@ -1070,7 +1070,8 @@ export async function generateModuleCode(
   coreFiles: { path: string; content: string }[],
   allFilePaths: string[],
   previousExports?: string,
-  stubPathsHint?: string
+  stubPathsHint?: string,
+  recoveryMode?: 'simplified' | 'isolated'
 ): Promise<ClaudeCodeResponse> {
   const ai = await getClient();
   const model = MODELS.sonnet;
@@ -1148,7 +1149,23 @@ QUALITY STANDARDS:
 - Each page component must be fully featured, minimum 150 lines
 - Create sub-components when sections get complex (put them in the same module directory or components/)
 - NEVER use purple/indigo unless brand colors include them
-
+${recoveryMode === 'simplified' ? `
+SIMPLIFIED MODE (this is a retry - the previous attempt failed to compile):
+- Generate SIMPLER pages that are GUARANTEED to compile
+- No complex data tables, no multi-step forms, no advanced state management
+- Use simple lists instead of sortable tables
+- Use simple forms instead of multi-step wizards
+- Minimize cross-file dependencies
+- If a shared utility/hook might not exist, inline the logic instead
+` : ''}${recoveryMode === 'isolated' ? `
+ISOLATION MODE (NUCLEAR - this module has failed multiple times):
+- Each file MUST be 100% self-contained with ZERO imports from other src/ files
+- The ONLY allowed imports are npm packages: react, react-dom, react-router-dom, lucide-react, @supabase/supabase-js, date-fns
+- Define ALL TypeScript types inline within each file
+- Use inline mock data instead of importing from shared files
+- Each file is an independent island that CANNOT have import errors
+- Keep components simple but functional
+` : ''}
 IMPORT RULES (CRITICAL):
 - Every import MUST reference a file that exists in the "OTHER FILES IN PROJECT" list or a file you are creating in this response
 - Do NOT import from hypothetical files or files that might be created later
@@ -1281,7 +1298,7 @@ export async function generateBuildFix(
   previousAttempts: BuildFixAttempt[],
   attempt: number,
   maxAttempts: number,
-  options?: { forceOpus?: boolean; strategy?: 'standard' | 'simplify' | 'regenerate'; allFilePaths?: string[] }
+  options?: { forceOpus?: boolean; strategy?: 'standard' | 'simplify' | 'regenerate' | 'isolate'; allFilePaths?: string[] }
 ): Promise<ClaudeCodeResponse> {
   const ai = await getClient();
   const useOpus = options?.forceOpus || attempt >= maxAttempts - 1;
@@ -1292,9 +1309,23 @@ export async function generateBuildFix(
     ? `\n\nPREVIOUS FIX ATTEMPTS THAT FAILED:\n${previousAttempts.map((a, i) => `--- Attempt ${i + 1} ---\nErrors: ${a.errorsText}`).join('\n\n')}\n\nIMPORTANT: The above approaches did NOT work. Try a COMPLETELY DIFFERENT strategy.`
     : '';
 
-  const existingContext = existingFiles
-    .map((f) => `--- ${f.path} ---\n${f.content}`)
-    .join('\n\n');
+  const MAX_CONTEXT_CHARS = 180_000;
+  let existingContext = '';
+  let charBudget = MAX_CONTEXT_CHARS;
+  const sortedFiles = [...existingFiles].sort((a, b) => {
+    const aIsError = buildErrors.some((e) => e.includes(a.path.replace('src/', '')));
+    const bIsError = buildErrors.some((e) => e.includes(b.path.replace('src/', '')));
+    if (aIsError && !bIsError) return -1;
+    if (!aIsError && bIsError) return 1;
+    return 0;
+  });
+  for (const f of sortedFiles) {
+    const entry = `--- ${f.path} ---\n${f.content}\n\n`;
+    if (entry.length <= charBudget) {
+      existingContext += entry;
+      charBudget -= entry.length;
+    }
+  }
 
   const strategyInstructions: Record<string, string> = {
     standard: `Fix the root cause, not just the symptom.
@@ -1310,10 +1341,19 @@ export async function generateBuildFix(
 - Use ONLY imports that you can verify exist in the files provided below
 - Keep implementations simple but functional
 - Every component must compile independently`,
+    isolate: `ISOLATION STRATEGY (NUCLEAR OPTION): Each file MUST be 100% self-contained.
+- Each component file MUST compile with ZERO imports from other src/ files
+- The ONLY allowed imports are: react, react-dom, react-router-dom, lucide-react, @supabase/supabase-js, date-fns (npm packages only)
+- Do NOT import from src/lib/*, src/contexts/*, src/hooks/*, src/components/* -- inline everything you need
+- Define all TypeScript types inline within each file
+- Use inline mock data instead of importing from shared files
+- Each file must be a completely independent island that cannot possibly have import errors
+- Keep components simple: a header, some content, basic styling with Tailwind
+- This MUST compile. Simplicity over features.`,
   };
 
   const allFilePathsSection = options?.allFilePaths?.length
-    ? `\n- IMPORTANT: The project contains these files (use this list to verify imports): ${options.allFilePaths.join(', ')}`
+    ? `\n- IMPORTANT: The project contains these files (use this list to verify imports):\n${options.allFilePaths.map((p) => `  ${p}`).join('\n')}`
     : '';
 
   const systemPrompt = `You are a senior developer fixing build errors in a React + Vite + TypeScript project.
@@ -1334,7 +1374,7 @@ ${previousAttempts.length > 0 ? '- Previous fix attempts failed. You MUST take a
 ${buildErrors.join('\n')}
 
 FULL BUILD OUTPUT:
-${buildOutput.slice(0, 12000)}
+${buildOutput.slice(-8000)}
 ${previousAttemptsContext}
 
 EXISTING CODE:

@@ -407,14 +407,16 @@ export function validateModuleImports(
   for (const file of files) {
     if (!/\.(tsx?|jsx?)$/.test(file.path)) continue;
 
-    const importRegex = /(?:import|from)\s+['"](\.[^'"]+)['"]/g;
+    const importRegex = /(?:import|from)\s+['"](@\/[^'"]+|\.\.?\/[^'"]+)['"]/g;
     let match: RegExpExecArray | null;
     while ((match = importRegex.exec(file.content)) !== null) {
       const importPath = match[1];
       const fileDir = file.path.substring(0, file.path.lastIndexOf('/'));
       let resolved = '';
 
-      if (importPath.startsWith('./') || importPath.startsWith('../')) {
+      if (importPath.startsWith('@/')) {
+        resolved = 'src/' + importPath.slice(2);
+      } else if (importPath.startsWith('./') || importPath.startsWith('../')) {
         const parts = fileDir.split('/');
         const importParts = importPath.split('/');
         const baseParts = [...parts];
@@ -476,6 +478,47 @@ export function validateModuleImports(
   return { stubs, warnings };
 }
 
+export function rewriteAliasImports(files: GeneratedFile[]): GeneratedFile[] {
+  return files.map((file) => {
+    if (!/\.(tsx?|jsx?)$/.test(file.path)) return file;
+
+    const fileDir = file.path.substring(0, file.path.lastIndexOf('/'));
+    const content = file.content.replace(
+      /((?:import|from)\s+['"])@\/([^'"]+)(['"])/g,
+      (_full, prefix, aliasPath, suffix) => {
+        const targetParts = ('src/' + aliasPath).split('/');
+        const fromParts = fileDir.split('/');
+        let common = 0;
+        while (common < fromParts.length && common < targetParts.length && fromParts[common] === targetParts[common]) {
+          common++;
+        }
+        const ups = fromParts.length - common;
+        const relativeParts = ups > 0
+          ? Array(ups).fill('..').concat(targetParts.slice(common))
+          : ['.', ...targetParts.slice(common)];
+        return prefix + relativeParts.join('/') + suffix;
+      }
+    );
+    return content !== file.content ? { ...file, content } : file;
+  });
+}
+
+function resolveRelativePath(fromFile: string, importPath: string): string {
+  if (importPath.startsWith('@/')) {
+    return 'src/' + importPath.slice(2);
+  }
+  const fromDir = fromFile.substring(0, fromFile.lastIndexOf('/')) || 'src';
+  const parts = fromDir.split('/');
+  const importParts = importPath.split('/');
+  const baseParts = [...parts];
+  for (const part of importParts) {
+    if (part === '.') continue;
+    else if (part === '..') baseParts.pop();
+    else baseParts.push(part);
+  }
+  return baseParts.join('/');
+}
+
 export function generateStubForMissingImport(
   error: string,
   allFilePaths: string[]
@@ -485,10 +528,21 @@ export function generateStubForMissingImport(
   );
   if (!moduleMatch) return null;
 
-  let modulePath = moduleMatch[1];
-  if (!modulePath.startsWith('.')) return null;
+  const rawPath = moduleMatch[1];
+  if (!rawPath.startsWith('.') && !rawPath.startsWith('@/')) return null;
 
-  modulePath = modulePath.replace(/^\.\//, 'src/');
+  const errorFileMatch = error.match(/(src\/[^\s:'",()+]+)\.(tsx?|jsx?)/);
+  const errorFile = errorFileMatch ? `${errorFileMatch[1]}.${errorFileMatch[2]}` : 'src/App.tsx';
+
+  let modulePath: string;
+  if (rawPath.startsWith('@/')) {
+    modulePath = 'src/' + rawPath.slice(2);
+  } else if (rawPath.startsWith('../') || rawPath.startsWith('./')) {
+    modulePath = resolveRelativePath(errorFile, rawPath);
+  } else {
+    modulePath = rawPath.replace(/^\.\//, 'src/');
+  }
+
   if (!modulePath.includes('.')) {
     modulePath += '.tsx';
   }
@@ -498,8 +552,9 @@ export function generateStubForMissingImport(
   const componentName = modulePath
     .replace(/^src\//, '')
     .replace(/\.(tsx?|jsx?)$/, '')
-    .replace(/\//g, '')
-    .replace(/[^a-zA-Z0-9]/g, '') || 'Placeholder';
+    .split('/')
+    .pop()
+    ?.replace(/[^a-zA-Z0-9]/g, '') || 'Placeholder';
 
   const content = `export default function ${componentName}() {
   return (

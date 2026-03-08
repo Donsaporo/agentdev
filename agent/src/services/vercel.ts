@@ -1,6 +1,7 @@
 import { env } from '../core/env.js';
 import { logger } from '../core/logger.js';
 import { getSecretWithFallback } from '../core/secrets.js';
+import { withRetry } from '../core/retry.js';
 import type { DeploymentResult } from '../core/types.js';
 
 const API_BASE = 'https://api.vercel.com';
@@ -72,6 +73,7 @@ export async function triggerDeployment(
   projectName: string,
   projectId: string
 ): Promise<DeploymentResult> {
+  return withRetry(async () => {
   const res = await vercelFetch('/v13/deployments', {
     method: 'POST',
     body: JSON.stringify({
@@ -97,6 +99,7 @@ export async function triggerDeployment(
     url: `https://${data.url}`,
     status: 'building',
   };
+  }, 3, 2000, 'triggerDeployment');
 }
 
 export async function waitForDeployment(

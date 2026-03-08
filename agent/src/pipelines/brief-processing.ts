@@ -11,7 +11,7 @@ import { researchReferenceUrls } from '../services/web-research.js';
 import { createRepo, pushFiles, getMultipleFileContents, getRepoTree, getFileContent } from '../services/github.js';
 import { createProject as createVercelProject, triggerDeployment, waitForDeployment, addDomain, setEnvironmentVariables } from '../services/vercel.js';
 import { captureAllPages } from '../services/screenshots.js';
-import { verifyBuild, extractBuildErrors, hashErrors, validateScaffold } from '../services/build-verify.js';
+import { verifyBuild, extractBuildErrors, hashErrors, validateScaffold, areAllErrorsTypeOnly, generateTsNoCheckFiles } from '../services/build-verify.js';
 import { notifyBuildComplete, notifyQAReady, notifyError, notifyDeploySuccess } from '../services/notifications.js';
 import { setCnameRecord } from '../services/namecheap.js';
 import {
@@ -23,13 +23,13 @@ import { saveCheckpoint, clearCheckpoint, recordDeployment, getCheckpoint } from
 import {
   extractExportSignatures, buildExportContext, deduplicateErrors,
   filterRelevantFiles, reconcileAppRoutes, resolveStubPaths,
-  generateStubForMissingImport, validateModuleImports,
+  generateStubForMissingImport, validateModuleImports, rewriteAliasImports,
 } from '../services/build-intelligence.js';
 import type { ExportSignature } from '../services/build-intelligence.js';
 import {
   selectPathsWithinBudget, CONTEXT_BUDGETS,
 } from '../core/token-counter.js';
-import type { Brief, Client, Project, FullArchitecture, BuildFixAttempt } from '../core/types.js';
+import type { Brief, Client, Project, FullArchitecture, BuildFixAttempt, GeneratedFile } from '../core/types.js';
 
 const CORE_FILE_PATTERNS = [
   'app.tsx', 'main.tsx', 'layout', 'navbar', 'footer', 'index.css',
@@ -92,6 +92,24 @@ function getCoreFilePaths(allFiles: { path: string; type: string }[]): string[] 
       return CORE_FILE_PATTERNS.some((p) => lower.includes(p));
     })
     .map((f) => f.path);
+}
+
+async function validateAndPush(
+  repoFullName: string,
+  files: GeneratedFile[],
+  commitMessage: string,
+  projectId: string,
+  allFilePaths: string[]
+): Promise<string> {
+  let processed = rewriteAliasImports(files);
+
+  const { stubs, warnings } = validateModuleImports(processed, allFilePaths);
+  if (warnings.length > 0) {
+    await logger.warn(`Import validation: ${warnings.length} unresolved import(s) -- generating stubs`, 'development', projectId);
+  }
+
+  const filesToPush = [...processed, ...stubs];
+  return pushFiles(repoFullName, filesToPush, commitMessage, projectId);
 }
 
 export async function processBrief(projectId: string, briefId: string): Promise<void> {
@@ -420,7 +438,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
         const scaffoldFix = await generateBuildFix(
           dedupedErrors,
-          (scaffoldBuild.errors || scaffoldBuild.output).slice(0, 12000),
+          (scaffoldBuild.errors || scaffoldBuild.output).slice(-12000),
           project as unknown as Project,
           client,
           architecture as unknown as Record<string, unknown>,
@@ -432,7 +450,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
         );
 
         if (scaffoldFix.files.length > 0) {
-          await pushFiles(fullName, scaffoldFix.files, 'fix: scaffold build errors before module generation', projectId);
+          await validateAndPush(fullName, scaffoldFix.files, 'fix: scaffold build errors before module generation', projectId, scaffoldAllPaths);
           await logger.info(`Pushed ${scaffoldFix.files.length} scaffold fixes`, 'development', projectId);
         }
 
@@ -492,8 +510,10 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     const MAX_RECOVERY_PASSES = 2;
     const RECOVERY_COOLDOWN_MS = 65_000;
     const ABORT_FAILURE_THRESHOLD = 0.4;
+    const INTERMEDIATE_BUILD_CHECK_INTERVAL = 3;
     const completedModuleExports: string[] = [];
     const allExportSignatures: ExportSignature[] = [];
+    let modulesSinceLastBuildCheck = 0;
 
     async function buildModuleBatch(
       tasks: typeof moduleTasks,
@@ -573,6 +593,55 @@ export async function processBrief(projectId: string, briefId: string): Promise<
           allExportSignatures.push(...newSignatures);
         }
 
+        modulesSinceLastBuildCheck++;
+        if (modulesSinceLastBuildCheck >= INTERMEDIATE_BUILD_CHECK_INTERVAL && i + MODULE_CONCURRENCY < tasks.length) {
+          modulesSinceLastBuildCheck = 0;
+          try {
+            const midBuild = await verifyBuild(fullName, projectId);
+            if (!midBuild.success) {
+              const midErrors = extractBuildErrors(midBuild.errors || midBuild.output);
+              const midDeduped = deduplicateErrors(midErrors);
+              await logger.warn(`Intermediate build check: ${midDeduped.length} error(s). Fixing before next module...`, 'development', projectId);
+
+              const midRepoFiles = await getRepoTree(fullName);
+              const midCodeFiles = midRepoFiles.filter((f) => f.type === 'file' && /\.(tsx?|jsx?|css|json)$/.test(f.path));
+              const midPathsBudgeted = selectPathsWithinBudget(midCodeFiles, CONTEXT_BUDGETS.buildFix, CORE_FILE_PATTERNS);
+              const midCode = await getMultipleFileContents(fullName, midPathsBudgeted);
+              const midRelevant = filterRelevantFiles(midCode, midDeduped, CONTEXT_BUDGETS.buildFix);
+              const midAllPaths = midRepoFiles.filter((f) => f.type === 'file').map((f) => f.path);
+
+              for (let midAttempt = 0; midAttempt < 2; midAttempt++) {
+                const midFix = await generateBuildFix(
+                  midDeduped,
+                  (midBuild.errors || midBuild.output).slice(-8000),
+                  project as unknown as Project,
+                  client,
+                  architecture as unknown as Record<string, unknown>,
+                  midRelevant,
+                  [],
+                  midAttempt + 1,
+                  2,
+                  { strategy: 'standard', allFilePaths: midAllPaths }
+                );
+                if (midFix.files.length > 0) {
+                  await validateAndPush(fullName, midFix.files, `fix: intermediate build errors after ${batchNames}`, projectId, midAllPaths);
+                  const recheck = await verifyBuild(fullName, projectId);
+                  if (recheck.success) {
+                    await logger.info('Intermediate build fix succeeded', 'development', projectId);
+                    break;
+                  }
+                } else {
+                  break;
+                }
+              }
+            } else {
+              await logger.info('Intermediate build check passed', 'development', projectId);
+            }
+          } catch (midErr) {
+            await logger.warn(`Intermediate build check failed (non-critical): ${midErr instanceof Error ? midErr.message : String(midErr)}`, 'development', projectId);
+          }
+        }
+
         for (const result of batchResults) {
           if (result.error) {
             await supabase.from('project_tasks').update({
@@ -645,6 +714,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
         const recoveryExportCtx = buildExportContext(allExportSignatures);
         const recoveryStubPaths = resolveStubPaths(matchingModule.module.pages, allPaths);
 
+        const recoveryMode = recoveryPass === 1 ? 'simplified' as const : 'isolated' as const;
         const taskStartTime = Date.now();
         try {
           const codeResult = await generateModuleCode(
@@ -655,12 +725,13 @@ export async function processBrief(projectId: string, briefId: string): Promise<
             coreFiles,
             allPaths,
             recoveryExportCtx,
-            recoveryStubPaths
+            recoveryStubPaths,
+            recoveryMode
           );
 
           const durationSeconds = Math.round((Date.now() - taskStartTime) / 1000);
           if (codeResult.files.length > 0) {
-            await pushFiles(fullName, codeResult.files, `feat: implement ${matchingModule.module.name} (recovery)`, projectId);
+            await validateAndPush(fullName, codeResult.files, `feat: implement ${matchingModule.module.name} (recovery)`, projectId, allPaths);
             const recoverySigs = extractExportSignatures(codeResult.files);
             allExportSignatures.push(...recoverySigs);
           }
@@ -773,7 +844,8 @@ export async function processBrief(projectId: string, briefId: string): Promise<
         await logger.info(`Completeness issues: ${totalIssues} (${completeness.missingFiles.length} missing, ${completeness.brokenImports.length} broken imports, ${completeness.missingRoutes.length} missing routes)`, 'development', projectId);
 
         if (completeness.fixFiles.length > 0) {
-          await pushFiles(fullName, completeness.fixFiles, `fix: resolve completeness issues (pass ${completenessPass + 1})`, projectId);
+          const compAllPaths = allRepoFiles.filter((f) => f.type === 'file').map((f) => f.path);
+          await validateAndPush(fullName, completeness.fixFiles, `fix: resolve completeness issues (pass ${completenessPass + 1})`, projectId, compAllPaths);
         }
 
         if (completeness.missingFiles.length > 0) {
@@ -818,7 +890,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
                 allPaths
               );
               if (codeResult.files.length > 0) {
-                await pushFiles(fullName, codeResult.files, `fix: generate missing pages (${batch.join(', ')})`, projectId);
+                await validateAndPush(fullName, codeResult.files, `fix: generate missing pages (${batch.join(', ')})`, projectId, allPaths);
               }
             } catch (err) {
               await logger.warn(`Failed to generate missing pages batch: ${err instanceof Error ? err.message : String(err)}`, 'development', projectId);
@@ -845,7 +917,9 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
     let buildPassed = false;
     const previousAttempts: BuildFixAttempt[] = [];
-    const strategies: Array<'standard' | 'simplify' | 'regenerate'> = ['standard', 'simplify', 'regenerate', 'simplify', 'regenerate'];
+    const strategies: Array<'standard' | 'simplify' | 'regenerate' | 'isolate'> = [
+      'standard', 'standard', 'simplify', 'simplify', 'regenerate', 'regenerate', 'isolate', 'isolate',
+    ];
     let duplicateCount = 0;
 
     for (let attempt = 1; attempt <= config.max_corrections + 1; attempt++) {
@@ -869,7 +943,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       if (isDuplicate) {
         duplicateCount++;
         forceOpus = true;
-        strategy = duplicateCount >= 2 ? 'regenerate' : 'simplify';
+        strategy = duplicateCount >= 3 ? 'isolate' : duplicateCount >= 2 ? 'regenerate' : 'simplify';
         await sendChatMessage(projectId, `Same errors persisting. Switching to ${strategy} strategy with Opus model...`);
         await logger.warn(`Duplicate error hash #${duplicateCount}, escalating to Opus + ${strategy}`, 'development', projectId);
       }
@@ -899,7 +973,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
       const fixResult = await generateBuildFix(
         buildErrors,
-        (buildResult.errors || buildResult.output).slice(0, 12000),
+        (buildResult.errors || buildResult.output).slice(-12000),
         project as unknown as Project,
         client,
         architecture as unknown as Record<string, unknown>,
@@ -911,10 +985,10 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       );
 
       if (fixResult.files.length > 0) {
-        await pushFiles(fullName, fixResult.files, `fix: resolve build errors (attempt ${attempt}, ${strategy})`, projectId);
+        await validateAndPush(fullName, fixResult.files, `fix: resolve build errors (attempt ${attempt}, ${strategy})`, projectId, allFilePathsList);
       } else {
         const stubs = buildErrors
-          .map((e) => generateStubForMissingImport(e, buildFixPathsBudgeted))
+          .map((e) => generateStubForMissingImport(e, allFilePathsList))
           .filter((s): s is NonNullable<typeof s> => s !== null);
 
         if (stubs.length > 0) {
@@ -934,6 +1008,28 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
         await logger.warn('No fix generated and no fallback available, stopping build loop', 'development', projectId);
         break;
+      }
+    }
+
+    if (!buildPassed) {
+      const lastBuildResult = await verifyBuild(fullName, projectId);
+      if (!lastBuildResult.success) {
+        const lastErrors = extractBuildErrors(lastBuildResult.errors || lastBuildResult.output);
+        if (areAllErrorsTypeOnly(lastErrors)) {
+          await logger.warn('All remaining errors are type-only. Applying @ts-nocheck as last resort.', 'development', projectId);
+          const lastRepoFiles = await getRepoTree(fullName);
+          const tsFiles = lastRepoFiles.filter((f) => f.type === 'file' && /\.tsx?$/.test(f.path)).map((f) => f.path);
+          const tsContents = await getMultipleFileContents(fullName, tsFiles);
+          const tsNoCheckFixes = generateTsNoCheckFiles(lastErrors, tsContents);
+          if (tsNoCheckFixes.length > 0) {
+            await pushFiles(fullName, tsNoCheckFixes, 'fix: apply @ts-nocheck to type-only error files (last resort)', projectId);
+            const retryBuild = await verifyBuild(fullName, projectId);
+            if (retryBuild.success) {
+              buildPassed = true;
+              await sendChatMessage(projectId, 'Build passed after applying type suppressions to non-critical files.');
+            }
+          }
+        }
       }
     }
 

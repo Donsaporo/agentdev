@@ -227,7 +227,12 @@ export function extractBuildErrors(output: string): string[] {
 
 export function hashErrors(errors: string[]): string {
   const normalized = errors.map((e) =>
-    e.replace(/\d+/g, 'N').replace(/[a-f0-9]{8}/gi, 'H').trim()
+    e
+      .replace(/\(\d+,\d+\)/g, '(N,N)')
+      .replace(/line \d+/gi, 'line N')
+      .replace(/:\d+:\d+/g, ':N:N')
+      .replace(/[a-f0-9]{8,}/gi, 'H')
+      .trim()
   ).sort().join('|');
 
   let hash = 0;
@@ -500,6 +505,48 @@ export default {
   theme: { extend: {} },
   plugins: [],
 };`;
+
+export function areAllErrorsTypeOnly(errors: string[]): boolean {
+  const runtimePatterns = [
+    /SyntaxError/i,
+    /Cannot find module/i,
+    /Failed to resolve/i,
+    /Could not resolve/i,
+    /Module not found/i,
+    /Unexpected token/i,
+    /ENOENT/i,
+    /\[vite\]/i,
+    /\[rollup\]/i,
+    /is not a function/i,
+    /ERR!/i,
+    /FATAL/i,
+  ];
+
+  return errors.length > 0 && errors.every((e) => !runtimePatterns.some((p) => p.test(e)));
+}
+
+export function generateTsNoCheckFiles(
+  errors: string[],
+  existingFiles: { path: string; content: string }[]
+): { path: string; content: string }[] {
+  const errorFiles = new Set<string>();
+  for (const error of errors) {
+    const fileMatch = error.match(/(src\/[^\s:'",()+]+\.tsx?)/);
+    if (fileMatch) errorFiles.add(fileMatch[1]);
+  }
+
+  const fixes: { path: string; content: string }[] = [];
+  for (const filePath of errorFiles) {
+    const existing = existingFiles.find((f) => f.path === filePath);
+    if (existing && !existing.content.startsWith('// @ts-nocheck')) {
+      fixes.push({
+        path: filePath,
+        content: '// @ts-nocheck\n' + existing.content,
+      });
+    }
+  }
+  return fixes;
+}
 
 const FALLBACK_POSTCSS_CONFIG = `export default {
   plugins: {

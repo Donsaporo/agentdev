@@ -4,7 +4,7 @@ import type { AgentConfig } from './types.js';
 const DEFAULTS: AgentConfig = {
   default_model: 'claude-sonnet-4-20250514',
   auto_deploy: true,
-  max_corrections: 5,
+  max_corrections: 8,
   auto_qa: true,
   notification_email: 'team@obzide.com',
   supabase_org_id: '',

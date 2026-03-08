@@ -2,6 +2,7 @@ import { Octokit } from 'octokit';
 import { env } from '../core/env.js';
 import { logger } from '../core/logger.js';
 import { getSecretWithFallback } from '../core/secrets.js';
+import { withRetry } from '../core/retry.js';
 import type { GeneratedFile } from '../core/types.js';
 
 let octokit: Octokit | null = null;
@@ -109,57 +110,59 @@ export async function pushFiles(
   commitMessage: string,
   projectId: string
 ): Promise<string> {
-  const gh = await getClient();
-  const [owner, repo] = repoFullName.split('/');
+  return withRetry(async () => {
+    const gh = await getClient();
+    const [owner, repo] = repoFullName.split('/');
 
-  const { data: ref } = await gh.rest.git.getRef({ owner, repo, ref: 'heads/main' });
-  const latestCommitSha = ref.object.sha;
+    const { data: ref } = await gh.rest.git.getRef({ owner, repo, ref: 'heads/main' });
+    const latestCommitSha = ref.object.sha;
 
-  const { data: baseCommit } = await gh.rest.git.getCommit({ owner, repo, commit_sha: latestCommitSha });
-  const baseTreeSha = baseCommit.tree.sha;
+    const { data: baseCommit } = await gh.rest.git.getCommit({ owner, repo, commit_sha: latestCommitSha });
+    const baseTreeSha = baseCommit.tree.sha;
 
-  const tree = await Promise.all(
-    files.map(async (file) => {
-      const { data: blob } = await gh.rest.git.createBlob({
-        owner,
-        repo,
-        content: Buffer.from(file.content).toString('base64'),
-        encoding: 'base64',
-      });
-      return {
-        path: file.path,
-        mode: '100644' as const,
-        type: 'blob' as const,
-        sha: blob.sha,
-      };
-    })
-  );
+    const tree = await Promise.all(
+      files.map(async (file) => {
+        const { data: blob } = await gh.rest.git.createBlob({
+          owner,
+          repo,
+          content: Buffer.from(file.content).toString('base64'),
+          encoding: 'base64',
+        });
+        return {
+          path: file.path,
+          mode: '100644' as const,
+          type: 'blob' as const,
+          sha: blob.sha,
+        };
+      })
+    );
 
-  const { data: newTree } = await gh.rest.git.createTree({
-    owner,
-    repo,
-    base_tree: baseTreeSha,
-    tree,
-  });
+    const { data: newTree } = await gh.rest.git.createTree({
+      owner,
+      repo,
+      base_tree: baseTreeSha,
+      tree,
+    });
 
-  const { data: newCommit } = await gh.rest.git.createCommit({
-    owner,
-    repo,
-    message: commitMessage,
-    tree: newTree.sha,
-    parents: [latestCommitSha],
-  });
+    const { data: newCommit } = await gh.rest.git.createCommit({
+      owner,
+      repo,
+      message: commitMessage,
+      tree: newTree.sha,
+      parents: [latestCommitSha],
+    });
 
-  await gh.rest.git.updateRef({
-    owner,
-    repo,
-    ref: 'heads/main',
-    sha: newCommit.sha,
-  });
+    await gh.rest.git.updateRef({
+      owner,
+      repo,
+      ref: 'heads/main',
+      sha: newCommit.sha,
+    });
 
-  await logger.info(`Pushed ${files.length} files: ${commitMessage}`, 'github', projectId);
+    await logger.info(`Pushed ${files.length} files: ${commitMessage}`, 'github', projectId);
 
-  return newCommit.sha;
+    return newCommit.sha;
+  }, 3, 2000, `pushFiles(${commitMessage.slice(0, 40)})`);
 }
 
 export async function getFileContent(
