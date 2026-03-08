@@ -981,7 +981,9 @@ export async function generateModuleCode(
   client: Client,
   architecture: FullArchitecture,
   coreFiles: { path: string; content: string }[],
-  allFilePaths: string[]
+  allFilePaths: string[],
+  previousExports?: string,
+  stubPathsHint?: string
 ): Promise<ClaudeCodeResponse> {
   const ai = await getClient();
   const model = MODELS.sonnet;
@@ -1020,6 +1022,8 @@ FILE OUTPUT FORMAT:
 - Every file MUST start with: // FILE: path/to/file.ext
 - Wrap each file in a code block
 - Output ONLY files that need to be created or modified
+- For page components, use EXACTLY the file paths listed in PAGE FILE PATHS below
+- NEVER put pages in subdirectories unless the existing stub is already in a subdirectory
 
 IMPLEMENTATION RULES:
 - Follow existing code patterns, component structure, and styling conventions
@@ -1058,12 +1062,20 @@ QUALITY STANDARDS:
 - Create sub-components when sections get complex (put them in the same module directory or components/)
 - NEVER use purple/indigo unless brand colors include them`;
 
+  const stubPathsSection = stubPathsHint
+    ? `\nPAGE FILE PATHS (use these EXACT paths for each page component):\n${stubPathsHint}\n`
+    : '';
+
+  const exportsSection = previousExports
+    ? `\n${previousExports}\n`
+    : '';
+
   const userPrompt = `IMPLEMENT THIS MODULE COMPLETELY:
 
 MODULE: ${module.name}
 PAGES TO BUILD:
 ${pageList}
-
+${stubPathsSection}${exportsSection}
 ${relevantModels.length > 0 ? `RELEVANT DATA MODELS:\n${JSON.stringify(relevantModels, null, 2)}` : ''}
 
 FULL ARCHITECTURE:

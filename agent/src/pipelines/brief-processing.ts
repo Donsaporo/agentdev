@@ -20,6 +20,12 @@ import {
   findExistingProject, executeSqlStatements,
 } from '../services/supabase-management.js';
 import { saveCheckpoint, clearCheckpoint, recordDeployment, getCheckpoint } from '../core/pipeline-state.js';
+import {
+  extractExportSignatures, buildExportContext, deduplicateErrors,
+  filterRelevantFiles, reconcileAppRoutes, resolveStubPaths,
+  generateStubForMissingImport,
+} from '../services/build-intelligence.js';
+import type { ExportSignature } from '../services/build-intelligence.js';
 import type { Brief, Client, Project, FullArchitecture, BuildFixAttempt } from '../core/types.js';
 
 const CORE_FILE_PATTERNS = [
@@ -407,6 +413,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     const RECOVERY_COOLDOWN_MS = 65_000;
     const ABORT_FAILURE_THRESHOLD = 0.4;
     const completedModuleExports: string[] = [];
+    const allExportSignatures: ExportSignature[] = [];
 
     async function buildModuleBatch(
       tasks: typeof moduleTasks,
@@ -422,13 +429,9 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
         const repoFiles = await getRepoTree(fullName);
         const coreFilePaths = getCoreFilePaths(repoFiles);
-
-        const previousModulePaths = completedModuleExports
-          .filter((p) => !coreFilePaths.includes(p))
-          .slice(0, 20);
-        const allContextPaths = [...new Set([...coreFilePaths, ...previousModulePaths])];
-        const coreFiles = await getMultipleFileContents(fullName, allContextPaths.slice(0, 50));
+        const coreFiles = await getMultipleFileContents(fullName, coreFilePaths.slice(0, 25));
         const allPaths = repoFiles.filter((f) => f.type === 'file').map((f) => f.path);
+        const exportContext = buildExportContext(allExportSignatures);
 
         for (const task of batch) {
           await supabase.from('project_tasks').update({
@@ -444,13 +447,16 @@ export async function processBrief(projectId: string, briefId: string): Promise<
           batch.map(async (task) => {
             const taskStartTime = Date.now();
             try {
+              const stubPaths = resolveStubPaths(task.module.pages, allPaths);
               const codeResult = await generateModuleCode(
                 task.module,
                 project as unknown as Project,
                 client,
                 architecture,
                 coreFiles,
-                allPaths
+                allPaths,
+                exportContext,
+                stubPaths
               );
 
               const durationSeconds = Math.round((Date.now() - taskStartTime) / 1000);
@@ -471,6 +477,9 @@ export async function processBrief(projectId: string, briefId: string): Promise<
               completedModuleExports.push(f.path);
             }
           }
+
+          const newSignatures = extractExportSignatures(allFiles);
+          allExportSignatures.push(...newSignatures);
         }
 
         for (const result of batchResults) {
@@ -533,8 +542,10 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
         const repoFiles = await getRepoTree(fullName);
         const coreFilePaths = getCoreFilePaths(repoFiles);
-        const coreFiles = await getMultipleFileContents(fullName, coreFilePaths.slice(0, 30));
+        const coreFiles = await getMultipleFileContents(fullName, coreFilePaths.slice(0, 25));
         const allPaths = repoFiles.filter((f) => f.type === 'file').map((f) => f.path);
+        const recoveryExportCtx = buildExportContext(allExportSignatures);
+        const recoveryStubPaths = resolveStubPaths(matchingModule.module.pages, allPaths);
 
         const taskStartTime = Date.now();
         try {
@@ -544,12 +555,16 @@ export async function processBrief(projectId: string, briefId: string): Promise<
             client,
             architecture,
             coreFiles,
-            allPaths
+            allPaths,
+            recoveryExportCtx,
+            recoveryStubPaths
           );
 
           const durationSeconds = Math.round((Date.now() - taskStartTime) / 1000);
           if (codeResult.files.length > 0) {
             await pushFiles(fullName, codeResult.files, `feat: implement ${matchingModule.module.name} (recovery)`, projectId);
+            const recoverySigs = extractExportSignatures(codeResult.files);
+            allExportSignatures.push(...recoverySigs);
           }
           await supabase.from('project_tasks').update({
             status: 'completed',
@@ -609,6 +624,22 @@ export async function processBrief(projectId: string, briefId: string): Promise<
         .eq('status', 'failed');
       const failedModuleNames = stillFailed?.map((t) => t.title).join(', ') || '';
       await sendChatMessage(projectId, `Warning: ${failedCount} module(s) could not be built: ${failedModuleNames}. Continuing with available modules.`);
+    }
+
+    // ============================================================
+    // PHASE 3.25: RECONCILE App.tsx ROUTES
+    // ============================================================
+
+    try {
+      const reconRepoFiles = await getRepoTree(fullName);
+      const reconPaths = reconRepoFiles.filter((f) => f.type === 'file').map((f) => f.path);
+      const reconciledApp = reconcileAppRoutes(reconPaths, architecture.pages || []);
+      if (reconciledApp) {
+        await pushFiles(fullName, [reconciledApp], 'fix: reconcile App.tsx routes with actual page files', projectId);
+        await logger.info('Reconciled App.tsx routes with actual page files', 'development', projectId);
+      }
+    } catch (err) {
+      await logger.warn(`App.tsx reconciliation failed (non-critical): ${err instanceof Error ? err.message : String(err)}`, 'development', projectId);
     }
 
     // ============================================================
@@ -722,7 +753,8 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
       if (attempt > config.max_corrections) break;
 
-      const buildErrors = extractBuildErrors(buildResult.errors || buildResult.output);
+      const rawBuildErrors = extractBuildErrors(buildResult.errors || buildResult.output);
+      const buildErrors = deduplicateErrors(rawBuildErrors);
       const errorHash = hashErrors(buildErrors);
 
       const isDuplicate = previousAttempts.some((a) => a.errorHash === errorHash);
@@ -743,14 +775,16 @@ export async function processBrief(projectId: string, briefId: string): Promise<
         errorsText: buildErrors.slice(0, 10).join('\n'),
       });
 
-      await sendChatMessage(projectId, `Build failed (attempt ${attempt}/${config.max_corrections}): ${buildErrors.length} error(s). Auto-fixing (${strategy})...`);
+      await sendChatMessage(projectId, `Build failed (attempt ${attempt}/${config.max_corrections}): ${rawBuildErrors.length} error(s) (${buildErrors.length} root causes). Auto-fixing (${strategy})...`);
 
       const allRepoFiles = await getRepoTree(fullName);
       const allCodePaths = allRepoFiles
         .filter((f) => f.type === 'file' && /\.(tsx?|jsx?|css|json)$/.test(f.path))
         .map((f) => f.path);
-      const contextLimit = isDuplicate ? allCodePaths.length : 80;
-      const allCode = await getMultipleFileContents(fullName, allCodePaths.slice(0, contextLimit));
+      const allCode = await getMultipleFileContents(fullName, allCodePaths.slice(0, 60));
+
+      const relevantFiles = filterRelevantFiles(allCode, buildErrors);
+      await logger.info(`Build fix context: ${relevantFiles.length}/${allCode.length} relevant files`, 'development', projectId);
 
       const fixResult = await generateBuildFix(
         buildErrors,
@@ -758,7 +792,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
         project as unknown as Project,
         client,
         architecture as unknown as Record<string, unknown>,
-        allCode,
+        relevantFiles,
         previousAttempts,
         attempt,
         config.max_corrections,
@@ -768,7 +802,25 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       if (fixResult.files.length > 0) {
         await pushFiles(fullName, fixResult.files, `fix: resolve build errors (attempt ${attempt}, ${strategy})`, projectId);
       } else {
-        await logger.warn('No fix generated, stopping build loop', 'development', projectId);
+        const stubs = buildErrors
+          .map((e) => generateStubForMissingImport(e, allCodePaths))
+          .filter((s): s is NonNullable<typeof s> => s !== null);
+
+        if (stubs.length > 0) {
+          await pushFiles(fullName, stubs, `fix: generate stubs for missing modules (attempt ${attempt})`, projectId);
+          await logger.info(`Generated ${stubs.length} stub(s) for missing imports`, 'development', projectId);
+          continue;
+        }
+
+        const reconPaths = allRepoFiles.filter((f) => f.type === 'file').map((f) => f.path);
+        const reconciledApp = reconcileAppRoutes(reconPaths, architecture.pages || []);
+        if (reconciledApp) {
+          await pushFiles(fullName, [reconciledApp], `fix: re-reconcile App.tsx routes (attempt ${attempt})`, projectId);
+          await logger.info('Re-reconciled App.tsx as fallback fix', 'development', projectId);
+          continue;
+        }
+
+        await logger.warn('No fix generated and no fallback available, stopping build loop', 'development', projectId);
         break;
       }
     }
