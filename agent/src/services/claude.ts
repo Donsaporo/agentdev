@@ -79,7 +79,9 @@ async function trackUsage(
       cost_estimate: inputCost + outputCost,
       operation,
     });
-  } catch { /* non-critical */ }
+  } catch (err) {
+    console.error(`[trackUsage] Failed to record token usage: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 interface ThinkingConfig {

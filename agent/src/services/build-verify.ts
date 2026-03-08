@@ -43,10 +43,10 @@ function isNpmError(output: string): boolean {
 function extractBadPackages(output: string): string[] {
   const badPkgs: string[] = [];
 
-  const notargetMatch = output.match(/notarget\s+No matching version found for ([^\s@]+)/g);
+  const notargetMatch = output.match(/notarget\s+No matching version found for ((?:@[^\s/]+\/)?[^\s@]+)/g);
   if (notargetMatch) {
     for (const m of notargetMatch) {
-      const pkg = m.match(/for\s+([^\s@]+)/)?.[1];
+      const pkg = m.match(/for\s+((?:@[^\s/]+\/)?[^\s@]+)/)?.[1];
       if (pkg) badPkgs.push(pkg);
     }
   }
@@ -55,6 +55,14 @@ function extractBadPackages(output: string): string[] {
   if (e404Match) {
     for (const m of e404Match) {
       const pkg = m.match(/'([^']+)'/)?.[1];
+      if (pkg) badPkgs.push(pkg);
+    }
+  }
+
+  const eresolveMatch = output.match(/Could not resolve dependency.*(?:@[^\s/]+\/)?[^\s@]+/g);
+  if (eresolveMatch) {
+    for (const m of eresolveMatch) {
+      const pkg = m.match(/((?:@[^\s/]+\/)?[^\s@]+)\s*$/)?.[1];
       if (pkg) badPkgs.push(pkg);
     }
   }
@@ -108,7 +116,9 @@ async function autoFixPackageJson(buildDir: string, output: string): Promise<boo
       await writeFile(pkgPath, JSON.stringify(pkg, null, 2), 'utf-8');
       return true;
     }
-  } catch { /* ignore */ }
+  } catch (err) {
+    console.error(`[autoFixPackageJson] Failed to repair package.json: ${err instanceof Error ? err.message : String(err)}`);
+  }
   return false;
 }
 
@@ -218,8 +228,8 @@ export function extractBuildErrors(output: string): string[] {
   }
 
   if (errors.length === 0 && output.trim().length > 0) {
-    const tail = output.trim().split('\n').slice(-30).join('\n');
-    errors.push(tail.slice(0, 3000));
+    const head = output.trim().split('\n').slice(0, 30).join('\n');
+    errors.push(head.slice(0, 3000));
   }
 
   return errors;
@@ -232,16 +242,18 @@ export function hashErrors(errors: string[]): string {
       .replace(/line \d+/gi, 'line N')
       .replace(/:\d+:\d+/g, ':N:N')
       .replace(/[a-f0-9]{8,}/gi, 'H')
+      .replace(/\[repeated \d+x in:.*?\]/g, '')
       .trim()
   ).sort().join('|');
 
-  let hash = 0;
+  let h1 = 0x811c9dc5 >>> 0;
+  let h2 = 0x01000193 >>> 0;
   for (let i = 0; i < normalized.length; i++) {
     const char = normalized.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash |= 0;
+    h1 = Math.imul(h1 ^ char, 0x01000193) >>> 0;
+    h2 = Math.imul(h2 ^ char, 0x811c9dc5) >>> 0;
   }
-  return hash.toString(36);
+  return (h1 >>> 0).toString(36) + '-' + (h2 >>> 0).toString(36);
 }
 
 export async function validateScaffold(
@@ -515,14 +527,19 @@ export function areAllErrorsTypeOnly(errors: string[]): boolean {
     /Module not found/i,
     /Unexpected token/i,
     /ENOENT/i,
-    /\[vite\]/i,
-    /\[rollup\]/i,
     /is not a function/i,
     /ERR!/i,
     /FATAL/i,
   ];
 
-  return errors.length > 0 && errors.every((e) => !runtimePatterns.some((p) => p.test(e)));
+  const viteTypeErrorPattern = /\[vite\].*(?:error TS|Type error)/i;
+  const rollupTypeErrorPattern = /\[rollup\].*(?:error TS|Type error)/i;
+
+  return errors.length > 0 && errors.every((e) => {
+    if (viteTypeErrorPattern.test(e) || rollupTypeErrorPattern.test(e)) return true;
+    if (/\[vite\]/i.test(e) || /\[rollup\]/i.test(e)) return false;
+    return !runtimePatterns.some((p) => p.test(e));
+  });
 }
 
 export function generateTsNoCheckFiles(
@@ -531,8 +548,13 @@ export function generateTsNoCheckFiles(
 ): { path: string; content: string }[] {
   const errorFiles = new Set<string>();
   for (const error of errors) {
-    const fileMatch = error.match(/(src\/[^\s:'",()+]+\.tsx?)/);
-    if (fileMatch) errorFiles.add(fileMatch[1]);
+    const fileMatches = error.matchAll(/([^\s:'",()+]*\.(?:tsx?|jsx?))\b/g);
+    for (const fm of fileMatches) {
+      const cleaned = fm[1].replace(/^[./]+/, '');
+      if (cleaned.length > 0 && !cleaned.startsWith('node_modules')) {
+        errorFiles.add(cleaned);
+      }
+    }
   }
 
   const fixes: { path: string; content: string }[] = [];

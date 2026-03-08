@@ -16,22 +16,46 @@ export function extractExportSignatures(files: GeneratedFile[]): ExportSignature
     let defaultExport: string | null = null;
     const namedExports: string[] = [];
 
-    const defaultMatch = file.content.match(
-      /export\s+default\s+(?:function|class|const)\s+(\w+)/
-    );
-    if (defaultMatch) {
-      defaultExport = defaultMatch[1];
-    } else if (file.content.includes('export default')) {
-      defaultExport = 'default';
+    const defaultPatterns = [
+      /export\s+default\s+(?:function|class|const|let|var)\s+(\w+)/,
+      /export\s+default\s+(?:React\.)?memo\s*\(\s*(?:function\s+)?(\w+)/,
+      /export\s+default\s+(?:React\.)?forwardRef\s*[(<]\s*(?:function\s+)?(\w+)/,
+    ];
+    for (const pattern of defaultPatterns) {
+      const m = file.content.match(pattern);
+      if (m) {
+        defaultExport = m[1];
+        break;
+      }
+    }
+    if (!defaultExport && file.content.includes('export default')) {
+      const standaloneDefault = file.content.match(/export\s+default\s+(\w+)\s*;/);
+      if (standaloneDefault) {
+        defaultExport = standaloneDefault[1];
+      } else {
+        defaultExport = 'default';
+      }
     }
 
     const namedMatches = file.content.matchAll(
-      /export\s+(?:function|const|class|interface|type|enum)\s+(\w+)/g
+      /export\s+(?:function|const|let|var|class|interface|type|enum|abstract\s+class)\s+(\w+)/g
     );
     for (const match of namedMatches) {
       if (match[1] !== defaultExport) {
         namedExports.push(match[1]);
       }
+    }
+
+    const reExportMatches = file.content.matchAll(
+      /export\s*\{\s*([^}]+)\s*\}/g
+    );
+    for (const match of reExportMatches) {
+      const names = match[1].split(',').map((n) => {
+        const trimmed = n.trim();
+        const asMatch = trimmed.match(/(\w+)\s+as\s+(\w+)/);
+        return asMatch ? asMatch[2] : trimmed;
+      }).filter((n) => n && n !== 'default' && n !== defaultExport);
+      namedExports.push(...names);
     }
 
     if (defaultExport || namedExports.length > 0) {
@@ -64,42 +88,59 @@ export function buildExportContext(signatures: ExportSignature[]): string {
 }
 
 export function deduplicateErrors(errors: string[]): string[] {
-  const rootCauses = new Map<string, string>();
+  const rootCauses = new Map<string, { representative: string; count: number; files: Set<string> }>();
 
   for (const error of errors) {
+    const fileInError = error.match(/(src\/[^\s:'",()+]+)/)?.[1] || '';
+
     const missingModule = error.match(/(?:Cannot find module|Failed to resolve|Could not resolve)\s+'([^']+)'/);
     if (missingModule) {
       const key = `missing:${missingModule[1]}`;
-      if (!rootCauses.has(key)) rootCauses.set(key, error);
+      const existing = rootCauses.get(key);
+      if (existing) {
+        existing.count++;
+        if (fileInError) existing.files.add(fileInError);
+      } else {
+        rootCauses.set(key, { representative: error, count: 1, files: new Set(fileInError ? [fileInError] : []) });
+      }
       continue;
     }
 
     const noExport = error.match(/has no exported member '([^']+)'/);
     if (noExport) {
-      const key = `no-export:${noExport[1]}`;
-      if (!rootCauses.has(key)) rootCauses.set(key, error);
+      const sourceFile = error.match(/['"]([^'"]+)['"]\s*has no exported/)?.[1] || '';
+      const key = `no-export:${noExport[1]}:${sourceFile}`;
+      const existing = rootCauses.get(key);
+      if (existing) { existing.count++; if (fileInError) existing.files.add(fileInError); }
+      else rootCauses.set(key, { representative: error, count: 1, files: new Set(fileInError ? [fileInError] : []) });
       continue;
     }
 
     const noProp = error.match(/Property '([^']+)' does not exist on type '([^']+)'/);
     if (noProp) {
       const key = `no-prop:${noProp[1]}:${noProp[2]}`;
-      if (!rootCauses.has(key)) rootCauses.set(key, error);
+      const existing = rootCauses.get(key);
+      if (existing) { existing.count++; if (fileInError) existing.files.add(fileInError); }
+      else rootCauses.set(key, { representative: error, count: 1, files: new Set(fileInError ? [fileInError] : []) });
       continue;
     }
 
     const notAssignable = error.match(/is not assignable to type '([^']+)'/);
     if (notAssignable) {
       const key = `not-assignable:${notAssignable[1]}`;
-      if (!rootCauses.has(key)) rootCauses.set(key, error);
+      const existing = rootCauses.get(key);
+      if (existing) { existing.count++; if (fileInError) existing.files.add(fileInError); }
+      else rootCauses.set(key, { representative: error, count: 1, files: new Set(fileInError ? [fileInError] : []) });
       continue;
     }
 
     const noDefault = error.match(/has no default export/);
     if (noDefault) {
-      const fileInError = error.match(/(src\/[^\s:]+)/);
-      const key = `no-default:${fileInError?.[1] || error.slice(0, 80)}`;
-      if (!rootCauses.has(key)) rootCauses.set(key, error);
+      const targetFile = error.match(/['"]([^'"]+)['"]\s*has no default/)?.[1] || fileInError;
+      const key = `no-default:${targetFile}`;
+      const existing = rootCauses.get(key);
+      if (existing) { existing.count++; if (fileInError) existing.files.add(fileInError); }
+      else rootCauses.set(key, { representative: error, count: 1, files: new Set(fileInError ? [fileInError] : []) });
       continue;
     }
 
@@ -107,10 +148,19 @@ export function deduplicateErrors(errors: string[]): string[] {
       .replace(/src\/[^\s:]+/g, 'FILE')
       .replace(/\(\d+,\d+\)/g, '(N,N)')
       .replace(/line \d+/gi, 'line N');
-    if (!rootCauses.has(normalized)) rootCauses.set(normalized, error);
+    if (!rootCauses.has(normalized)) {
+      rootCauses.set(normalized, { representative: error, count: 1, files: new Set(fileInError ? [fileInError] : []) });
+    } else {
+      rootCauses.get(normalized)!.count++;
+    }
   }
 
-  return Array.from(rootCauses.values());
+  return Array.from(rootCauses.values()).map((v) => {
+    if (v.count > 1 && v.files.size > 0) {
+      return `${v.representative} [repeated ${v.count}x in: ${Array.from(v.files).slice(0, 5).join(', ')}${v.files.size > 5 ? ` +${v.files.size - 5} more` : ''}]`;
+    }
+    return v.representative;
+  });
 }
 
 export function filterRelevantFiles(
@@ -482,7 +532,7 @@ export function rewriteAliasImports(files: GeneratedFile[]): GeneratedFile[] {
   return files.map((file) => {
     if (!/\.(tsx?|jsx?)$/.test(file.path)) return file;
 
-    const fileDir = file.path.substring(0, file.path.lastIndexOf('/'));
+    const fileDir = file.path.substring(0, file.path.lastIndexOf('/')) || 'src';
     const content = file.content.replace(
       /((?:import|from)\s+['"])@\/([^'"]+)(['"])/g,
       (_full, prefix, aliasPath, suffix) => {
@@ -493,10 +543,16 @@ export function rewriteAliasImports(files: GeneratedFile[]): GeneratedFile[] {
           common++;
         }
         const ups = fromParts.length - common;
-        const relativeParts = ups > 0
-          ? Array(ups).fill('..').concat(targetParts.slice(common))
-          : ['.', ...targetParts.slice(common)];
-        return prefix + relativeParts.join('/') + suffix;
+        const remaining = targetParts.slice(common);
+        let relativePath: string;
+        if (ups > 0) {
+          relativePath = Array(ups).fill('..').concat(remaining).join('/');
+        } else if (remaining.length > 0) {
+          relativePath = './' + remaining.join('/');
+        } else {
+          relativePath = './index';
+        }
+        return prefix + relativePath + suffix;
       }
     );
     return content !== file.content ? { ...file, content } : file;
@@ -549,12 +605,13 @@ export function generateStubForMissingImport(
 
   if (allFilePaths.includes(modulePath)) return null;
 
-  const componentName = modulePath
+  let componentName = modulePath
     .replace(/^src\//, '')
     .replace(/\.(tsx?|jsx?)$/, '')
     .split('/')
     .pop()
     ?.replace(/[^a-zA-Z0-9]/g, '') || 'Placeholder';
+  if (!componentName || /^\d/.test(componentName)) componentName = 'Stub' + componentName;
 
   const content = `export default function ${componentName}() {
   return (

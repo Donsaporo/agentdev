@@ -90,7 +90,22 @@ function enqueue(event: QueueEvent): void {
 
     const retries = briefRetryCount.get(briefId) || 0;
     if (retries >= MAX_BRIEF_RETRIES) {
-      logger.warn(`Brief ${briefId} exceeded max retries (${MAX_BRIEF_RETRIES}), ignoring`, 'system');
+      logger.warn(`Brief ${briefId} exceeded max retries (${MAX_BRIEF_RETRIES}), marking as permanently failed`, 'system');
+      const supabase = getSupabase();
+      (async () => {
+        try {
+          await supabase.from('briefs').update({ status: 'failed' }).eq('id', briefId);
+          const { data: brief } = await supabase.from('briefs').select('project_id').eq('id', briefId).maybeSingle();
+          if (brief?.project_id) {
+            await supabase.from('projects').update({
+              agent_status: 'idle',
+              last_error_message: `Brief processing failed after ${MAX_BRIEF_RETRIES} retries. Please review the brief and resubmit.`,
+            }).eq('id', brief.project_id);
+          }
+        } catch (err) {
+          logger.error(`Failed to mark brief ${briefId} as permanently failed: ${err instanceof Error ? err.message : String(err)}`, 'system');
+        }
+      })();
       return;
     }
 
@@ -384,14 +399,35 @@ export function startListening(): void {
   logger.info('Realtime listeners started', 'system');
 }
 
+function getChannelHealth(): { healthy: number; unhealthy: number; names: string[] } {
+  let healthy = 0;
+  let unhealthy = 0;
+  const unhealthyNames: string[] = [];
+  for (const ch of channels) {
+    const state = (ch as unknown as { state?: string }).state;
+    if (state === 'joined' || state === 'SUBSCRIBED') {
+      healthy++;
+    } else {
+      unhealthy++;
+      const topic = (ch as unknown as { topic?: string }).topic || 'unknown';
+      unhealthyNames.push(`${topic}(${state || 'unknown'})`);
+    }
+  }
+  return { healthy, unhealthy, names: unhealthyNames };
+}
+
 async function updateHeartbeat(): Promise<void> {
   const supabase = getSupabase();
+  const health = getChannelHealth();
   await supabase.from('agent_heartbeat').upsert({
     id: 1,
     last_seen: new Date().toISOString(),
     status: 'online',
     version: '1.0.0',
   });
+  if (health.unhealthy > 0) {
+    await logger.warn(`Unhealthy channels: ${health.names.join(', ')}`, 'system');
+  }
 }
 
 export function startHeartbeat(): NodeJS.Timeout {
@@ -400,9 +436,8 @@ export function startHeartbeat(): NodeJS.Timeout {
   return setInterval(async () => {
     try {
       await updateHeartbeat();
-      await logger.info('Agent heartbeat', 'system');
-    } catch {
-      console.error('Heartbeat failed');
+    } catch (err) {
+      console.error('Heartbeat failed:', err instanceof Error ? err.message : String(err));
     }
   }, 60_000);
 }
@@ -417,7 +452,7 @@ export async function markOffline(): Promise<void> {
     stopAllChannels();
     const supabase = getSupabase();
     await supabase.from('agent_heartbeat').update({ status: 'offline' }).eq('id', 1);
-  } catch {
-    // best effort
+  } catch (err) {
+    console.error(`[markOffline] Failed to mark agent offline: ${err instanceof Error ? err.message : String(err)}`);
   }
 }

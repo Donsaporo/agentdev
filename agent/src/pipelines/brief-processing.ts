@@ -41,6 +41,16 @@ const CORE_FILE_PATTERNS = [
 ];
 
 const PIPELINE_MAX_DURATION_MS = 4 * 60 * 60 * 1000;
+const SCAFFOLD_BUILD_GATE_ATTEMPTS = 4;
+const SCAFFOLD_RETRY_GATE_ATTEMPTS = 3;
+const MAX_COMPLETENESS_PASSES = 2;
+const COMPLETENESS_BATCH_SIZE = 5;
+const COMPLETENESS_INTER_BATCH_DELAY_MS = 5000;
+const LARGE_PROJECT_PAGE_THRESHOLD = 30;
+const BUILD_OUTPUT_CONTEXT_SLICE = 15000;
+const INTERMEDIATE_BUILD_OUTPUT_SLICE = 12000;
+const MAX_SQL_FIX_PASSES = 2;
+const SQL_FIX_DELAY_MS = 3000;
 
 async function updateProject(
   projectId: string,
@@ -169,8 +179,11 @@ function programmaticCompletenessCheck(
     }
 
     for (const page of (architecture.pages || [])) {
-      if (page.route && !appTsxContent.includes(page.route)) {
-        missingRoutes.push(`${page.name} (${page.route})`);
+      if (page.route) {
+        const routePattern = new RegExp(`["'\`]${page.route.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["'\`]`);
+        if (!routePattern.test(appTsxContent)) {
+          missingRoutes.push(`${page.name} (${page.route})`);
+        }
       }
     }
   }
@@ -183,6 +196,8 @@ interface BuildGateResult {
   errorsRemaining: number;
   attemptsUsed: number;
   lastStrategy?: string;
+  attempts: BuildFixAttempt[];
+  lastCleanSha?: string;
 }
 
 async function buildGate(
@@ -192,9 +207,10 @@ async function buildGate(
   client: Client,
   architecture: FullArchitecture,
   maxAttempts: number,
-  phaseName: string
+  phaseName: string,
+  inheritedAttempts?: BuildFixAttempt[]
 ): Promise<BuildGateResult> {
-  const previousAttempts: BuildFixAttempt[] = [];
+  const previousAttempts: BuildFixAttempt[] = inheritedAttempts ? [...inheritedAttempts] : [];
   const strategies: Array<'standard' | 'simplify' | 'regenerate' | 'isolate'> = [
     'standard', 'standard', 'simplify', 'simplify', 'regenerate', 'regenerate', 'isolate', 'isolate',
   ];
@@ -204,12 +220,12 @@ async function buildGate(
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const buildResult = await verifyBuild(fullName, projectId);
     if (buildResult.success) {
-      return { passed: true, errorsRemaining: 0, attemptsUsed: attempt };
+      return { passed: true, errorsRemaining: 0, attemptsUsed: attempt, attempts: previousAttempts };
     }
 
     if (attempt === maxAttempts) {
       const rawErrors = extractBuildErrors(buildResult.errors || buildResult.output);
-      return { passed: false, errorsRemaining: rawErrors.length, attemptsUsed: attempt, lastStrategy: lastUsedStrategy };
+      return { passed: false, errorsRemaining: rawErrors.length, attemptsUsed: attempt, lastStrategy: lastUsedStrategy, attempts: previousAttempts };
     }
 
     const rawBuildErrors = extractBuildErrors(buildResult.errors || buildResult.output);
@@ -259,7 +275,7 @@ async function buildGate(
 
     const fixResult = await generateBuildFix(
       buildErrors,
-      (buildResult.errors || buildResult.output).slice(-15000),
+      (buildResult.errors || buildResult.output).slice(-BUILD_OUTPUT_CONTEXT_SLICE),
       project,
       client,
       architecture as unknown as Record<string, unknown>,
@@ -275,7 +291,27 @@ async function buildGate(
       if (lastAttempt) {
         lastAttempt.filesModified = fixResult.files.map((f) => f.path);
       }
+
+      const preFixContents = await getMultipleFileContents(
+        fullName,
+        fixResult.files.map((f) => f.path).filter((p) => allFilePathsList.includes(p))
+      );
+
       await validateAndPush(fullName, fixResult.files, `fix: ${phaseName} build errors (attempt ${attempt}, ${strategy})`, projectId, allFilePathsList);
+
+      const postFixBuild = await verifyBuild(fullName, projectId);
+      if (!postFixBuild.success) {
+        const postFixErrors = extractBuildErrors(postFixBuild.errors || postFixBuild.output);
+        if (postFixErrors.length > rawBuildErrors.length && preFixContents.length > 0) {
+          await logger.warn(`[${phaseName}] Fix made errors worse (${rawBuildErrors.length} -> ${postFixErrors.length}). Rolling back.`, 'development', projectId);
+          await pushFiles(
+            fullName,
+            preFixContents.map((f) => ({ path: f.path, content: f.content })),
+            `revert: rollback ${phaseName} fix attempt ${attempt} (errors increased)`,
+            projectId
+          );
+        }
+      }
     } else {
       const stubs = buildErrors
         .map((e) => generateStubForMissingImport(e, allFilePathsList))
@@ -296,11 +332,11 @@ async function buildGate(
 
       await logger.warn(`[${phaseName}] No fix generated, stopping build gate`, 'development', projectId);
       const remaining = extractBuildErrors(buildResult.errors || buildResult.output);
-      return { passed: false, errorsRemaining: remaining.length, attemptsUsed: attempt, lastStrategy: lastUsedStrategy };
+      return { passed: false, errorsRemaining: remaining.length, attemptsUsed: attempt, lastStrategy: lastUsedStrategy, attempts: previousAttempts };
     }
   }
 
-  return { passed: false, errorsRemaining: -1, attemptsUsed: maxAttempts, lastStrategy: lastUsedStrategy };
+  return { passed: false, errorsRemaining: -1, attemptsUsed: maxAttempts, lastStrategy: lastUsedStrategy, attempts: previousAttempts };
 }
 
 export async function processBrief(projectId: string, briefId: string): Promise<void> {
@@ -541,7 +577,6 @@ export async function processBrief(projectId: string, briefId: string): Promise<
           await updateProject(projectId, sbUpdate);
 
           await sendChatMessage(projectId, 'Generating and executing database schema...');
-          const MAX_SQL_FIX_PASSES = 2;
           let sqlExecuted = false;
 
           const sql = await generateDatabaseSchema(architecture, projectId);
@@ -564,7 +599,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
                 await sendChatMessage(projectId, `Schema had ${remainingFailures.length} error(s). Generating targeted fixes (pass ${fixPass})...`);
                 await logger.info(`SQL fix pass ${fixPass}: ${remainingFailures.length} failed statements to fix`, 'development', projectId);
 
-                await new Promise((r) => setTimeout(r, 3000));
+                await new Promise((r) => setTimeout(r, SQL_FIX_DELAY_MS));
 
                 const fixSql = await fixFailedSqlStatements(remainingFailures, architecture, projectId);
                 if (!fixSql || fixSql.length < 10) {
@@ -615,7 +650,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       await updateProject(projectId, { current_phase: 'scaffold_verification', progress: 19 });
       const scaffoldGate = await buildGate(
         fullName, projectId, project as unknown as Project, client, architecture,
-        4, 'scaffold'
+        SCAFFOLD_BUILD_GATE_ATTEMPTS, 'scaffold'
       );
       if (scaffoldGate.passed) {
         await logger.info('Scaffold build verified successfully', 'development', projectId);
@@ -636,17 +671,55 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
         const retryGate = await buildGate(
           fullName, projectId, project as unknown as Project, client, architecture,
-          3, 'scaffold-retry'
+          SCAFFOLD_RETRY_GATE_ATTEMPTS, 'scaffold-retry',
+          scaffoldGate.attempts
         );
         if (retryGate.passed) {
           await logger.info('Scaffold build verified after regeneration', 'development', projectId);
         } else {
-          await logger.warn(`Scaffold still has ${retryGate.errorsRemaining} errors after regeneration. Continuing with best effort.`, 'development', projectId);
+          await supabase.from('briefs').update({ status: 'failed' }).eq('id', briefId);
+          await updateProject(projectId, {
+            agent_status: 'idle',
+            current_phase: 'failed',
+            last_error_message: `Scaffold failed to compile after regeneration (${retryGate.errorsRemaining} errors). Cannot proceed with module generation.`,
+          });
+          await sendChatMessage(projectId, `Scaffold failed to compile after two full generation attempts (${retryGate.errorsRemaining} errors remaining). The repository is available at https://github.com/${fullName} for manual inspection. Please review the brief and retry.`);
+          await notifyError(project.name, `Scaffold build failed: ${retryGate.errorsRemaining} errors after 7 fix attempts`, projectId, {
+            phase: 'scaffold_verification',
+            repoUrl: `https://github.com/${fullName}`,
+            durationMinutes: Math.round((Date.now() - pipelineStart) / 60000),
+          });
+          await clearCheckpoint(projectId, 'failed');
+          return;
         }
       }
     }
 
     checkPipelineTimeout(pipelineStart);
+
+    const completedModuleExports: string[] = [];
+    const allExportSignatures: ExportSignature[] = [];
+    let modulesSinceLastBuildCheck = 0;
+    let cumulativeIntermediateErrors = 0;
+
+    // ============================================================
+    // PHASE 2.8: EXTRACT SCAFFOLD EXPORTS
+    // ============================================================
+
+    {
+      const scaffoldTree = await getRepoTree(fullName);
+      const scaffoldTsFiles = scaffoldTree
+        .filter((f) => f.type === 'file' && /\.(tsx?|jsx?)$/.test(f.path) && f.path.startsWith('src/'))
+        .map((f) => f.path);
+      const scaffoldContents = await getMultipleFileContents(fullName, scaffoldTsFiles);
+      const scaffoldSigs = extractExportSignatures(scaffoldContents.map((f) => ({ path: f.path, content: f.content })));
+      for (const sig of scaffoldSigs) {
+        if (!allExportSignatures.some((s) => s.path === sig.path)) {
+          allExportSignatures.push(sig);
+        }
+      }
+      await logger.info(`Extracted ${scaffoldSigs.length} export signatures from scaffold`, 'development', projectId);
+    }
 
     // ============================================================
     // PHASE 3: MODULE-BASED DEVELOPMENT
@@ -659,7 +732,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     const totalPages = (architecture.pages || []).length;
     await sendChatMessage(projectId, `Starting module-based development: ${modules.length} modules, ${totalPages} total pages.`);
 
-    const isLargeProject = totalPages > 30;
+    const isLargeProject = totalPages > LARGE_PROJECT_PAGE_THRESHOLD;
     if (isLargeProject) {
       await logger.info(`Large project detected (${totalPages} pages). Using conservative build intervals.`, 'development', projectId);
     }
@@ -705,6 +778,28 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       }
     }
 
+    if (checkpoint?.phase_data) {
+      const pd = checkpoint.phase_data as Record<string, unknown>;
+      if (Array.isArray(pd.exportSignatures)) {
+        for (const sig of pd.exportSignatures as ExportSignature[]) {
+          if (sig.path && !allExportSignatures.some((s) => s.path === sig.path)) {
+            allExportSignatures.push(sig);
+          }
+        }
+      }
+      if (typeof pd.cumulativeIntermediateErrors === 'number') {
+        cumulativeIntermediateErrors = pd.cumulativeIntermediateErrors;
+      }
+      if (typeof pd.modulesSinceLastBuildCheck === 'number') {
+        modulesSinceLastBuildCheck = pd.modulesSinceLastBuildCheck;
+      }
+      if (Array.isArray(pd.completedModuleExportPaths)) {
+        for (const p of pd.completedModuleExportPaths as string[]) {
+          if (!completedModuleExports.includes(p)) completedModuleExports.push(p);
+        }
+      }
+    }
+
     const pendingModuleTasks = moduleTasks.filter((t) => !completedModuleNames.has(t.module.name));
     const priorityModules = ['auth', 'support'];
     const phase1Tasks = pendingModuleTasks.filter((t) => priorityModules.some((p) => t.module.name.toLowerCase().includes(p)));
@@ -714,12 +809,8 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     const INTER_BATCH_COOLDOWN_MS = 15_000;
     const MAX_RECOVERY_PASSES = 2;
     const RECOVERY_COOLDOWN_MS = 65_000;
-    const ABORT_FAILURE_THRESHOLD = 0.4;
+    const ABORT_FAILURE_THRESHOLD = 0.25;
     const INTERMEDIATE_BUILD_CHECK_INTERVAL = isLargeProject ? 2 : 3;
-    const completedModuleExports: string[] = [];
-    const allExportSignatures: ExportSignature[] = [];
-    let modulesSinceLastBuildCheck = 0;
-    let cumulativeIntermediateErrors = 0;
     const ERROR_BUDGET_THRESHOLD = 30;
 
     async function buildModuleBatch(
@@ -831,7 +922,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
                 const midFix = await generateBuildFix(
                   freshDeduped,
-                  (freshBuild.errors || freshBuild.output).slice(-12000),
+                  (freshBuild.errors || freshBuild.output).slice(-INTERMEDIATE_BUILD_OUTPUT_SLICE),
                   project as unknown as Project,
                   client,
                   architecture as unknown as Record<string, unknown>,
@@ -891,11 +982,15 @@ export async function processBrief(projectId: string, briefId: string): Promise<
             }).eq('id', result.task.id);
 
             const updatedModules = [...(checkpoint?.modules_completed || []), result.task.module.name];
-            await saveCheckpoint(projectId, briefId, 'development', {},
+            await saveCheckpoint(projectId, briefId, 'development', {
+              exportSignatures: allExportSignatures.map((s) => ({ path: s.path, defaultExport: s.defaultExport, namedExports: s.namedExports })),
+              cumulativeIntermediateErrors,
+              modulesSinceLastBuildCheck,
+              completedModuleExportPaths: completedModuleExports,
+            },
               updatedModules,
               fullName
             );
-            checkpoint = await getCheckpoint(projectId);
           }
         }
 
@@ -1047,7 +1142,6 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     await logger.info('Phase 3.5: Completeness verification', 'development', projectId);
     await sendChatMessage(projectId, 'Verifying project completeness...');
 
-    const MAX_COMPLETENESS_PASSES = 2;
     for (let completenessPass = 0; completenessPass < MAX_COMPLETENESS_PASSES; completenessPass++) {
       try {
         const allRepoFiles = await getRepoTree(fullName);
@@ -1081,10 +1175,16 @@ export async function processBrief(projectId: string, briefId: string): Promise<
           break;
         }
 
-        const combinedMissing = Array.from(new Set([
-          ...completeness.missingFiles,
-          ...progCheck.missingPageFiles.map((p) => `src/pages/${p}.tsx`),
-        ]));
+        const combinedMissingMap = new Map<string, string>();
+        for (const f of completeness.missingFiles) {
+          combinedMissingMap.set(f.toLowerCase().replace(/[^a-z0-9/]/g, ''), f);
+        }
+        for (const p of progCheck.missingPageFiles) {
+          const full = `src/pages/${p}.tsx`;
+          const key = full.toLowerCase().replace(/[^a-z0-9/]/g, '');
+          if (!combinedMissingMap.has(key)) combinedMissingMap.set(key, full);
+        }
+        const combinedMissing = Array.from(combinedMissingMap.values());
 
         await sendChatMessage(projectId, `Found ${Math.max(totalIssues, progIssues)} completeness issue(s) (pass ${completenessPass + 1}). Auto-fixing...`);
         await logger.info(`Completeness issues: ${combinedMissing.length} missing, ${completeness.brokenImports.length} broken imports, ${completeness.missingRoutes.length} missing routes`, 'development', projectId);
@@ -1095,13 +1195,12 @@ export async function processBrief(projectId: string, briefId: string): Promise<
         }
 
         if (combinedMissing.length > 0) {
-          const BATCH_SIZE = 5;
           const missingPages = combinedMissing
             .map((f) => f.replace(/^src\/pages\//, '').replace(/\.tsx$/, ''))
             .filter((f) => f.length > 0);
 
-          for (let batchStart = 0; batchStart < missingPages.length; batchStart += BATCH_SIZE) {
-            const batch = missingPages.slice(batchStart, batchStart + BATCH_SIZE);
+          for (let batchStart = 0; batchStart < missingPages.length; batchStart += COMPLETENESS_BATCH_SIZE) {
+            const batch = missingPages.slice(batchStart, batchStart + COMPLETENESS_BATCH_SIZE);
             const batchPages = batch.map((name) => {
               const archPage = (architecture.pages || []).find((p) =>
                 p.name.replace(/[^a-zA-Z0-9]/g, '').toLowerCase() === name.replace(/[^a-zA-Z0-9]/g, '').toLowerCase()
@@ -1113,7 +1212,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
               name: `completeness-fix-${batchStart}`,
               pages: batchPages,
               role: 'public',
-              description: `Auto-generated missing pages batch ${Math.floor(batchStart / BATCH_SIZE) + 1}`,
+              description: `Auto-generated missing pages batch ${Math.floor(batchStart / COMPLETENESS_BATCH_SIZE) + 1}`,
             };
 
             const repoFilesNow = await getRepoTree(fullName);
@@ -1144,8 +1243,8 @@ export async function processBrief(projectId: string, briefId: string): Promise<
               await logger.warn(`Failed to generate missing pages batch: ${err instanceof Error ? err.message : String(err)}`, 'development', projectId);
             }
 
-            if (batchStart + BATCH_SIZE < missingPages.length) {
-              await new Promise((r) => setTimeout(r, 5000));
+            if (batchStart + COMPLETENESS_BATCH_SIZE < missingPages.length) {
+              await new Promise((r) => setTimeout(r, COMPLETENESS_INTER_BATCH_DELAY_MS));
             }
           }
         }
@@ -1511,9 +1610,9 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       });
     } catch (innerErr) {
       console.error('Error in brief-processing catch block:', innerErr);
-      try { await supabase.from('briefs').update({ status: 'failed' }).eq('id', briefId); } catch { /* ignore */ }
-      try { await supabase.from('projects').update({ agent_status: 'idle', last_error_message: errMsg }).eq('id', projectId); } catch { /* ignore */ }
-      try { await clearCheckpoint(projectId, 'failed'); } catch { /* ignore */ }
+      try { await supabase.from('briefs').update({ status: 'failed' }).eq('id', briefId); } catch (e) { console.error('[cleanup] brief update failed:', e instanceof Error ? e.message : String(e)); }
+      try { await supabase.from('projects').update({ agent_status: 'idle', last_error_message: errMsg }).eq('id', projectId); } catch (e) { console.error('[cleanup] project update failed:', e instanceof Error ? e.message : String(e)); }
+      try { await clearCheckpoint(projectId, 'failed'); } catch (e) { console.error('[cleanup] checkpoint clear failed:', e instanceof Error ? e.message : String(e)); }
     }
   }
 }

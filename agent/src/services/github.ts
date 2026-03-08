@@ -36,8 +36,11 @@ export async function createRepo(
     }
 
     return { repoUrl: existing.html_url, fullName: existing.full_name };
-  } catch {
-    // repo does not exist, create it
+  } catch (err: unknown) {
+    const status = (err as { status?: number })?.status;
+    if (status !== 404) {
+      await logger.warn(`GitHub repo check failed with status ${status}: ${err instanceof Error ? err.message : String(err)}`, 'github', projectId);
+    }
   }
 
   const { data } = await gh.rest.repos.createInOrg({
@@ -179,7 +182,11 @@ export async function getFileContent(
       return Buffer.from(data.content, 'base64').toString('utf-8');
     }
     return null;
-  } catch {
+  } catch (err: unknown) {
+    const status = (err as { status?: number })?.status;
+    if (status !== 404) {
+      console.error(`[getFileContent] Failed to read ${filePath} from ${repoFullName}: ${err instanceof Error ? err.message : String(err)}`);
+    }
     return null;
   }
 }
@@ -208,7 +215,8 @@ export async function getRepoFiles(
       return results;
     }
     return [];
-  } catch {
+  } catch (err) {
+    console.error(`[getRepoFiles] Failed to list ${repoFullName}/${path}: ${err instanceof Error ? err.message : String(err)}`);
     return [];
   }
 }
@@ -251,7 +259,8 @@ export async function getRepoTree(
         type: item.type === 'blob' ? 'file' : 'dir',
         size: item.size || 0,
       }));
-  } catch {
+  } catch (err) {
+    console.error(`[getRepoTree] Tree API failed for ${repoFullName}, falling back to recursive list: ${err instanceof Error ? err.message : String(err)}`);
     const files = await getRepoFiles(repoFullName);
     return files.map((f) => ({ ...f, size: 0 }));
   }
