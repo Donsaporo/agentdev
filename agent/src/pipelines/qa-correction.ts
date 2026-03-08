@@ -1,6 +1,7 @@
 import { getSupabase } from '../core/supabase.js';
 import { logger } from '../core/logger.js';
 import { getConfig } from '../core/config.js';
+import { selectPathsWithinBudget, CONTEXT_BUDGETS } from '../core/token-counter.js';
 import { analyzeQARejection, analyzeScreenshotAllViewports } from '../services/claude.js';
 import { pushFiles, getMultipleFileContents, getRepoTree } from '../services/github.js';
 import { triggerDeployment, waitForDeployment } from '../services/vercel.js';
@@ -91,16 +92,27 @@ export async function handleQARejection(
     if (!repoFullName) throw new Error('No repo URL found');
 
     const allFiles = await getRepoTree(repoFullName);
-    const codeFilePaths = allFiles
-      .filter((f) => f.type === 'file' && /\.(tsx?|jsx?|css)$/.test(f.path))
-      .map((f) => f.path);
-
-    const pageSlug = pageName.toLowerCase().replace(/[^a-z0-9]/g, '');
-    const relevantPaths = codeFilePaths.filter(
-      (p) => p.toLowerCase().includes(pageSlug) || p.includes('layout') || p.includes('App')
+    const codeFiles = allFiles.filter(
+      (f) => f.type === 'file' && /\.(tsx?|jsx?|css|json)$/.test(f.path)
     );
 
-    const currentCode = await getMultipleFileContents(repoFullName, relevantPaths.slice(0, 15));
+    const pageSlug = pageName.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const relevantFiles = codeFiles.filter(
+      (f) => {
+        const lower = f.path.toLowerCase();
+        return lower.includes(pageSlug) || lower.includes('layout') || lower.includes('app.tsx')
+          || lower.includes('navbar') || lower.includes('index.css') || lower.includes('tailwind.config')
+          || lower.includes('package.json') || lower.includes('lib/types');
+      }
+    );
+
+    const relevantPaths = selectPathsWithinBudget(
+      relevantFiles,
+      CONTEXT_BUDGETS.qaFix,
+      [pageSlug, 'app.tsx', 'layout', 'index.css']
+    );
+
+    const currentCode = await getMultipleFileContents(repoFullName, relevantPaths);
     const briefContext = brief ? `${brief.original_content}\n\nArchitecture: ${JSON.stringify(brief.architecture_plan)}` : '';
 
     const result = await analyzeQARejection(rejectionNotes, pageName, currentCode, briefContext, {

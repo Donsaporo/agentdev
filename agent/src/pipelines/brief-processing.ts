@@ -16,7 +16,7 @@ import { notifyBuildComplete, notifyQAReady, notifyError, notifyDeploySuccess } 
 import { setCnameRecord } from '../services/namecheap.js';
 import {
   createSupabaseProject, waitForProjectReady, getProjectApiKeys,
-  getProjectUrl, executeSqlOnProject, isManagementAvailable,
+  getProjectUrl, isManagementAvailable,
   findExistingProject, executeSqlStatements,
 } from '../services/supabase-management.js';
 import { saveCheckpoint, clearCheckpoint, recordDeployment, getCheckpoint } from '../core/pipeline-state.js';
@@ -27,13 +27,15 @@ import {
 } from '../services/build-intelligence.js';
 import type { ExportSignature } from '../services/build-intelligence.js';
 import {
-  selectPathsWithinBudget, selectFilesWithinBudget, CONTEXT_BUDGETS,
+  selectPathsWithinBudget, CONTEXT_BUDGETS,
 } from '../core/token-counter.js';
 import type { Brief, Client, Project, FullArchitecture, BuildFixAttempt } from '../core/types.js';
 
 const CORE_FILE_PATTERNS = [
   'app.tsx', 'main.tsx', 'layout', 'navbar', 'footer', 'index.css',
-  'tailwind.config', 'supabase', 'types', 'api.ts', 'auth', 'mock-data',
+  'tailwind.config', 'postcss.config', 'tsconfig', 'index.html',
+  'lib/supabase', 'lib/types', 'lib/api', 'lib/mock-data',
+  'contexts/auth', 'hooks/useauth',
   'package.json', 'vite.config',
 ];
 
@@ -42,7 +44,10 @@ async function updateProject(
   updates: Record<string, unknown>
 ): Promise<void> {
   const supabase = getSupabase();
-  await supabase.from('projects').update(updates).eq('id', projectId);
+  const { error } = await supabase.from('projects').update(updates).eq('id', projectId);
+  if (error) {
+    await logger.warn(`Failed to update project ${projectId}: ${error.message}`, 'pipeline', projectId);
+  }
 }
 
 async function sendChatMessage(
@@ -93,7 +98,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
   const supabase = getSupabase();
   const config = await getConfig();
 
-  const checkpoint = await getCheckpoint(projectId);
+  let checkpoint = await getCheckpoint(projectId);
   const isResuming = !!(checkpoint && checkpoint.brief_id === briefId);
   const CHECKPOINT_TTL_HOURS = 12;
 
@@ -103,17 +108,17 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
   if (isResuming && !checkpointExpired) {
     await logger.info(
-      `Found checkpoint at phase "${checkpoint.current_phase}" for project ${projectId}. Resuming...`,
+      `Found checkpoint at phase "${checkpoint!.current_phase}" for project ${projectId}. Resuming...`,
       'development',
       projectId
     );
-    await sendChatMessage(projectId, `Resuming from checkpoint: ${checkpoint.current_phase}. Previous progress preserved.`);
+    await sendChatMessage(projectId, `Resuming from checkpoint: ${checkpoint!.current_phase}. Previous progress preserved.`);
   } else if (isResuming && checkpointExpired) {
     await logger.info('Checkpoint expired (>12h), starting fresh', 'development', projectId);
     await clearCheckpoint(projectId, 'failed');
   }
 
-  const resumePhase = (isResuming && !checkpointExpired) ? checkpoint.current_phase : null;
+  const resumePhase = (isResuming && !checkpointExpired) ? checkpoint!.current_phase : null;
   const skipAnalysis = resumePhase && ['scaffolding', 'scaffolding_complete', 'backend_setup', 'development', 'completeness_check'].includes(resumePhase);
   const skipScaffolding = resumePhase && ['backend_setup', 'development', 'completeness_check'].includes(resumePhase);
   const skipBackend = resumePhase && ['development', 'completeness_check'].includes(resumePhase);
@@ -370,6 +375,8 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       }
     }
 
+    await saveCheckpoint(projectId, briefId, 'backend_complete', {}, [], fullName);
+
     // ============================================================
     // PHASE 3: MODULE-BASED DEVELOPMENT
     // ============================================================
@@ -504,10 +511,12 @@ export async function processBrief(projectId: string, briefId: string): Promise<
               duration_seconds: result.durationSeconds,
             }).eq('id', result.task.id);
 
+            const updatedModules = [...(checkpoint?.modules_completed || []), result.task.module.name];
             await saveCheckpoint(projectId, briefId, 'development', {},
-              [...(checkpoint?.modules_completed || []), result.task.module.name],
+              updatedModules,
               fullName
             );
+            checkpoint = await getCheckpoint(projectId);
           }
         }
 
@@ -608,10 +617,6 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     const failedCount = finalTaskStates?.filter((t) => t.status === 'failed').length || 0;
 
     if (totalTasks > 0 && failedCount / totalTasks > ABORT_FAILURE_THRESHOLD) {
-      const failedNames = moduleTasks
-        .filter((mt) => finalTaskStates?.find((ft, idx) => idx < moduleTasks.length && ft.status === 'failed'))
-        .map((mt) => mt.module.name);
-
       await supabase.from('briefs').update({ status: 'failed' }).eq('id', briefId);
       await updateProject(projectId, {
         agent_status: 'idle',

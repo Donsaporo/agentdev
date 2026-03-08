@@ -1,10 +1,11 @@
 import { getSupabase } from '../core/supabase.js';
 import { logger } from '../core/logger.js';
 import { generateChatResponse } from '../services/claude.js';
-import { pushFiles } from '../services/github.js';
+import { pushFiles, getRepoTree, getMultipleFileContents } from '../services/github.js';
 import { triggerDeployment, waitForDeployment } from '../services/vercel.js';
 import { captureAllPages } from '../services/screenshots.js';
 import { getConfig } from '../core/config.js';
+import { selectPathsWithinBudget } from '../core/token-counter.js';
 
 async function sendReply(conversationId: string, content: string): Promise<void> {
   const supabase = getSupabase();
@@ -78,6 +79,28 @@ export async function handleChatMessage(
       .order('created_at', { ascending: true })
       .limit(20);
 
+    let repoFilesContext = '';
+    if (project.git_repo_url) {
+      const repoFullName = extractRepoFullName(project.git_repo_url);
+      if (repoFullName) {
+        try {
+          const repoTree = await getRepoTree(repoFullName);
+          const codeFiles = repoTree.filter(
+            (f) => f.type === 'file' && /\.(tsx?|jsx?|css|json)$/.test(f.path)
+          );
+          const selectedPaths = selectPathsWithinBudget(codeFiles, 40_000, [
+            'app.tsx', 'main.tsx', 'package.json', 'lib/types', 'lib/api', 'layout',
+          ]);
+          const fileContents = await getMultipleFileContents(repoFullName, selectedPaths);
+          repoFilesContext = fileContents
+            .map((f) => `--- ${f.path} ---\n${f.content}`)
+            .join('\n\n');
+        } catch {
+          repoFilesContext = '';
+        }
+      }
+    }
+
     const projectContext = [
       `PROJECT: ${project.name} (${project.type})`,
       `CLIENT: ${project.clients?.name || 'Unknown'}`,
@@ -88,6 +111,7 @@ export async function handleChatMessage(
       brief?.architecture_plan ? `\nARCHITECTURE: ${JSON.stringify(brief.architecture_plan, null, 2)}` : '',
       recentTasks?.length ? `\nTASKS:\n${recentTasks.map((t) => `- [${t.status}] ${t.title}`).join('\n')}` : '',
       recentLogs?.length ? `\nRECENT ACTIVITY:\n${recentLogs.map((l) => `- [${l.severity}] ${l.action}`).join('\n')}` : '',
+      repoFilesContext ? `\nCURRENT CODE:\n${repoFilesContext}` : '',
     ].filter(Boolean).join('\n');
 
     const chatHistory = (messages || [])

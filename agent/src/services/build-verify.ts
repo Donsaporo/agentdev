@@ -317,7 +317,7 @@ export async function validateScaffold(
   const hasMainTsx = files.some((f) => f.path.includes('src/main.tsx'));
   if (!hasMainTsx) {
     issues.push('Missing src/main.tsx -- auto-generated');
-    fixedFiles.push({ path: 'src/main.tsx', content: generateFallbackMain(architecture?.requiresBackend) });
+    fixedFiles.push({ path: 'src/main.tsx', content: generateFallbackMain() });
   }
 
   const hasAppTsx = files.some((f) => f.path.includes('src/App.tsx'));
@@ -381,22 +381,7 @@ function generateFallbackPackageJson(hasBackend?: boolean): Record<string, unkno
   };
 }
 
-function generateFallbackMain(hasBackend?: boolean): string {
-  if (hasBackend) {
-    return `import React from 'react';
-import ReactDOM from 'react-dom/client';
-import { BrowserRouter } from 'react-router-dom';
-import App from './App';
-import './index.css';
-
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <BrowserRouter>
-      <App />
-    </BrowserRouter>
-  </React.StrictMode>
-);`;
-  }
+function generateFallbackMain(): string {
   return `import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
