@@ -6,7 +6,8 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/main.js",
-    "dev": "tsx watch src/main.ts"
+    "dev": "tsx watch src/main.ts",
+    "test": "tsx --test src/tests/pipeline-integration.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",

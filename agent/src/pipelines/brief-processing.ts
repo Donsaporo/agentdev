@@ -8,7 +8,7 @@ import {
 } from '../services/claude.js';
 import { processAttachments } from '../services/file-processing.js';
 import { researchReferenceUrls } from '../services/web-research.js';
-import { createRepo, pushFiles, getMultipleFileContents, getRepoTree } from '../services/github.js';
+import { createRepo, pushFiles, getMultipleFileContents, getRepoTree, getFileContent } from '../services/github.js';
 import { createProject as createVercelProject, triggerDeployment, waitForDeployment, addDomain, setEnvironmentVariables } from '../services/vercel.js';
 import { captureAllPages } from '../services/screenshots.js';
 import { verifyBuild, extractBuildErrors, hashErrors, validateScaffold } from '../services/build-verify.js';
@@ -26,6 +26,9 @@ import {
   generateStubForMissingImport,
 } from '../services/build-intelligence.js';
 import type { ExportSignature } from '../services/build-intelligence.js';
+import {
+  selectPathsWithinBudget, selectFilesWithinBudget, CONTEXT_BUDGETS,
+} from '../core/token-counter.js';
 import type { Brief, Client, Project, FullArchitecture, BuildFixAttempt } from '../core/types.js';
 
 const CORE_FILE_PATTERNS = [
@@ -429,7 +432,12 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
         const repoFiles = await getRepoTree(fullName);
         const coreFilePaths = getCoreFilePaths(repoFiles);
-        const coreFiles = await getMultipleFileContents(fullName, coreFilePaths.slice(0, 25));
+        const coreFilePathsBudgeted = selectPathsWithinBudget(
+          repoFiles.filter((f) => coreFilePaths.includes(f.path)),
+          CONTEXT_BUDGETS.moduleGeneration,
+          CORE_FILE_PATTERNS
+        );
+        const coreFiles = await getMultipleFileContents(fullName, coreFilePathsBudgeted);
         const allPaths = repoFiles.filter((f) => f.type === 'file').map((f) => f.path);
         const exportContext = buildExportContext(allExportSignatures);
 
@@ -542,7 +550,12 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
         const repoFiles = await getRepoTree(fullName);
         const coreFilePaths = getCoreFilePaths(repoFiles);
-        const coreFiles = await getMultipleFileContents(fullName, coreFilePaths.slice(0, 25));
+        const recoveryFilePathsBudgeted = selectPathsWithinBudget(
+          repoFiles.filter((f) => coreFilePaths.includes(f.path)),
+          CONTEXT_BUDGETS.moduleGeneration,
+          CORE_FILE_PATTERNS
+        );
+        const coreFiles = await getMultipleFileContents(fullName, recoveryFilePathsBudgeted);
         const allPaths = repoFiles.filter((f) => f.type === 'file').map((f) => f.path);
         const recoveryExportCtx = buildExportContext(allExportSignatures);
         const recoveryStubPaths = resolveStubPaths(matchingModule.module.pages, allPaths);
@@ -633,10 +646,11 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     try {
       const reconRepoFiles = await getRepoTree(fullName);
       const reconPaths = reconRepoFiles.filter((f) => f.type === 'file').map((f) => f.path);
-      const reconciledApp = reconcileAppRoutes(reconPaths, architecture.pages || []);
+      const existingAppContent = await getFileContent(fullName, 'src/App.tsx');
+      const reconciledApp = reconcileAppRoutes(reconPaths, architecture.pages || [], existingAppContent || undefined);
       if (reconciledApp) {
         await pushFiles(fullName, [reconciledApp], 'fix: reconcile App.tsx routes with actual page files', projectId);
-        await logger.info('Reconciled App.tsx routes with actual page files', 'development', projectId);
+        await logger.info('Reconciled App.tsx routes with actual page files (structure preserved)', 'development', projectId);
       }
     } catch (err) {
       await logger.warn(`App.tsx reconciliation failed (non-critical): ${err instanceof Error ? err.message : String(err)}`, 'development', projectId);
@@ -654,10 +668,15 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     for (let completenessPass = 0; completenessPass < MAX_COMPLETENESS_PASSES; completenessPass++) {
       try {
         const allRepoFiles = await getRepoTree(fullName);
-        const allCodePaths = allRepoFiles
-          .filter((f) => f.type === 'file' && /\.(tsx?|jsx?|css|json)$/.test(f.path))
-          .map((f) => f.path);
-        const allCode = await getMultipleFileContents(fullName, allCodePaths.slice(0, 80));
+        const allCodeFiles = allRepoFiles.filter(
+          (f) => f.type === 'file' && /\.(tsx?|jsx?|css|json)$/.test(f.path)
+        );
+        const completenessPathsBudgeted = selectPathsWithinBudget(
+          allCodeFiles,
+          CONTEXT_BUDGETS.completenessCheck,
+          CORE_FILE_PATTERNS
+        );
+        const allCode = await getMultipleFileContents(fullName, completenessPathsBudgeted);
 
         const completeness = await verifyProjectCompleteness(architecture, allCode, projectId);
         const totalIssues = completeness.missingFiles.length + completeness.brokenImports.length + completeness.missingRoutes.length;
@@ -700,7 +719,12 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
             const repoFilesNow = await getRepoTree(fullName);
             const coreFilePaths = getCoreFilePaths(repoFilesNow);
-            const coreFiles = await getMultipleFileContents(fullName, coreFilePaths.slice(0, 40));
+            const fixCorePathsBudgeted = selectPathsWithinBudget(
+              repoFilesNow.filter((f) => coreFilePaths.includes(f.path)),
+              CONTEXT_BUDGETS.completenessFixCoreFiles,
+              CORE_FILE_PATTERNS
+            );
+            const coreFiles = await getMultipleFileContents(fullName, fixCorePathsBudgeted);
             const allPaths = repoFilesNow.filter((f) => f.type === 'file').map((f) => f.path);
 
             try {
@@ -778,12 +802,17 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       await sendChatMessage(projectId, `Build failed (attempt ${attempt}/${config.max_corrections}): ${rawBuildErrors.length} error(s) (${buildErrors.length} root causes). Auto-fixing (${strategy})...`);
 
       const allRepoFiles = await getRepoTree(fullName);
-      const allCodePaths = allRepoFiles
-        .filter((f) => f.type === 'file' && /\.(tsx?|jsx?|css|json)$/.test(f.path))
-        .map((f) => f.path);
-      const allCode = await getMultipleFileContents(fullName, allCodePaths.slice(0, 60));
+      const buildFixCodeFiles = allRepoFiles.filter(
+        (f) => f.type === 'file' && /\.(tsx?|jsx?|css|json)$/.test(f.path)
+      );
+      const buildFixPathsBudgeted = selectPathsWithinBudget(
+        buildFixCodeFiles,
+        CONTEXT_BUDGETS.buildFix,
+        CORE_FILE_PATTERNS
+      );
+      const allCode = await getMultipleFileContents(fullName, buildFixPathsBudgeted);
 
-      const relevantFiles = filterRelevantFiles(allCode, buildErrors);
+      const relevantFiles = filterRelevantFiles(allCode, buildErrors, CONTEXT_BUDGETS.buildFix);
       await logger.info(`Build fix context: ${relevantFiles.length}/${allCode.length} relevant files`, 'development', projectId);
 
       const fixResult = await generateBuildFix(
@@ -803,7 +832,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
         await pushFiles(fullName, fixResult.files, `fix: resolve build errors (attempt ${attempt}, ${strategy})`, projectId);
       } else {
         const stubs = buildErrors
-          .map((e) => generateStubForMissingImport(e, allCodePaths))
+          .map((e) => generateStubForMissingImport(e, buildFixPathsBudgeted))
           .filter((s): s is NonNullable<typeof s> => s !== null);
 
         if (stubs.length > 0) {
@@ -813,10 +842,11 @@ export async function processBrief(projectId: string, briefId: string): Promise<
         }
 
         const reconPaths = allRepoFiles.filter((f) => f.type === 'file').map((f) => f.path);
-        const reconciledApp = reconcileAppRoutes(reconPaths, architecture.pages || []);
+        const fallbackAppContent = await getFileContent(fullName, 'src/App.tsx');
+        const reconciledApp = reconcileAppRoutes(reconPaths, architecture.pages || [], fallbackAppContent || undefined);
         if (reconciledApp) {
           await pushFiles(fullName, [reconciledApp], `fix: re-reconcile App.tsx routes (attempt ${attempt})`, projectId);
-          await logger.info('Re-reconciled App.tsx as fallback fix', 'development', projectId);
+          await logger.info('Re-reconciled App.tsx as fallback fix (structure preserved)', 'development', projectId);
           continue;
         }
 
@@ -983,10 +1013,15 @@ export async function processBrief(projectId: string, briefId: string): Promise<
         await sendChatMessage(projectId, `${failedPages.length} page(s) failed QA. Auto-correcting (round ${qaAttempt + 1})...`);
 
         const qaRepoFiles = await getRepoTree(fullName);
-        const qaCodePaths = qaRepoFiles
-          .filter((f) => f.type === 'file' && /\.(tsx?|jsx?|css|json)$/.test(f.path))
-          .map((f) => f.path);
-        const qaCode = await getMultipleFileContents(fullName, qaCodePaths.slice(0, 60));
+        const qaCodeFiles = qaRepoFiles.filter(
+          (f) => f.type === 'file' && /\.(tsx?|jsx?|css|json)$/.test(f.path)
+        );
+        const qaPathsBudgeted = selectPathsWithinBudget(
+          qaCodeFiles,
+          CONTEXT_BUDGETS.qaFix,
+          CORE_FILE_PATTERNS
+        );
+        const qaCode = await getMultipleFileContents(fullName, qaPathsBudgeted);
 
         const issueDescription = failedPages
           .map((fp) => `${fp.pageName} (score: ${fp.score}/100):\n${fp.issues.map((i) => `  - ${i}`).join('\n')}`)

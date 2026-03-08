@@ -1,4 +1,5 @@
 import type { GeneratedFile, ArchitecturePage } from '../core/types.js';
+import { selectFilesWithinBudget } from '../core/token-counter.js';
 
 export interface ExportSignature {
   path: string;
@@ -114,7 +115,8 @@ export function deduplicateErrors(errors: string[]): string[] {
 
 export function filterRelevantFiles(
   allFiles: { path: string; content: string }[],
-  errors: string[]
+  errors: string[],
+  maxTokens: number = 80_000
 ): { path: string; content: string }[] {
   const CORE_PATTERNS = [
     'package.json', 'tsconfig', 'vite.config', 'tailwind.config',
@@ -184,15 +186,80 @@ export function filterRelevantFiles(
   const filtered = allFiles.filter((f) => relevantPaths.has(f.path));
 
   if (filtered.length < 5) {
-    return allFiles.slice(0, 30);
+    return selectFilesWithinBudget(allFiles, maxTokens, [
+      'package.json', 'app.tsx', 'main.tsx', 'lib/types', 'lib/api',
+    ]);
   }
 
-  return filtered.slice(0, 40);
+  return selectFilesWithinBudget(filtered, maxTokens, [
+    'package.json', 'app.tsx', 'main.tsx', 'lib/types',
+  ]);
+}
+
+function matchPagesToFiles(
+  pages: ArchitecturePage[],
+  fileMap: Map<string, string>
+): { componentName: string; importPath: string; route: string }[] {
+  const results: { componentName: string; importPath: string; route: string }[] = [];
+  const usedComponents = new Set<string>();
+
+  for (const page of pages) {
+    const normalizedName = page.name.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+    let matchedFile: string | null = null;
+
+    if (fileMap.has(normalizedName)) {
+      matchedFile = fileMap.get(normalizedName)!;
+    } else {
+      for (const [key, fp] of fileMap) {
+        if (key.includes(normalizedName) || normalizedName.includes(key)) {
+          matchedFile = fp;
+          break;
+        }
+      }
+    }
+
+    if (!matchedFile) continue;
+
+    const componentName = page.name.replace(/[^a-zA-Z0-9]/g, '');
+    if (usedComponents.has(componentName)) continue;
+    usedComponents.add(componentName);
+
+    const importPath = './' + matchedFile.replace('src/', '').replace(/\.tsx$/, '');
+    results.push({ componentName, importPath, route: page.route });
+  }
+
+  return results;
+}
+
+function buildFreshApp(
+  matched: { componentName: string; importPath: string; route: string }[]
+): GeneratedFile {
+  const imports = matched.map(
+    (r) => `import ${r.componentName} from '${r.importPath}';`
+  ).join('\n');
+  const routes = matched.map(
+    (r) => `      <Route path="${r.route}" element={<${r.componentName} />} />`
+  ).join('\n');
+
+  return {
+    path: 'src/App.tsx',
+    content: `import { Routes, Route } from 'react-router-dom';
+${imports}
+
+export default function App() {
+  return (
+    <Routes>
+${routes}
+    </Routes>
+  );
+}`,
+  };
 }
 
 export function reconcileAppRoutes(
   allFilePaths: string[],
-  pages: ArchitecturePage[]
+  pages: ArchitecturePage[],
+  existingAppContent?: string
 ): GeneratedFile | null {
   const pageFiles = allFilePaths.filter(
     (f) => f.startsWith('src/pages/') && f.endsWith('.tsx')
@@ -209,51 +276,92 @@ export function reconcileAppRoutes(
     fileMap.set(name.toLowerCase(), fp);
   }
 
-  const imports: string[] = [];
-  const routes: string[] = [];
-  const usedComponents = new Set<string>();
+  const matched = matchPagesToFiles(pages, fileMap);
+  if (matched.length === 0) return null;
 
-  for (const page of pages) {
-    const normalizedPageName = page.name.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-
-    let matchedFile: string | null = null;
-
-    if (fileMap.has(normalizedPageName)) {
-      matchedFile = fileMap.get(normalizedPageName)!;
-    } else {
-      for (const [key, fp] of fileMap) {
-        if (key.includes(normalizedPageName) || normalizedPageName.includes(key)) {
-          matchedFile = fp;
-          break;
-        }
-      }
-    }
-
-    if (!matchedFile) continue;
-
-    const componentName = page.name.replace(/[^a-zA-Z0-9]/g, '');
-    if (usedComponents.has(componentName)) continue;
-    usedComponents.add(componentName);
-
-    const importPath = './' + matchedFile.replace('src/', '').replace(/\.tsx$/, '');
-    imports.push(`import ${componentName} from '${importPath}';`);
-    routes.push(`      <Route path="${page.route}" element={<${componentName} />} />`);
+  if (!existingAppContent || !existingAppContent.includes('<Routes')) {
+    return buildFreshApp(matched);
   }
 
-  if (imports.length === 0) return null;
+  const lines = existingAppContent.split('\n');
+  const outputLines: string[] = [];
+  const pageImportRegex = /^import\s+(\w+)\s+from\s+['"]\.\/pages\//;
+  const routesCloseRegex = /^(\s*)<\/Routes>/;
+  const correctedImportMap = new Map<string, string>();
+  const importedComponents = new Set<string>();
 
-  const content = `import { Routes, Route } from 'react-router-dom';
-${imports.join('\n')}
+  for (const r of matched) {
+    correctedImportMap.set(
+      r.componentName.toLowerCase(),
+      `import ${r.componentName} from '${r.importPath}';`
+    );
+  }
 
-export default function App() {
-  return (
-    <Routes>
-${routes.join('\n')}
-    </Routes>
+  let lastImportLineIdx = -1;
+  let routeIndent = '          ';
+  let addedMissingRoutes = false;
+
+  for (const line of lines) {
+    const pageMatch = line.match(pageImportRegex);
+
+    if (pageMatch) {
+      const componentName = pageMatch[1];
+      const normalized = componentName.toLowerCase();
+      importedComponents.add(normalized);
+
+      if (correctedImportMap.has(normalized)) {
+        outputLines.push(correctedImportMap.get(normalized)!);
+      } else {
+        const importPathMatch = line.match(/from\s+['"](\.[^'"]+)['"]/);
+        if (importPathMatch) {
+          const resolved = 'src' + importPathMatch[1].slice(1);
+          const withExt = resolved.endsWith('.tsx') ? resolved : resolved + '.tsx';
+          const exists = allFilePaths.includes(withExt) || allFilePaths.includes(resolved);
+          if (exists) {
+            outputLines.push(line);
+          }
+        }
+      }
+      lastImportLineIdx = outputLines.length - 1;
+      continue;
+    }
+
+    if (line.trimStart().startsWith('import ')) {
+      lastImportLineIdx = outputLines.length;
+    }
+
+    const routeMatch = line.match(/^(\s*)<Route\s/);
+    if (routeMatch) {
+      routeIndent = routeMatch[1];
+    }
+
+    const closingMatch = line.match(routesCloseRegex);
+    if (closingMatch && !addedMissingRoutes) {
+      for (const r of matched) {
+        if (!importedComponents.has(r.componentName.toLowerCase())) {
+          outputLines.push(
+            `${routeIndent}<Route path="${r.route}" element={<${r.componentName} />} />`
+          );
+        }
+      }
+      addedMissingRoutes = true;
+    }
+
+    outputLines.push(line);
+  }
+
+  const missingImports = matched.filter(
+    (r) => !importedComponents.has(r.componentName.toLowerCase())
   );
-}`;
 
-  return { path: 'src/App.tsx', content };
+  if (missingImports.length > 0 && lastImportLineIdx >= 0) {
+    const newImportLines = missingImports.map(
+      (r) => `import ${r.componentName} from '${r.importPath}';`
+    );
+    outputLines.splice(lastImportLineIdx + 1, 0, ...newImportLines);
+  }
+
+  return { path: 'src/App.tsx', content: outputLines.join('\n') };
 }
 
 export function resolveStubPaths(
