@@ -391,6 +391,91 @@ export function resolveStubPaths(
     .join('\n');
 }
 
+export function validateModuleImports(
+  files: GeneratedFile[],
+  allFilePaths: string[]
+): { stubs: GeneratedFile[]; warnings: string[] } {
+  const stubs: GeneratedFile[] = [];
+  const warnings: string[] = [];
+  const newFilePaths = new Set(files.map((f) => f.path));
+
+  const allKnownPaths = new Set([
+    ...allFilePaths,
+    ...newFilePaths,
+  ]);
+
+  for (const file of files) {
+    if (!/\.(tsx?|jsx?)$/.test(file.path)) continue;
+
+    const importRegex = /(?:import|from)\s+['"](\.[^'"]+)['"]/g;
+    let match: RegExpExecArray | null;
+    while ((match = importRegex.exec(file.content)) !== null) {
+      const importPath = match[1];
+      const fileDir = file.path.substring(0, file.path.lastIndexOf('/'));
+      let resolved = '';
+
+      if (importPath.startsWith('./') || importPath.startsWith('../')) {
+        const parts = fileDir.split('/');
+        const importParts = importPath.split('/');
+        const baseParts = [...parts];
+        for (const part of importParts) {
+          if (part === '.') continue;
+          else if (part === '..') baseParts.pop();
+          else baseParts.push(part);
+        }
+        resolved = baseParts.join('/');
+      }
+
+      if (!resolved) continue;
+
+      const candidates = [
+        resolved,
+        resolved + '.tsx',
+        resolved + '.ts',
+        resolved + '.jsx',
+        resolved + '.js',
+        resolved + '/index.tsx',
+        resolved + '/index.ts',
+      ];
+
+      const found = candidates.some((c) => allKnownPaths.has(c));
+      if (!found) {
+        warnings.push(`${file.path}: import '${importPath}' resolves to nothing`);
+
+        const stubPath = resolved.endsWith('.tsx') || resolved.endsWith('.ts')
+          ? resolved
+          : resolved + '.tsx';
+
+        if (!allKnownPaths.has(stubPath) && !stubs.some((s) => s.path === stubPath)) {
+          const componentName = stubPath
+            .replace(/^src\//, '')
+            .replace(/\.(tsx?|jsx?)$/, '')
+            .split('/')
+            .pop()
+            ?.replace(/[^a-zA-Z0-9]/g, '') || 'Placeholder';
+
+          stubs.push({
+            path: stubPath,
+            content: `export default function ${componentName}() {
+  return (
+    <div className="min-h-screen flex items-center justify-center">
+      <div className="text-center">
+        <h1 className="text-2xl font-bold mb-4">${componentName}</h1>
+        <p className="text-gray-500">This page is under construction.</p>
+      </div>
+    </div>
+  );
+}`,
+          });
+          allKnownPaths.add(stubPath);
+        }
+      }
+    }
+  }
+
+  return { stubs, warnings };
+}
+
 export function generateStubForMissingImport(
   error: string,
   allFilePaths: string[]

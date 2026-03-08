@@ -4,7 +4,7 @@ import { getConfig } from '../core/config.js';
 import {
   analyzeBrief, generateProjectScaffold, generateModuleCode, groupPagesIntoModules,
   generateDatabaseSchema, generateBuildFix, verifyProjectCompleteness,
-  analyzeScreenshotAllViewports,
+  analyzeScreenshotAllViewports, fixFailedSqlStatements,
 } from '../services/claude.js';
 import { processAttachments } from '../services/file-processing.js';
 import { researchReferenceUrls } from '../services/web-research.js';
@@ -23,7 +23,7 @@ import { saveCheckpoint, clearCheckpoint, recordDeployment, getCheckpoint } from
 import {
   extractExportSignatures, buildExportContext, deduplicateErrors,
   filterRelevantFiles, reconcileAppRoutes, resolveStubPaths,
-  generateStubForMissingImport,
+  generateStubForMissingImport, validateModuleImports,
 } from '../services/build-intelligence.js';
 import type { ExportSignature } from '../services/build-intelligence.js';
 import {
@@ -328,37 +328,53 @@ export async function processBrief(projectId: string, briefId: string): Promise<
           await updateProject(projectId, sbUpdate);
 
           await sendChatMessage(projectId, 'Generating and executing database schema...');
-          const MAX_SQL_RETRIES = 2;
+          const MAX_SQL_FIX_PASSES = 2;
           let sqlExecuted = false;
 
-          for (let sqlAttempt = 1; sqlAttempt <= MAX_SQL_RETRIES + 1; sqlAttempt++) {
-            const sql = await generateDatabaseSchema(architecture, projectId);
-            if (!sql || sql.length < 10) {
-              await logger.warn('Empty SQL generated, skipping schema', 'development', projectId);
-              break;
-            }
-
+          const sql = await generateDatabaseSchema(architecture, projectId);
+          if (!sql || sql.length < 10) {
+            await logger.warn('Empty SQL generated, skipping schema', 'development', projectId);
+          } else {
             const result = await executeSqlStatements(sbRef, sql, projectId);
 
             if (result.failed === 0) {
               await logger.success(`Database schema executed: ${result.succeeded} statements`, 'development', projectId);
               sqlExecuted = true;
-              break;
-            }
-
-            if (result.succeeded > 0 && result.failed <= 2) {
-              await logger.info(`Schema partially applied: ${result.succeeded} ok, ${result.failed} failed. Retrying failures...`, 'development', projectId);
+            } else if (result.succeeded > 0) {
               sqlExecuted = true;
-              break;
-            }
 
-            if (sqlAttempt > MAX_SQL_RETRIES) {
-              await sendChatMessage(projectId, `Database schema had ${result.failed} failing statement(s) after ${MAX_SQL_RETRIES + 1} attempts: ${result.errors.slice(0, 3).join('; ')}. ${result.succeeded} statements applied successfully. Continuing.`);
-              if (result.succeeded > 0) sqlExecuted = true;
-              break;
-            }
+              let remainingFailures = result.failedStatements.filter(
+                (f) => !f.error.includes('already exists') && !f.error.includes('Timed out')
+              );
 
-            await sendChatMessage(projectId, `Schema had ${result.failed} error(s). Regenerating (attempt ${sqlAttempt + 1})...`);
+              for (let fixPass = 1; fixPass <= MAX_SQL_FIX_PASSES && remainingFailures.length > 0; fixPass++) {
+                await sendChatMessage(projectId, `Schema had ${remainingFailures.length} error(s). Generating targeted fixes (pass ${fixPass})...`);
+                await logger.info(`SQL fix pass ${fixPass}: ${remainingFailures.length} failed statements to fix`, 'development', projectId);
+
+                await new Promise((r) => setTimeout(r, 3000));
+
+                const fixSql = await fixFailedSqlStatements(remainingFailures, architecture, projectId);
+                if (!fixSql || fixSql.length < 10) {
+                  await logger.warn('Empty fix SQL generated, stopping fix passes', 'development', projectId);
+                  break;
+                }
+
+                const fixResult = await executeSqlStatements(sbRef, fixSql, projectId);
+                await logger.info(`SQL fix pass ${fixPass}: ${fixResult.succeeded} fixed, ${fixResult.failed} still failing`, 'development', projectId);
+
+                remainingFailures = fixResult.failedStatements.filter(
+                  (f) => !f.error.includes('already exists') && !f.error.includes('Timed out')
+                );
+              }
+
+              if (remainingFailures.length > 0) {
+                await sendChatMessage(projectId, `Database schema: ${result.succeeded} statements applied. ${remainingFailures.length} non-critical statement(s) could not be fixed. Continuing.`);
+              } else {
+                await logger.success(`Database schema fully applied after fix passes`, 'development', projectId);
+              }
+            } else {
+              await sendChatMessage(projectId, `Database schema failed entirely (${result.errors.slice(0, 2).join('; ')}). Continuing without database.`);
+            }
           }
 
           if (sqlExecuted) {
@@ -376,6 +392,60 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     }
 
     await saveCheckpoint(projectId, briefId, 'backend_complete', {}, [], fullName);
+
+    // ============================================================
+    // PHASE 2.75: SCAFFOLD BUILD CHECK
+    // ============================================================
+
+    {
+      await logger.info('Verifying scaffold builds before module generation...', 'development', projectId);
+      const scaffoldBuild = await verifyBuild(fullName, projectId);
+      if (!scaffoldBuild.success) {
+        const scaffoldErrors = extractBuildErrors(scaffoldBuild.errors || scaffoldBuild.output);
+        const dedupedErrors = deduplicateErrors(scaffoldErrors);
+        await logger.warn(`Scaffold build failed with ${dedupedErrors.length} error(s). Auto-fixing before modules...`, 'development', projectId);
+
+        const scaffoldRepoFiles = await getRepoTree(fullName);
+        const scaffoldCodeFiles = scaffoldRepoFiles.filter(
+          (f) => f.type === 'file' && /\.(tsx?|jsx?|css|json)$/.test(f.path)
+        );
+        const scaffoldPathsBudgeted = selectPathsWithinBudget(
+          scaffoldCodeFiles,
+          CONTEXT_BUDGETS.buildFix,
+          CORE_FILE_PATTERNS
+        );
+        const scaffoldCode = await getMultipleFileContents(fullName, scaffoldPathsBudgeted);
+        const scaffoldRelevant = filterRelevantFiles(scaffoldCode, dedupedErrors, CONTEXT_BUDGETS.buildFix);
+        const scaffoldAllPaths = scaffoldRepoFiles.filter((f) => f.type === 'file').map((f) => f.path);
+
+        const scaffoldFix = await generateBuildFix(
+          dedupedErrors,
+          (scaffoldBuild.errors || scaffoldBuild.output).slice(0, 12000),
+          project as unknown as Project,
+          client,
+          architecture as unknown as Record<string, unknown>,
+          scaffoldRelevant,
+          [],
+          1,
+          2,
+          { strategy: 'standard', allFilePaths: scaffoldAllPaths }
+        );
+
+        if (scaffoldFix.files.length > 0) {
+          await pushFiles(fullName, scaffoldFix.files, 'fix: scaffold build errors before module generation', projectId);
+          await logger.info(`Pushed ${scaffoldFix.files.length} scaffold fixes`, 'development', projectId);
+        }
+
+        const stubs = dedupedErrors
+          .map((e) => generateStubForMissingImport(e, scaffoldAllPaths))
+          .filter((s): s is NonNullable<typeof s> => s !== null);
+        if (stubs.length > 0) {
+          await pushFiles(fullName, stubs, 'fix: generate stubs for scaffold imports', projectId);
+        }
+      } else {
+        await logger.info('Scaffold build verified successfully', 'development', projectId);
+      }
+    }
 
     // ============================================================
     // PHASE 3: MODULE-BASED DEVELOPMENT
@@ -485,15 +555,21 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
         const allFiles = batchResults.flatMap((r) => r.files);
         if (allFiles.length > 0) {
-          await pushFiles(fullName, allFiles, `feat: implement ${batchNames}`, projectId);
+          const { stubs, warnings } = validateModuleImports(allFiles, allPaths);
+          if (warnings.length > 0) {
+            await logger.warn(`Module ${batchNames}: ${warnings.length} unresolved import(s)`, 'development', projectId);
+          }
 
-          for (const f of allFiles) {
+          const filesToPush = [...allFiles, ...stubs];
+          await pushFiles(fullName, filesToPush, `feat: implement ${batchNames}`, projectId);
+
+          for (const f of filesToPush) {
             if (f.path.endsWith('.tsx') || f.path.endsWith('.ts')) {
               completedModuleExports.push(f.path);
             }
           }
 
-          const newSignatures = extractExportSignatures(allFiles);
+          const newSignatures = extractExportSignatures(filesToPush);
           allExportSignatures.push(...newSignatures);
         }
 
@@ -818,11 +894,12 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       const allCode = await getMultipleFileContents(fullName, buildFixPathsBudgeted);
 
       const relevantFiles = filterRelevantFiles(allCode, buildErrors, CONTEXT_BUDGETS.buildFix);
+      const allFilePathsList = allRepoFiles.filter((f) => f.type === 'file').map((f) => f.path);
       await logger.info(`Build fix context: ${relevantFiles.length}/${allCode.length} relevant files`, 'development', projectId);
 
       const fixResult = await generateBuildFix(
         buildErrors,
-        (buildResult.errors || buildResult.output).slice(0, 5000),
+        (buildResult.errors || buildResult.output).slice(0, 12000),
         project as unknown as Project,
         client,
         architecture as unknown as Record<string, unknown>,
@@ -830,7 +907,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
         previousAttempts,
         attempt,
         config.max_corrections,
-        { forceOpus, strategy }
+        { forceOpus, strategy, allFilePaths: allFilePathsList }
       );
 
       if (fixResult.files.length > 0) {

@@ -586,11 +586,12 @@ Output valid JSON only.`;
 
       if (validation.fixes.additionalFields) {
         for (const af of validation.fixes.additionalFields) {
-          const model = (architecture.dataModels || []).find((m) => m.name === af.model);
-          if (model && model.fields) {
-            const exists = model.fields.some((f) => f.name === af.field.name);
+          if (!af?.model || !af?.field?.name) continue;
+          const dataModel = (architecture.dataModels || []).find((m) => m?.name === af.model);
+          if (dataModel && dataModel.fields) {
+            const exists = dataModel.fields.some((f) => f?.name === af.field.name);
             if (!exists) {
-              model.fields.push(af.field as typeof model.fields[number]);
+              dataModel.fields.push(af.field as typeof dataModel.fields[number]);
             }
           }
         }
@@ -852,12 +853,21 @@ RULES:
 - Use auth.uid() for user ownership checks
 - Add a trigger function for auto-updating updated_at columns
 - Generate realistic seed data (10-20 rows per table) unless the brief says "demo" or seed data is inappropriate
-- DO NOT wrap in transaction blocks (no BEGIN/COMMIT)
+- DO NOT wrap in transaction blocks (no BEGIN/COMMIT/ROLLBACK)
 - Use IF NOT EXISTS on ALL CREATE TABLE and CREATE INDEX statements
 - Create tables in DEPENDENCY ORDER: tables with no foreign keys first, then tables that reference them
 - ONLY reference tables that exist in the provided DATA MODELS list or are Supabase system tables (auth.users, storage.objects, storage.buckets)
 - Do NOT create a "profiles" table unless it is EXPLICITLY listed in the data models below
 - The ONLY valid table names you may create are: ${dataModelNames.join(', ')}
+
+RLS POLICY SYNTAX (CRITICAL - follow exactly):
+- For SELECT policies: CREATE POLICY "name" ON table FOR SELECT TO authenticated USING (condition);
+- For INSERT policies: CREATE POLICY "name" ON table FOR INSERT TO authenticated WITH CHECK (condition);  -- NEVER use USING for INSERT
+- For UPDATE policies: CREATE POLICY "name" ON table FOR UPDATE TO authenticated USING (condition) WITH CHECK (condition);
+- For DELETE policies: CREATE POLICY "name" ON table FOR DELETE TO authenticated USING (condition);
+- In policy conditions, ONLY reference columns that you defined in the CREATE TABLE statement for that table
+- Do NOT reference columns that do not exist in the table definition
+- Do NOT use FOR ALL -- always use separate SELECT/INSERT/UPDATE/DELETE policies
 
 Output ONLY raw SQL, no markdown wrapping, no explanations.`;
 
@@ -904,6 +914,8 @@ Generate:
   let sql = text.trim();
   sql = sql.replace(/^```sql\n?/g, '').replace(/^```\n?/g, '').replace(/\n?```$/g, '').trim();
 
+  sql = postProcessSql(sql);
+
   const validationIssues = validateGeneratedSql(sql, dataModelNames);
   if (validationIssues.length > 0) {
     await logger.warn(`SQL validation issues: ${validationIssues.join('; ')}`, 'ai', projectId);
@@ -934,6 +946,81 @@ function validateGeneratedSql(sql: string, allowedModelNames: string[]): string[
   }
 
   return issues;
+}
+
+function postProcessSql(sql: string): string {
+  let result = sql;
+
+  result = result.replace(
+    /CREATE\s+POLICY\s+(["'][^"']+["'])\s+ON\s+(\S+)\s+FOR\s+INSERT\s+(?:TO\s+\w+\s+)?USING\s*\(/gi,
+    (fullMatch, policyName, tableName) => {
+      const toMatch = fullMatch.match(/TO\s+(\w+)/i);
+      const toClause = toMatch ? `TO ${toMatch[1]} ` : '';
+      return `CREATE POLICY ${policyName} ON ${tableName} FOR INSERT ${toClause}WITH CHECK (`;
+    }
+  );
+
+  result = result.replace(/\bBEGIN\s*;/gi, '');
+  result = result.replace(/\bCOMMIT\s*;/gi, '');
+  result = result.replace(/\bROLLBACK\s*;/gi, '');
+
+  return result;
+}
+
+export async function fixFailedSqlStatements(
+  failedStatements: { sql: string; error: string }[],
+  architecture: FullArchitecture,
+  projectId: string
+): Promise<string> {
+  if (failedStatements.length === 0) return '';
+
+  const ai = await getClient();
+  const model = selectModel('backend_schema');
+
+  const dataModelNames = (architecture.dataModels || []).map((m) => m.name);
+
+  const failedContext = failedStatements
+    .slice(0, 20)
+    .map((f, i) => `--- Failed Statement ${i + 1} ---\nSQL: ${f.sql}\nERROR: ${f.error}`)
+    .join('\n\n');
+
+  const systemPrompt = `You are fixing failed PostgreSQL statements for a Supabase project.
+
+RULES:
+- Output ONLY corrected SQL statements that will fix the errors
+- Do NOT recreate tables that already exist (they succeeded)
+- Use IF NOT EXISTS on all CREATE statements
+- For INSERT policies: use WITH CHECK (condition) -- NEVER use USING for INSERT policies
+- For SELECT policies: use USING (condition) only -- no WITH CHECK
+- For UPDATE policies: use both USING and WITH CHECK
+- For DELETE policies: use USING (condition) only -- no WITH CHECK
+- In RLS policies, ONLY reference columns that exist in the table definition
+- ONLY reference tables from this list: ${dataModelNames.join(', ')}, auth.users, storage.objects, storage.buckets
+- If a column referenced in a policy doesn't exist, either add it with ALTER TABLE or adjust the policy
+- Do NOT wrap in transaction blocks (no BEGIN/COMMIT)
+- Output ONLY raw SQL, no markdown, no explanations`;
+
+  const userPrompt = `Fix these failed SQL statements:\n\n${failedContext}\n\nDATA MODELS FOR REFERENCE:\n${JSON.stringify(architecture.dataModels, null, 2)}`;
+
+  const response = await callWithRetry(
+    () => ai.messages.create({
+      model,
+      max_tokens: 16000,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userPrompt }],
+    }),
+    2,
+    'sql_fix'
+  );
+
+  const text = extractText(response);
+  await trackUsage(model, response.usage.input_tokens, response.usage.output_tokens, 'sql_fix', projectId);
+
+  let fixSql = text.trim();
+  fixSql = fixSql.replace(/^```sql\n?/g, '').replace(/^```\n?/g, '').replace(/\n?```$/g, '').trim();
+  fixSql = postProcessSql(fixSql);
+
+  return fixSql;
 }
 
 // ============================================================
@@ -1060,7 +1147,13 @@ QUALITY STANDARDS:
 - Proper heading hierarchy
 - Each page component must be fully featured, minimum 150 lines
 - Create sub-components when sections get complex (put them in the same module directory or components/)
-- NEVER use purple/indigo unless brand colors include them`;
+- NEVER use purple/indigo unless brand colors include them
+
+IMPORT RULES (CRITICAL):
+- Every import MUST reference a file that exists in the "OTHER FILES IN PROJECT" list or a file you are creating in this response
+- Do NOT import from hypothetical files or files that might be created later
+- If you need a utility/hook that doesn't exist yet, create it in this same response
+- Use ONLY packages listed in package.json dependencies`;
 
   const stubPathsSection = stubPathsHint
     ? `\nPAGE FILE PATHS (use these EXACT paths for each page component):\n${stubPathsHint}\n`
@@ -1188,7 +1281,7 @@ export async function generateBuildFix(
   previousAttempts: BuildFixAttempt[],
   attempt: number,
   maxAttempts: number,
-  options?: { forceOpus?: boolean; strategy?: 'standard' | 'simplify' | 'regenerate' }
+  options?: { forceOpus?: boolean; strategy?: 'standard' | 'simplify' | 'regenerate'; allFilePaths?: string[] }
 ): Promise<ClaudeCodeResponse> {
   const ai = await getClient();
   const useOpus = options?.forceOpus || attempt >= maxAttempts - 1;
@@ -1219,6 +1312,10 @@ export async function generateBuildFix(
 - Every component must compile independently`,
   };
 
+  const allFilePathsSection = options?.allFilePaths?.length
+    ? `\n- IMPORTANT: The project contains these files (use this list to verify imports): ${options.allFilePaths.join(', ')}`
+    : '';
+
   const systemPrompt = `You are a senior developer fixing build errors in a React + Vite + TypeScript project.
 ${useOpus ? 'This is the FINAL attempt. Apply the most robust fix possible.' : ''}
 
@@ -1229,13 +1326,15 @@ RULES:
 - Output COMPLETE file contents (not partial patches)
 - ${strategyInstructions[strategy] || strategyInstructions.standard}
 - NEVER introduce React Native or Expo dependencies
-${previousAttempts.length > 0 ? '- Previous fix attempts failed. You MUST take a COMPLETELY different approach.' : ''}`;
+- Every import MUST reference a file that actually exists in the project file list below
+- If an import references a file that does not exist, REMOVE the import and the code using it
+${previousAttempts.length > 0 ? '- Previous fix attempts failed. You MUST take a COMPLETELY different approach.' : ''}${allFilePathsSection}`;
 
   const userPrompt = `BUILD ERRORS (attempt ${attempt}/${maxAttempts}, strategy: ${strategy}):
 ${buildErrors.join('\n')}
 
 FULL BUILD OUTPUT:
-${buildOutput.slice(0, 5000)}
+${buildOutput.slice(0, 12000)}
 ${previousAttemptsContext}
 
 EXISTING CODE:

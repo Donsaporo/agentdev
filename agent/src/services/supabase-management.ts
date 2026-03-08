@@ -124,11 +124,22 @@ export async function executeSqlOnProject(
   });
 
   if (!res.ok) {
+    const status = res.status;
     const err = await res.text().catch(() => '');
-    throw new Error(`SQL execution failed on ${projectRef}: ${err.slice(0, 500)}`);
+    const error = new Error(`SQL execution failed on ${projectRef}: ${err.slice(0, 500)}`);
+    (error as SqlExecutionError).httpStatus = status;
+    (error as SqlExecutionError).isRateLimit = status === 429 || err.includes('ThrottlerException') || err.includes('Too Many Requests');
+    (error as SqlExecutionError).isBadSql = status === 400 && !err.includes('ThrottlerException');
+    throw error;
   }
 
   await logger.info('SQL migration executed on project database', 'supabase', projectId);
+}
+
+interface SqlExecutionError extends Error {
+  httpStatus?: number;
+  isRateLimit?: boolean;
+  isBadSql?: boolean;
 }
 
 export async function isManagementAvailable(): Promise<boolean> {
@@ -166,43 +177,159 @@ export async function findExistingProject(
   return null;
 }
 
+const SQL_INTER_STATEMENT_DELAY_MS = 250;
+const SQL_RATE_LIMIT_BASE_WAIT_MS = 3000;
+const SQL_MAX_RETRIES_PER_STATEMENT = 3;
+const SQL_BATCH_SIZE = 5;
+const SQL_MAX_TOTAL_TIME_MS = 5 * 60 * 1000;
+
+function canBatchStatements(stmts: string[]): boolean {
+  return stmts.every((s) => {
+    const upper = s.toUpperCase().trimStart();
+    return upper.startsWith('CREATE INDEX') ||
+      upper.startsWith('CREATE UNIQUE INDEX') ||
+      upper.startsWith('CREATE POLICY') ||
+      (upper.startsWith('ALTER TABLE') && upper.includes('ENABLE ROW LEVEL SECURITY'));
+  });
+}
+
+export interface SqlExecutionResult {
+  succeeded: number;
+  failed: number;
+  errors: string[];
+  failedStatements: { sql: string; error: string }[];
+}
+
 export async function executeSqlStatements(
   projectRef: string,
   sql: string,
   projectId: string
-): Promise<{ succeeded: number; failed: number; errors: string[] }> {
-  const statements = splitSqlStatements(sql);
+): Promise<SqlExecutionResult> {
+  const statements = splitSqlStatements(sql).filter((s) => s.trim().length >= 5);
   let succeeded = 0;
   let failed = 0;
   const errors: string[] = [];
+  const failedStatements: { sql: string; error: string }[] = [];
+  const startTime = Date.now();
 
-  for (const stmt of statements) {
-    const trimmed = stmt.trim();
-    if (!trimmed || trimmed.length < 5) continue;
+  let consecutiveRateLimits = 0;
 
-    try {
-      await executeSqlOnProject(projectRef, trimmed, projectId);
-      succeeded++;
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      if (errMsg.includes('already exists')) {
-        succeeded++;
-        continue;
+  for (let i = 0; i < statements.length; i++) {
+    if (Date.now() - startTime > SQL_MAX_TOTAL_TIME_MS) {
+      await logger.warn(`SQL execution timed out after 5 minutes (${succeeded} succeeded, ${statements.length - i} remaining)`, 'supabase', projectId);
+      for (let j = i; j < statements.length; j++) {
+        failed++;
+        failedStatements.push({ sql: statements[j].slice(0, 200), error: 'Timed out' });
       }
-      failed++;
-      errors.push(`${errMsg.slice(0, 200)} [SQL: ${trimmed.slice(0, 100)}...]`);
-      await logger.warn(`SQL statement failed: ${errMsg.slice(0, 200)}`, 'supabase', projectId);
+      break;
+    }
+
+    const batch: string[] = [statements[i]];
+    if (i + 1 < statements.length) {
+      let batchEnd = i + 1;
+      while (batchEnd < statements.length && batch.length < SQL_BATCH_SIZE) {
+        const candidate = [...batch, statements[batchEnd]];
+        if (canBatchStatements(candidate)) {
+          batch.push(statements[batchEnd]);
+          batchEnd++;
+        } else {
+          break;
+        }
+      }
+    }
+
+    const batchSql = batch.length > 1 ? batch.join(';\n') + ';' : batch[0];
+    const statementsInBatch = batch.length;
+    let executedOk = false;
+
+    for (let retry = 0; retry < SQL_MAX_RETRIES_PER_STATEMENT; retry++) {
+      try {
+        await executeSqlOnProject(projectRef, batchSql, projectId);
+        succeeded += statementsInBatch;
+        executedOk = true;
+        consecutiveRateLimits = 0;
+        break;
+      } catch (err) {
+        const sqlErr = err as SqlExecutionError;
+        const errMsg = sqlErr.message || String(err);
+
+        if (errMsg.includes('already exists')) {
+          succeeded += statementsInBatch;
+          executedOk = true;
+          consecutiveRateLimits = 0;
+          break;
+        }
+
+        if (sqlErr.isRateLimit) {
+          consecutiveRateLimits++;
+          const backoffMs = SQL_RATE_LIMIT_BASE_WAIT_MS * Math.pow(2, Math.min(retry, 3));
+          await logger.warn(`Rate limited (attempt ${retry + 1}/${SQL_MAX_RETRIES_PER_STATEMENT}), waiting ${backoffMs}ms...`, 'supabase', projectId);
+          await new Promise((r) => setTimeout(r, backoffMs));
+          continue;
+        }
+
+        if (sqlErr.isBadSql) {
+          failed += statementsInBatch;
+          const errorEntry = `${errMsg.slice(0, 200)} [SQL: ${batch[0].slice(0, 100)}...]`;
+          errors.push(errorEntry);
+          for (const s of batch) {
+            failedStatements.push({ sql: s.slice(0, 500), error: errMsg.slice(0, 300) });
+          }
+          await logger.warn(`SQL statement failed (bad SQL, no retry): ${errMsg.slice(0, 200)}`, 'supabase', projectId);
+          executedOk = true;
+          break;
+        }
+
+        if (retry < SQL_MAX_RETRIES_PER_STATEMENT - 1) {
+          await new Promise((r) => setTimeout(r, 2000));
+          continue;
+        }
+
+        failed += statementsInBatch;
+        errors.push(`${errMsg.slice(0, 200)} [SQL: ${batch[0].slice(0, 100)}...]`);
+        for (const s of batch) {
+          failedStatements.push({ sql: s.slice(0, 500), error: errMsg.slice(0, 300) });
+        }
+        await logger.warn(`SQL statement failed after ${SQL_MAX_RETRIES_PER_STATEMENT} retries: ${errMsg.slice(0, 200)}`, 'supabase', projectId);
+        executedOk = true;
+      }
+    }
+
+    if (!executedOk) {
+      failed += statementsInBatch;
+      for (const s of batch) {
+        failedStatements.push({ sql: s.slice(0, 500), error: 'Max retries exceeded (rate limit)' });
+      }
+    }
+
+    if (batch.length > 1) {
+      i += batch.length - 1;
+    }
+
+    if (consecutiveRateLimits >= 5) {
+      await logger.warn(`5 consecutive rate limits, pausing for 15 seconds...`, 'supabase', projectId);
+      await new Promise((r) => setTimeout(r, 15000));
+      consecutiveRateLimits = 0;
+    }
+
+    if (i < statements.length - 1) {
+      await new Promise((r) => setTimeout(r, SQL_INTER_STATEMENT_DELAY_MS));
     }
   }
 
-  return { succeeded, failed, errors };
+  return { succeeded, failed, errors, failedStatements };
 }
 
 function splitSqlStatements(sql: string): string[] {
+  let cleaned = sql;
+  cleaned = cleaned.replace(/^\s*BEGIN\s*;\s*$/gim, '');
+  cleaned = cleaned.replace(/^\s*COMMIT\s*;\s*$/gim, '');
+  cleaned = cleaned.replace(/^\s*ROLLBACK\s*;\s*$/gim, '');
+
   const statements: string[] = [];
   let current = '';
   let inDollarBlock = false;
-  const lines = sql.split('\n');
+  const lines = cleaned.split('\n');
 
   for (const line of lines) {
     if (line.includes('$$') && !inDollarBlock) {
@@ -225,12 +352,15 @@ function splitSqlStatements(sql: string): string[] {
     current += line + '\n';
 
     if (line.trim().endsWith(';') && !inDollarBlock) {
-      statements.push(current.trim());
+      const trimmed = current.trim();
+      if (trimmed.length >= 5 && !/^\s*(BEGIN|COMMIT|ROLLBACK)\s*;?\s*$/i.test(trimmed)) {
+        statements.push(trimmed);
+      }
       current = '';
     }
   }
 
-  if (current.trim()) {
+  if (current.trim() && current.trim().length >= 5) {
     statements.push(current.trim());
   }
 
