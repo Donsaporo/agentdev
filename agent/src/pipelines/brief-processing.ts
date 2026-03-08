@@ -4,7 +4,7 @@ import { getConfig } from '../core/config.js';
 import {
   analyzeBrief, generateProjectScaffold, generateModuleCode, groupPagesIntoModules,
   generateDatabaseSchema, generateBuildFix, verifyProjectCompleteness,
-  analyzeScreenshotAllViewports, fixFailedSqlStatements,
+  analyzeScreenshotAllViewports, fixFailedSqlStatements, generateAutoQAFix,
 } from '../services/claude.js';
 import { processAttachments } from '../services/file-processing.js';
 import { researchReferenceUrls } from '../services/web-research.js';
@@ -719,6 +719,8 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     const completedModuleExports: string[] = [];
     const allExportSignatures: ExportSignature[] = [];
     let modulesSinceLastBuildCheck = 0;
+    let cumulativeIntermediateErrors = 0;
+    const ERROR_BUDGET_THRESHOLD = 30;
 
     async function buildModuleBatch(
       tasks: typeof moduleTasks,
@@ -845,8 +847,29 @@ export async function processBrief(projectId: string, briefId: string): Promise<
                   break;
                 }
               }
+              const postFixBuild = await verifyBuild(fullName, projectId);
+              if (!postFixBuild.success) {
+                const remainingErrors = deduplicateErrors(extractBuildErrors(postFixBuild.errors || postFixBuild.output));
+                cumulativeIntermediateErrors = remainingErrors.length;
+              } else {
+                cumulativeIntermediateErrors = 0;
+              }
             } else {
+              cumulativeIntermediateErrors = 0;
               await logger.info('Intermediate build check passed', 'development', projectId);
+            }
+
+            if (cumulativeIntermediateErrors > ERROR_BUDGET_THRESHOLD) {
+              await logger.warn(`Error budget exceeded (${cumulativeIntermediateErrors} > ${ERROR_BUDGET_THRESHOLD}). Running full build gate before continuing.`, 'development', projectId);
+              await sendChatMessage(projectId, `Pausing module generation to fix ${cumulativeIntermediateErrors} accumulated errors...`);
+              const budgetGate = await buildGate(
+                fullName, projectId, project as unknown as Project, client, architecture,
+                3, 'error-budget'
+              );
+              cumulativeIntermediateErrors = budgetGate.errorsRemaining;
+              if (budgetGate.passed) {
+                await logger.info('Error budget gate passed. Resuming module generation.', 'development', projectId);
+              }
             }
           } catch (midErr) {
             await logger.warn(`Intermediate build check failed (non-critical): ${midErr instanceof Error ? midErr.message : String(midErr)}`, 'development', projectId);
@@ -1172,19 +1195,32 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       const lastBuildResult = await verifyBuild(fullName, projectId);
       if (!lastBuildResult.success) {
         const lastErrors = extractBuildErrors(lastBuildResult.errors || lastBuildResult.output);
-        if (areAllErrorsTypeOnly(lastErrors)) {
-          await logger.warn('All remaining errors are type-only. Applying @ts-nocheck as last resort.', 'development', projectId);
-          const lastRepoFiles = await getRepoTree(fullName);
-          const tsFiles = lastRepoFiles.filter((f) => f.type === 'file' && /\.tsx?$/.test(f.path)).map((f) => f.path);
+        const lastRepoFiles = await getRepoTree(fullName);
+        const lastAllPaths = lastRepoFiles.filter((f) => f.type === 'file').map((f) => f.path);
+
+        const missingModuleStubs = lastErrors
+          .map((e) => generateStubForMissingImport(e, lastAllPaths))
+          .filter((s): s is NonNullable<typeof s> => s !== null);
+
+        if (missingModuleStubs.length > 0) {
+          await logger.warn(`Generating ${missingModuleStubs.length} stub(s) for missing modules before @ts-nocheck`, 'development', projectId);
+          await pushFiles(fullName, missingModuleStubs, 'fix: generate stubs for missing modules (last resort)', projectId);
+        }
+
+        if (areAllErrorsTypeOnly(lastErrors) || missingModuleStubs.length > 0) {
+          await logger.warn('Applying @ts-nocheck to type-only error files as last resort.', 'development', projectId);
+          const freshRepoFiles = missingModuleStubs.length > 0 ? await getRepoTree(fullName) : lastRepoFiles;
+          const tsFiles = freshRepoFiles.filter((f) => f.type === 'file' && /\.tsx?$/.test(f.path)).map((f) => f.path);
           const tsContents = await getMultipleFileContents(fullName, tsFiles);
           const tsNoCheckFixes = generateTsNoCheckFiles(lastErrors, tsContents);
           if (tsNoCheckFixes.length > 0) {
             await pushFiles(fullName, tsNoCheckFixes, 'fix: apply @ts-nocheck to type-only error files (last resort)', projectId);
-            const retryBuild = await verifyBuild(fullName, projectId);
-            if (retryBuild.success) {
-              buildPassed = true;
-              await sendChatMessage(projectId, 'Build passed after applying type suppressions to non-critical files.');
-            }
+          }
+
+          const retryBuild = await verifyBuild(fullName, projectId);
+          if (retryBuild.success) {
+            buildPassed = true;
+            await sendChatMessage(projectId, 'Build passed after applying stubs and type suppressions.');
           }
         }
       }
@@ -1400,18 +1436,12 @@ export async function processBrief(projectId: string, briefId: string): Promise<
         );
         const qaCode = await getMultipleFileContents(fullName, qaPathsBudgeted);
 
-        const issueDescription = failedPages
-          .map((fp) => `${fp.pageName} (score: ${fp.score}/100):\n${fp.issues.map((i) => `  - ${i}`).join('\n')}`)
-          .join('\n\n');
-
-        const fixResult = await generateBuildFix(
-          failedPages.flatMap((fp) => fp.issues),
-          issueDescription,
+        const fixResult = await generateAutoQAFix(
+          failedPages,
+          qaCode,
           project as unknown as Project,
           client,
           architecture as unknown as Record<string, unknown>,
-          qaCode,
-          [],
           qaAttempt + 1,
           config.max_corrections
         );

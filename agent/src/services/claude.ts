@@ -1341,7 +1341,7 @@ export async function generateBuildFix(
     }).join('\n\n')}\n\nIMPORTANT: The above approaches did NOT work. Try a COMPLETELY DIFFERENT strategy. Do NOT repeat the same file changes.`
     : '';
 
-  const MAX_CONTEXT_CHARS = 180_000;
+  const MAX_CONTEXT_CHARS = 250_000;
   let existingContext = '';
   let charBudget = MAX_CONTEXT_CHARS;
   const sortedFiles = [...existingFiles].sort((a, b) => {
@@ -1406,7 +1406,7 @@ ${previousAttempts.length > 0 ? '- Previous fix attempts failed. You MUST take a
 ${buildErrors.join('\n')}
 
 FULL BUILD OUTPUT:
-${buildOutput.slice(-8000)}
+${buildOutput.slice(-15000)}
 ${previousAttemptsContext}
 
 EXISTING CODE:
@@ -1431,6 +1431,107 @@ Fix all errors. Output complete corrected files.`;
   const { text } = extractThinkingAndText(response);
   const files = parseCodeBlocks(text);
   await trackUsage(model, response.usage.input_tokens, response.usage.output_tokens, 'build_fix', project.id);
+
+  return {
+    files,
+    explanation: text.replace(/```[\s\S]*?```/g, '').trim().slice(0, 500),
+    tokensUsed: { input: response.usage.input_tokens, output: response.usage.output_tokens },
+  };
+}
+
+// ============================================================
+// AUTOMATED QA FIX (visual/layout issues from screenshot analysis)
+// ============================================================
+
+export async function generateAutoQAFix(
+  failedPages: { pageName: string; issues: string[]; score: number }[],
+  existingFiles: { path: string; content: string }[],
+  project: Project,
+  client: Client,
+  architecture: Record<string, unknown>,
+  attempt: number,
+  maxAttempts: number
+): Promise<ClaudeCodeResponse> {
+  const ai = await getClient();
+  const model = attempt >= maxAttempts - 1 ? MODELS.opus : MODELS.sonnet;
+
+  const issuesSummary = failedPages
+    .map((fp) => `${fp.pageName} (score: ${fp.score}/100):\n${fp.issues.map((i) => `  - ${i}`).join('\n')}`)
+    .join('\n\n');
+
+  const MAX_QA_CONTEXT_CHARS = 120_000;
+  let codeContext = '';
+  let charBudget = MAX_QA_CONTEXT_CHARS;
+  const failedPageNames = new Set(failedPages.map((fp) => fp.pageName.toLowerCase().replace(/[^a-z0-9]/g, '')));
+  const sortedFiles = [...existingFiles].sort((a, b) => {
+    const aRelevant = failedPageNames.has(a.path.replace(/.*\//, '').replace(/\.\w+$/, '').toLowerCase().replace(/[^a-z0-9]/g, ''));
+    const bRelevant = failedPageNames.has(b.path.replace(/.*\//, '').replace(/\.\w+$/, '').toLowerCase().replace(/[^a-z0-9]/g, ''));
+    if (aRelevant && !bRelevant) return -1;
+    if (!aRelevant && bRelevant) return 1;
+    return 0;
+  });
+  for (const f of sortedFiles) {
+    const entry = `--- ${f.path} ---\n${f.content}\n\n`;
+    if (entry.length <= charBudget) {
+      codeContext += entry;
+      charBudget -= entry.length;
+    }
+  }
+
+  const designSystem = (architecture as unknown as FullArchitecture)?.designSystem;
+  const brandContext = designSystem
+    ? `Brand: primary=${designSystem.primaryColor}, secondary=${designSystem.secondaryColor}, accent=${designSystem.accentColor}, fonts=${designSystem.fonts?.heading}/${designSystem.fonts?.body}, style=${designSystem.style}`
+    : '';
+
+  const systemPrompt = `You are a senior frontend developer at Obzide Tech fixing visual QA issues found during automated screenshot analysis.
+
+These are NOT build/compile errors -- these are VISUAL and LAYOUT problems detected from screenshots across desktop, tablet, and mobile viewports.
+
+PROJECT: ${project.name} for ${client.name} (${client.industry})
+${brandContext}
+
+RULES:
+- Focus ONLY on visual/layout/responsive fixes -- do NOT change functionality or break working logic
+- Fix layout issues: alignment, spacing, overflow, missing content, broken grids
+- Fix responsive issues: ensure proper breakpoints at 768px (tablet) and 640px (mobile)
+- Fix typography: readability, contrast, font sizes, line heights
+- Fix color issues: proper contrast ratios, brand consistency, readable text on all backgrounds
+- NEVER use purple/indigo unless brand colors specify them
+- Output ONLY files that need visual changes
+- Every file MUST start with: // FILE: path/to/file.ext
+- Wrap each file in a code block
+- Output COMPLETE file contents (not partial patches)
+- Preserve ALL existing imports and functionality
+- Use Tailwind CSS for all styling fixes
+- Ensure fixes work across ALL viewports (desktop, tablet, mobile)
+${attempt > 1 ? '- Previous QA fix attempts did not fully resolve issues. Be more aggressive with fixes.' : ''}`;
+
+  const userPrompt = `QA ISSUES FOUND (attempt ${attempt}/${maxAttempts}):
+
+${issuesSummary}
+
+EXISTING CODE:
+${codeContext}
+
+Fix all visual issues listed above. Output complete corrected files.`;
+
+  const thinkingParams = model === MODELS.opus ? buildThinkingParams({ enabled: true, budgetTokens: 8000 }) : {};
+
+  const response = await callWithRetry(
+    () => ai.messages.create({
+      model,
+      max_tokens: 32000,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userPrompt }],
+      ...thinkingParams,
+    }),
+    3,
+    'qa_fix'
+  );
+
+  const { text } = extractThinkingAndText(response);
+  const files = parseCodeBlocks(text);
+  await trackUsage(model, response.usage.input_tokens, response.usage.output_tokens, 'qa_fix', project.id);
 
   return {
     files,
