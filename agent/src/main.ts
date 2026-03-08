@@ -15,6 +15,7 @@ import { processBrief } from './pipelines/brief-processing.js';
 import { handleChatMessage } from './pipelines/chat-response.js';
 import { handleQARejection } from './pipelines/qa-correction.js';
 import { closeBrowser } from './services/screenshots.js';
+import { cleanupStaleCheckpoints } from './core/pipeline-state.js';
 import type { QueueEvent } from './core/types.js';
 
 async function handleEvent(event: QueueEvent): Promise<void> {
@@ -111,6 +112,9 @@ async function main(): Promise<void> {
   });
 
   await checkStuckProjects();
+  await cleanupStaleCheckpoints().catch((err) => {
+    console.error('  Stale checkpoint cleanup failed (non-critical):', err);
+  });
 
   setEventHandler(handleEvent);
   startListening();

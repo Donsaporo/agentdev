@@ -75,17 +75,42 @@ export async function notifyQAReady(
   );
 }
 
+export interface ErrorDiagnostics {
+  phase?: string;
+  modulesCompleted?: number;
+  modulesTotal?: number;
+  buildErrors?: number;
+  repoUrl?: string;
+  durationMinutes?: number;
+  strategy?: string;
+}
+
 export async function notifyError(
   projectName: string,
   errorMessage: string,
-  projectId: string
+  projectId: string,
+  diagnostics?: ErrorDiagnostics
 ): Promise<void> {
+  const diagRows = diagnostics ? [
+    diagnostics.phase ? `<tr><td style="padding:4px 8px;color:#666;">Phase</td><td style="padding:4px 8px;font-weight:600;">${diagnostics.phase}</td></tr>` : '',
+    diagnostics.modulesCompleted !== undefined ? `<tr><td style="padding:4px 8px;color:#666;">Modules</td><td style="padding:4px 8px;">${diagnostics.modulesCompleted}/${diagnostics.modulesTotal || '?'} completed</td></tr>` : '',
+    diagnostics.buildErrors ? `<tr><td style="padding:4px 8px;color:#666;">Build Errors</td><td style="padding:4px 8px;">${diagnostics.buildErrors}</td></tr>` : '',
+    diagnostics.strategy ? `<tr><td style="padding:4px 8px;color:#666;">Strategy</td><td style="padding:4px 8px;">${diagnostics.strategy}</td></tr>` : '',
+    diagnostics.durationMinutes ? `<tr><td style="padding:4px 8px;color:#666;">Duration</td><td style="padding:4px 8px;">${diagnostics.durationMinutes} min</td></tr>` : '',
+    diagnostics.repoUrl ? `<tr><td style="padding:4px 8px;color:#666;">Repo</td><td style="padding:4px 8px;"><a href="${diagnostics.repoUrl}">${diagnostics.repoUrl}</a></td></tr>` : '',
+  ].filter(Boolean).join('') : '';
+
+  const diagSection = diagRows
+    ? `<table style="width:100%;border-collapse:collapse;margin:12px 0;font-size:14px;">${diagRows}</table>`
+    : '';
+
   await sendEmail(
     `Error: ${projectName}`,
     `<div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
       <h2 style="color: #dc2626;">Agent Error</h2>
       <p>An error occurred while working on <strong>${projectName}</strong>:</p>
-      <pre style="background: #f5f5f5; padding: 16px; border-radius: 8px; overflow-x: auto;">${errorMessage}</pre>
+      <pre style="background: #f5f5f5; padding: 16px; border-radius: 8px; overflow-x: auto; font-size: 13px;">${errorMessage.slice(0, 2000)}</pre>
+      ${diagSection}
       <p style="color: #666; font-size: 14px;">Check the dashboard activity log for details.</p>
     </div>`,
     projectId

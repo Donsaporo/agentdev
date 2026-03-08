@@ -246,6 +246,8 @@ export interface BuildFixAttempt {
   errorHash: string;
   attempt: number;
   errorsText: string;
+  strategy?: string;
+  filesModified?: string[];
 }
 
 export interface QueueEvent {

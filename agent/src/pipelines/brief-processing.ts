@@ -13,6 +13,7 @@ import { createProject as createVercelProject, triggerDeployment, waitForDeploym
 import { captureAllPages } from '../services/screenshots.js';
 import { verifyBuild, extractBuildErrors, hashErrors, validateScaffold, areAllErrorsTypeOnly, generateTsNoCheckFiles } from '../services/build-verify.js';
 import { notifyBuildComplete, notifyQAReady, notifyError, notifyDeploySuccess } from '../services/notifications.js';
+import type { ErrorDiagnostics } from '../services/notifications.js';
 import { setCnameRecord } from '../services/namecheap.js';
 import {
   createSupabaseProject, waitForProjectReady, getProjectApiKeys,
@@ -39,6 +40,8 @@ const CORE_FILE_PATTERNS = [
   'package.json', 'vite.config',
 ];
 
+const PIPELINE_MAX_DURATION_MS = 4 * 60 * 60 * 1000;
+
 async function updateProject(
   projectId: string,
   updates: Record<string, unknown>
@@ -55,32 +58,36 @@ async function sendChatMessage(
   content: string
 ): Promise<void> {
   const supabase = getSupabase();
-  const { data: conv } = await supabase
-    .from('agent_conversations')
-    .select('id')
-    .eq('project_id', projectId)
-    .eq('status', 'active')
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  let conversationId = conv?.id;
-  if (!conversationId) {
-    const { data: newConv } = await supabase
+  try {
+    const { data: conv } = await supabase
       .from('agent_conversations')
-      .insert({ project_id: projectId, title: 'Build Log' })
       .select('id')
+      .eq('project_id', projectId)
+      .eq('status', 'active')
+      .order('created_at', { ascending: false })
+      .limit(1)
       .maybeSingle();
-    conversationId = newConv?.id;
-  }
 
-  if (conversationId) {
-    await supabase.from('agent_messages').insert({
-      conversation_id: conversationId,
-      role: 'assistant',
-      content,
-      metadata: {},
-    });
+    let conversationId = conv?.id;
+    if (!conversationId) {
+      const { data: newConv } = await supabase
+        .from('agent_conversations')
+        .insert({ project_id: projectId, title: 'Build Log' })
+        .select('id')
+        .maybeSingle();
+      conversationId = newConv?.id;
+    }
+
+    if (conversationId) {
+      await supabase.from('agent_messages').insert({
+        conversation_id: conversationId,
+        role: 'assistant',
+        content,
+        metadata: {},
+      });
+    }
+  } catch (err) {
+    await logger.warn(`Failed to send chat message: ${err instanceof Error ? err.message : String(err)}`, 'pipeline', projectId);
   }
 }
 
@@ -112,9 +119,194 @@ async function validateAndPush(
   return pushFiles(repoFullName, filesToPush, commitMessage, projectId);
 }
 
+function checkPipelineTimeout(startTime: number): void {
+  if (Date.now() - startTime > PIPELINE_MAX_DURATION_MS) {
+    throw new Error(`Pipeline timeout: exceeded ${PIPELINE_MAX_DURATION_MS / (60 * 60 * 1000)}h maximum duration`);
+  }
+}
+
+function programmaticCompletenessCheck(
+  architecture: FullArchitecture,
+  repoFilePaths: string[],
+  appTsxContent: string | null
+): { missingPageFiles: string[]; brokenImports: string[]; missingRoutes: string[] } {
+  const pageFiles = repoFilePaths.filter((f) => f.startsWith('src/pages/') && /\.(tsx?|jsx?)$/.test(f));
+  const pageFileNormalized = new Set(
+    pageFiles.map((f) => f.replace(/^src\/pages\//, '').replace(/\.(tsx?|jsx?)$/, '').toLowerCase().replace(/[^a-z0-9]/g, ''))
+  );
+
+  const missingPageFiles: string[] = [];
+  for (const page of (architecture.pages || [])) {
+    const normalized = page.name.toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (!pageFileNormalized.has(normalized)) {
+      const partials = page.name.split(/[\s/]+/).map((p) => p.toLowerCase().replace(/[^a-z0-9]/g, ''));
+      const found = partials.some((partial) => pageFileNormalized.has(partial));
+      if (!found) {
+        missingPageFiles.push(page.name);
+      }
+    }
+  }
+
+  const brokenImports: string[] = [];
+  const missingRoutes: string[] = [];
+
+  if (appTsxContent) {
+    const importRegex = /import\s+\w+\s+from\s+['"]\.\/pages\/([^'"]+)['"]/g;
+    let match;
+    while ((match = importRegex.exec(appTsxContent)) !== null) {
+      const importPath = match[1];
+      const candidates = [
+        `src/pages/${importPath}`,
+        `src/pages/${importPath}.tsx`,
+        `src/pages/${importPath}.ts`,
+        `src/pages/${importPath}/index.tsx`,
+        `src/pages/${importPath}/index.ts`,
+      ];
+      const exists = candidates.some((c) => repoFilePaths.includes(c));
+      if (!exists) {
+        brokenImports.push(`src/pages/${importPath}`);
+      }
+    }
+
+    for (const page of (architecture.pages || [])) {
+      if (page.route && !appTsxContent.includes(page.route)) {
+        missingRoutes.push(`${page.name} (${page.route})`);
+      }
+    }
+  }
+
+  return { missingPageFiles, brokenImports, missingRoutes };
+}
+
+interface BuildGateResult {
+  passed: boolean;
+  errorsRemaining: number;
+  attemptsUsed: number;
+  lastStrategy?: string;
+}
+
+async function buildGate(
+  fullName: string,
+  projectId: string,
+  project: Project,
+  client: Client,
+  architecture: FullArchitecture,
+  maxAttempts: number,
+  phaseName: string
+): Promise<BuildGateResult> {
+  const previousAttempts: BuildFixAttempt[] = [];
+  const strategies: Array<'standard' | 'simplify' | 'regenerate' | 'isolate'> = [
+    'standard', 'standard', 'simplify', 'simplify', 'regenerate', 'regenerate', 'isolate', 'isolate',
+  ];
+  let duplicateCount = 0;
+  let lastUsedStrategy = 'standard';
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const buildResult = await verifyBuild(fullName, projectId);
+    if (buildResult.success) {
+      return { passed: true, errorsRemaining: 0, attemptsUsed: attempt };
+    }
+
+    if (attempt === maxAttempts) {
+      const rawErrors = extractBuildErrors(buildResult.errors || buildResult.output);
+      return { passed: false, errorsRemaining: rawErrors.length, attemptsUsed: attempt, lastStrategy: lastUsedStrategy };
+    }
+
+    const rawBuildErrors = extractBuildErrors(buildResult.errors || buildResult.output);
+    const buildErrors = deduplicateErrors(rawBuildErrors);
+    const errorHash = hashErrors(buildErrors);
+
+    const isDuplicate = previousAttempts.some((a) => a.errorHash === errorHash);
+    let forceOpus = false;
+    let strategy = strategies[Math.min(attempt - 1, strategies.length - 1)];
+
+    if (rawBuildErrors.length > 500) {
+      strategy = 'isolate';
+      forceOpus = true;
+    } else if (rawBuildErrors.length > 100) {
+      strategy = attempt <= 2 ? 'simplify' : 'regenerate';
+    }
+
+    if (isDuplicate) {
+      duplicateCount++;
+      forceOpus = true;
+      strategy = duplicateCount >= 3 ? 'isolate' : duplicateCount >= 2 ? 'regenerate' : 'simplify';
+    }
+
+    lastUsedStrategy = strategy;
+
+    await logger.info(`[${phaseName}] Build fix attempt ${attempt}/${maxAttempts} (${strategy}): ${buildErrors.length} root cause(s)`, 'development', projectId);
+
+    const allRepoFiles = await getRepoTree(fullName);
+    const buildFixCodeFiles = allRepoFiles.filter(
+      (f) => f.type === 'file' && /\.(tsx?|jsx?|css|json)$/.test(f.path)
+    );
+    const buildFixPathsBudgeted = selectPathsWithinBudget(
+      buildFixCodeFiles,
+      CONTEXT_BUDGETS.buildFix,
+      CORE_FILE_PATTERNS
+    );
+    const allCode = await getMultipleFileContents(fullName, buildFixPathsBudgeted);
+    const relevantFiles = filterRelevantFiles(allCode, buildErrors, CONTEXT_BUDGETS.buildFix);
+    const allFilePathsList = allRepoFiles.filter((f) => f.type === 'file').map((f) => f.path);
+
+    previousAttempts.push({
+      errorHash,
+      attempt,
+      errorsText: buildErrors.slice(0, 10).join('\n'),
+      strategy,
+    });
+
+    const fixResult = await generateBuildFix(
+      buildErrors,
+      (buildResult.errors || buildResult.output).slice(-15000),
+      project,
+      client,
+      architecture as unknown as Record<string, unknown>,
+      relevantFiles,
+      previousAttempts,
+      attempt,
+      maxAttempts,
+      { forceOpus, strategy, allFilePaths: allFilePathsList }
+    );
+
+    if (fixResult.files.length > 0) {
+      const lastAttempt = previousAttempts[previousAttempts.length - 1];
+      if (lastAttempt) {
+        lastAttempt.filesModified = fixResult.files.map((f) => f.path);
+      }
+      await validateAndPush(fullName, fixResult.files, `fix: ${phaseName} build errors (attempt ${attempt}, ${strategy})`, projectId, allFilePathsList);
+    } else {
+      const stubs = buildErrors
+        .map((e) => generateStubForMissingImport(e, allFilePathsList))
+        .filter((s): s is NonNullable<typeof s> => s !== null);
+
+      if (stubs.length > 0) {
+        await pushFiles(fullName, stubs, `fix: generate stubs for missing modules (${phaseName}, attempt ${attempt})`, projectId);
+        continue;
+      }
+
+      const reconPaths = allRepoFiles.filter((f) => f.type === 'file').map((f) => f.path);
+      const fallbackAppContent = await getFileContent(fullName, 'src/App.tsx');
+      const reconciledApp = reconcileAppRoutes(reconPaths, architecture.pages || [], fallbackAppContent || undefined);
+      if (reconciledApp) {
+        await pushFiles(fullName, [reconciledApp], `fix: re-reconcile App.tsx routes (${phaseName}, attempt ${attempt})`, projectId);
+        continue;
+      }
+
+      await logger.warn(`[${phaseName}] No fix generated, stopping build gate`, 'development', projectId);
+      const remaining = extractBuildErrors(buildResult.errors || buildResult.output);
+      return { passed: false, errorsRemaining: remaining.length, attemptsUsed: attempt, lastStrategy: lastUsedStrategy };
+    }
+  }
+
+  return { passed: false, errorsRemaining: -1, attemptsUsed: maxAttempts, lastStrategy: lastUsedStrategy };
+}
+
 export async function processBrief(projectId: string, briefId: string): Promise<void> {
   const supabase = getSupabase();
   const config = await getConfig();
+  const pipelineStart = Date.now();
 
   let checkpoint = await getCheckpoint(projectId);
   const isResuming = !!(checkpoint && checkpoint.brief_id === briefId);
@@ -134,6 +326,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
   } else if (isResuming && checkpointExpired) {
     await logger.info('Checkpoint expired (>12h), starting fresh', 'development', projectId);
     await clearCheckpoint(projectId, 'failed');
+    checkpoint = null;
   }
 
   const resumePhase = (isResuming && !checkpointExpired) ? checkpoint!.current_phase : null;
@@ -159,7 +352,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     const client = project.clients as Client;
 
     // ============================================================
-    // PHASE 1: ANALYSIS (skip if resuming past this phase)
+    // PHASE 1: ANALYSIS
     // ============================================================
 
     let architecture: FullArchitecture;
@@ -234,8 +427,10 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       await saveCheckpoint(projectId, briefId, 'analysis_complete', { totalPages }, [], '');
     }
 
+    checkPipelineTimeout(pipelineStart);
+
     // ============================================================
-    // PHASE 2: SCAFFOLDING (skip if resuming past this phase)
+    // PHASE 2: SCAFFOLDING
     // ============================================================
 
     if (skipScaffolding && checkpoint?.repo_full_name) {
@@ -283,7 +478,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     }
 
     // ============================================================
-    // PHASE 2.5: BACKEND SETUP (skip if resuming past this phase)
+    // PHASE 2.5: BACKEND SETUP
     // ============================================================
 
     if (architecture.requiresBackend && !skipBackend) {
@@ -412,58 +607,23 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     await saveCheckpoint(projectId, briefId, 'backend_complete', {}, [], fullName);
 
     // ============================================================
-    // PHASE 2.75: SCAFFOLD BUILD CHECK
+    // PHASE 2.75: SCAFFOLD BUILD GATE
     // ============================================================
 
     {
       await logger.info('Verifying scaffold builds before module generation...', 'development', projectId);
-      const scaffoldBuild = await verifyBuild(fullName, projectId);
-      if (!scaffoldBuild.success) {
-        const scaffoldErrors = extractBuildErrors(scaffoldBuild.errors || scaffoldBuild.output);
-        const dedupedErrors = deduplicateErrors(scaffoldErrors);
-        await logger.warn(`Scaffold build failed with ${dedupedErrors.length} error(s). Auto-fixing before modules...`, 'development', projectId);
-
-        const scaffoldRepoFiles = await getRepoTree(fullName);
-        const scaffoldCodeFiles = scaffoldRepoFiles.filter(
-          (f) => f.type === 'file' && /\.(tsx?|jsx?|css|json)$/.test(f.path)
-        );
-        const scaffoldPathsBudgeted = selectPathsWithinBudget(
-          scaffoldCodeFiles,
-          CONTEXT_BUDGETS.buildFix,
-          CORE_FILE_PATTERNS
-        );
-        const scaffoldCode = await getMultipleFileContents(fullName, scaffoldPathsBudgeted);
-        const scaffoldRelevant = filterRelevantFiles(scaffoldCode, dedupedErrors, CONTEXT_BUDGETS.buildFix);
-        const scaffoldAllPaths = scaffoldRepoFiles.filter((f) => f.type === 'file').map((f) => f.path);
-
-        const scaffoldFix = await generateBuildFix(
-          dedupedErrors,
-          (scaffoldBuild.errors || scaffoldBuild.output).slice(-12000),
-          project as unknown as Project,
-          client,
-          architecture as unknown as Record<string, unknown>,
-          scaffoldRelevant,
-          [],
-          1,
-          2,
-          { strategy: 'standard', allFilePaths: scaffoldAllPaths }
-        );
-
-        if (scaffoldFix.files.length > 0) {
-          await validateAndPush(fullName, scaffoldFix.files, 'fix: scaffold build errors before module generation', projectId, scaffoldAllPaths);
-          await logger.info(`Pushed ${scaffoldFix.files.length} scaffold fixes`, 'development', projectId);
-        }
-
-        const stubs = dedupedErrors
-          .map((e) => generateStubForMissingImport(e, scaffoldAllPaths))
-          .filter((s): s is NonNullable<typeof s> => s !== null);
-        if (stubs.length > 0) {
-          await pushFiles(fullName, stubs, 'fix: generate stubs for scaffold imports', projectId);
-        }
-      } else {
+      const scaffoldGate = await buildGate(
+        fullName, projectId, project as unknown as Project, client, architecture,
+        4, 'scaffold'
+      );
+      if (scaffoldGate.passed) {
         await logger.info('Scaffold build verified successfully', 'development', projectId);
+      } else {
+        await logger.warn(`Scaffold build gate: ${scaffoldGate.errorsRemaining} errors remain after ${scaffoldGate.attemptsUsed} attempts`, 'development', projectId);
       }
     }
+
+    checkPipelineTimeout(pipelineStart);
 
     // ============================================================
     // PHASE 3: MODULE-BASED DEVELOPMENT
@@ -476,18 +636,40 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     const totalPages = (architecture.pages || []).length;
     await sendChatMessage(projectId, `Starting module-based development: ${modules.length} modules, ${totalPages} total pages.`);
 
+    const isLargeProject = totalPages > 30;
+    if (isLargeProject) {
+      await logger.info(`Large project detected (${totalPages} pages). Using conservative build intervals.`, 'development', projectId);
+    }
+
     const moduleTasks: { id: string; module: (typeof modules)[number] }[] = [];
+
+    const { data: existingTasks } = await supabase
+      .from('project_tasks')
+      .select('id, title, status')
+      .eq('project_id', projectId);
+
+    const existingTaskMap = new Map(
+      (existingTasks || []).map((t) => [t.title, t])
+    );
+
     for (let i = 0; i < modules.length; i++) {
       const mod = modules[i];
-      const { data: task } = await supabase.from('project_tasks').insert({
-        project_id: projectId,
-        title: `Build ${mod.name} module (${mod.pages.length} pages)`,
-        description: `Module: ${mod.name}\nRole: ${mod.role}\nPages: ${mod.pages.map((p) => p.name).join(', ')}`,
-        status: 'pending',
-        priority: 2,
-        order_index: i,
-      }).select('id').maybeSingle();
-      if (task) moduleTasks.push({ ...task, module: mod });
+      const taskTitle = `Build ${mod.name} module (${mod.pages.length} pages)`;
+      const existing = existingTaskMap.get(taskTitle);
+
+      if (existing) {
+        moduleTasks.push({ id: existing.id, module: mod });
+      } else {
+        const { data: task } = await supabase.from('project_tasks').insert({
+          project_id: projectId,
+          title: taskTitle,
+          description: `Module: ${mod.name}\nRole: ${mod.role}\nPages: ${mod.pages.map((p) => p.name).join(', ')}`,
+          status: 'pending',
+          priority: 2,
+          order_index: i,
+        }).select('id').maybeSingle();
+        if (task) moduleTasks.push({ ...task, module: mod });
+      }
     }
 
     const completedModuleNames = new Set(checkpoint?.modules_completed || []);
@@ -510,7 +692,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     const MAX_RECOVERY_PASSES = 2;
     const RECOVERY_COOLDOWN_MS = 65_000;
     const ABORT_FAILURE_THRESHOLD = 0.4;
-    const INTERMEDIATE_BUILD_CHECK_INTERVAL = 3;
+    const INTERMEDIATE_BUILD_CHECK_INTERVAL = isLargeProject ? 2 : 3;
     const completedModuleExports: string[] = [];
     const allExportSignatures: ExportSignature[] = [];
     let modulesSinceLastBuildCheck = 0;
@@ -521,6 +703,8 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       completedBefore: number
     ): Promise<void> {
       for (let i = 0; i < tasks.length; i += MODULE_CONCURRENCY) {
+        checkPipelineTimeout(pipelineStart);
+
         if (i > 0) {
           await new Promise((r) => setTimeout(r, INTER_BATCH_COOLDOWN_MS));
         }
@@ -603,33 +787,37 @@ export async function processBrief(projectId: string, briefId: string): Promise<
               const midDeduped = deduplicateErrors(midErrors);
               await logger.warn(`Intermediate build check: ${midDeduped.length} error(s). Fixing before next module...`, 'development', projectId);
 
-              const midRepoFiles = await getRepoTree(fullName);
-              const midCodeFiles = midRepoFiles.filter((f) => f.type === 'file' && /\.(tsx?|jsx?|css|json)$/.test(f.path));
-              const midPathsBudgeted = selectPathsWithinBudget(midCodeFiles, CONTEXT_BUDGETS.buildFix, CORE_FILE_PATTERNS);
-              const midCode = await getMultipleFileContents(fullName, midPathsBudgeted);
-              const midRelevant = filterRelevantFiles(midCode, midDeduped, CONTEXT_BUDGETS.buildFix);
-              const midAllPaths = midRepoFiles.filter((f) => f.type === 'file').map((f) => f.path);
-
               for (let midAttempt = 0; midAttempt < 2; midAttempt++) {
+                const freshRepoFiles = await getRepoTree(fullName);
+                const freshCodeFiles = freshRepoFiles.filter((f) => f.type === 'file' && /\.(tsx?|jsx?|css|json)$/.test(f.path));
+                const freshPathsBudgeted = selectPathsWithinBudget(freshCodeFiles, CONTEXT_BUDGETS.buildFix, CORE_FILE_PATTERNS);
+                const freshCode = await getMultipleFileContents(fullName, freshPathsBudgeted);
+
+                const freshBuild = midAttempt === 0 ? midBuild : await verifyBuild(fullName, projectId);
+                if (freshBuild.success) {
+                  await logger.info('Intermediate build fix succeeded', 'development', projectId);
+                  break;
+                }
+
+                const freshErrors = extractBuildErrors(freshBuild.errors || freshBuild.output);
+                const freshDeduped = deduplicateErrors(freshErrors);
+                const freshRelevant = filterRelevantFiles(freshCode, freshDeduped, CONTEXT_BUDGETS.buildFix);
+                const freshAllPaths = freshRepoFiles.filter((f) => f.type === 'file').map((f) => f.path);
+
                 const midFix = await generateBuildFix(
-                  midDeduped,
-                  (midBuild.errors || midBuild.output).slice(-8000),
+                  freshDeduped,
+                  (freshBuild.errors || freshBuild.output).slice(-12000),
                   project as unknown as Project,
                   client,
                   architecture as unknown as Record<string, unknown>,
-                  midRelevant,
+                  freshRelevant,
                   [],
                   midAttempt + 1,
                   2,
-                  { strategy: 'standard', allFilePaths: midAllPaths }
+                  { strategy: midAttempt === 0 ? 'standard' : 'simplify', allFilePaths: freshAllPaths }
                 );
                 if (midFix.files.length > 0) {
-                  await validateAndPush(fullName, midFix.files, `fix: intermediate build errors after ${batchNames}`, projectId, midAllPaths);
-                  const recheck = await verifyBuild(fullName, projectId);
-                  if (recheck.success) {
-                    await logger.info('Intermediate build fix succeeded', 'development', projectId);
-                    break;
-                  }
+                  await validateAndPush(fullName, midFix.files, `fix: intermediate build errors after ${batchNames}`, projectId, freshAllPaths);
                 } else {
                   break;
                 }
@@ -682,17 +870,23 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     for (let recoveryPass = 1; recoveryPass <= MAX_RECOVERY_PASSES; recoveryPass++) {
       const { data: failedTasks } = await supabase
         .from('project_tasks')
-        .select('id, title, description')
+        .select('id, title, description, created_at')
         .eq('project_id', projectId)
         .eq('status', 'failed');
 
-      if (!failedTasks || failedTasks.length === 0) break;
+      const currentRunTasks = (failedTasks || []).filter((ft) =>
+        moduleTasks.some((mt) => mt.id === ft.id)
+      );
 
-      await logger.info(`Recovery pass ${recoveryPass}/${MAX_RECOVERY_PASSES}: retrying ${failedTasks.length} failed module(s)`, 'development', projectId);
-      await sendChatMessage(projectId, `Retrying ${failedTasks.length} failed module(s) (recovery pass ${recoveryPass})... Waiting for rate limit window to reset.`);
+      if (currentRunTasks.length === 0) break;
+
+      await logger.info(`Recovery pass ${recoveryPass}/${MAX_RECOVERY_PASSES}: retrying ${currentRunTasks.length} failed module(s)`, 'development', projectId);
+      await sendChatMessage(projectId, `Retrying ${currentRunTasks.length} failed module(s) (recovery pass ${recoveryPass})... Waiting for rate limit window to reset.`);
       await new Promise((r) => setTimeout(r, RECOVERY_COOLDOWN_MS));
 
-      for (const failedTask of failedTasks) {
+      for (const failedTask of currentRunTasks) {
+        checkPipelineTimeout(pipelineStart);
+
         const matchingModule = moduleTasks.find((mt) => mt.id === failedTask.id);
         if (!matchingModule) continue;
 
@@ -776,7 +970,13 @@ export async function processBrief(projectId: string, briefId: string): Promise<
         `This is above the ${Math.round(ABORT_FAILURE_THRESHOLD * 100)}% threshold. ` +
         `Most likely cause: API rate limits. Please retry later or check your Anthropic rate limit tier.`
       );
-      await notifyError(project.name, `Pipeline aborted: ${failedCount}/${totalTasks} modules failed`, projectId);
+      await notifyError(project.name, `Pipeline aborted: ${failedCount}/${totalTasks} modules failed`, projectId, {
+        phase: 'development',
+        modulesCompleted: totalTasks - failedCount,
+        modulesTotal: totalTasks,
+        repoUrl: repoUrl,
+        durationMinutes: Math.round((Date.now() - pipelineStart) / 60000),
+      });
       await clearCheckpoint(projectId, 'failed');
       return;
     }
@@ -791,22 +991,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       await sendChatMessage(projectId, `Warning: ${failedCount} module(s) could not be built: ${failedModuleNames}. Continuing with available modules.`);
     }
 
-    // ============================================================
-    // PHASE 3.25: RECONCILE App.tsx ROUTES
-    // ============================================================
-
-    try {
-      const reconRepoFiles = await getRepoTree(fullName);
-      const reconPaths = reconRepoFiles.filter((f) => f.type === 'file').map((f) => f.path);
-      const existingAppContent = await getFileContent(fullName, 'src/App.tsx');
-      const reconciledApp = reconcileAppRoutes(reconPaths, architecture.pages || [], existingAppContent || undefined);
-      if (reconciledApp) {
-        await pushFiles(fullName, [reconciledApp], 'fix: reconcile App.tsx routes with actual page files', projectId);
-        await logger.info('Reconciled App.tsx routes with actual page files (structure preserved)', 'development', projectId);
-      }
-    } catch (err) {
-      await logger.warn(`App.tsx reconciliation failed (non-critical): ${err instanceof Error ? err.message : String(err)}`, 'development', projectId);
-    }
+    checkPipelineTimeout(pipelineStart);
 
     // ============================================================
     // PHASE 3.5: COMPLETENESS CHECK (multi-pass)
@@ -820,6 +1005,16 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     for (let completenessPass = 0; completenessPass < MAX_COMPLETENESS_PASSES; completenessPass++) {
       try {
         const allRepoFiles = await getRepoTree(fullName);
+        const allRepoFilePaths = allRepoFiles.filter((f) => f.type === 'file').map((f) => f.path);
+
+        const appTsxContent = await getFileContent(fullName, 'src/App.tsx');
+        const progCheck = programmaticCompletenessCheck(architecture, allRepoFilePaths, appTsxContent);
+        const progIssues = progCheck.missingPageFiles.length + progCheck.brokenImports.length + progCheck.missingRoutes.length;
+
+        if (progIssues > 0) {
+          await logger.info(`Programmatic completeness: ${progCheck.missingPageFiles.length} missing pages, ${progCheck.brokenImports.length} broken imports, ${progCheck.missingRoutes.length} missing routes`, 'development', projectId);
+        }
+
         const allCodeFiles = allRepoFiles.filter(
           (f) => f.type === 'file' && /\.(tsx?|jsx?|css|json)$/.test(f.path)
         );
@@ -833,24 +1028,29 @@ export async function processBrief(projectId: string, briefId: string): Promise<
         const completeness = await verifyProjectCompleteness(architecture, allCode, projectId);
         const totalIssues = completeness.missingFiles.length + completeness.brokenImports.length + completeness.missingRoutes.length;
 
-        if (totalIssues === 0) {
+        if (totalIssues === 0 && progIssues === 0) {
           await sendChatMessage(projectId, completenessPass === 0
             ? 'All pages accounted for. No missing routes or broken imports.'
             : `Completeness verified after ${completenessPass} fix pass(es).`);
           break;
         }
 
-        await sendChatMessage(projectId, `Found ${totalIssues} completeness issue(s) (pass ${completenessPass + 1}). Auto-fixing...`);
-        await logger.info(`Completeness issues: ${totalIssues} (${completeness.missingFiles.length} missing, ${completeness.brokenImports.length} broken imports, ${completeness.missingRoutes.length} missing routes)`, 'development', projectId);
+        const combinedMissing = Array.from(new Set([
+          ...completeness.missingFiles,
+          ...progCheck.missingPageFiles.map((p) => `src/pages/${p}.tsx`),
+        ]));
+
+        await sendChatMessage(projectId, `Found ${Math.max(totalIssues, progIssues)} completeness issue(s) (pass ${completenessPass + 1}). Auto-fixing...`);
+        await logger.info(`Completeness issues: ${combinedMissing.length} missing, ${completeness.brokenImports.length} broken imports, ${completeness.missingRoutes.length} missing routes`, 'development', projectId);
 
         if (completeness.fixFiles.length > 0) {
           const compAllPaths = allRepoFiles.filter((f) => f.type === 'file').map((f) => f.path);
           await validateAndPush(fullName, completeness.fixFiles, `fix: resolve completeness issues (pass ${completenessPass + 1})`, projectId, compAllPaths);
         }
 
-        if (completeness.missingFiles.length > 0) {
+        if (combinedMissing.length > 0) {
           const BATCH_SIZE = 5;
-          const missingPages = completeness.missingFiles
+          const missingPages = combinedMissing
             .map((f) => f.replace(/^src\/pages\//, '').replace(/\.tsx$/, ''))
             .filter((f) => f.length > 0);
 
@@ -891,6 +1091,8 @@ export async function processBrief(projectId: string, briefId: string): Promise<
               );
               if (codeResult.files.length > 0) {
                 await validateAndPush(fullName, codeResult.files, `fix: generate missing pages (${batch.join(', ')})`, projectId, allPaths);
+                const newSigs = extractExportSignatures(codeResult.files);
+                allExportSignatures.push(...newSigs);
               }
             } catch (err) {
               await logger.warn(`Failed to generate missing pages batch: ${err instanceof Error ? err.message : String(err)}`, 'development', projectId);
@@ -908,107 +1110,39 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     }
 
     // ============================================================
-    // BUILD VERIFICATION (with cycle detection)
+    // PHASE 3.75: RECONCILE App.tsx ROUTES (AFTER completeness)
+    // ============================================================
+
+    try {
+      const reconRepoFiles = await getRepoTree(fullName);
+      const reconPaths = reconRepoFiles.filter((f) => f.type === 'file').map((f) => f.path);
+      const existingAppContent = await getFileContent(fullName, 'src/App.tsx');
+      const reconciledApp = reconcileAppRoutes(reconPaths, architecture.pages || [], existingAppContent || undefined);
+      if (reconciledApp) {
+        await pushFiles(fullName, [reconciledApp], 'fix: reconcile App.tsx routes with actual page files', projectId);
+        await logger.info('Reconciled App.tsx routes with actual page files (structure preserved)', 'development', projectId);
+      }
+    } catch (err) {
+      await logger.warn(`App.tsx reconciliation failed (non-critical): ${err instanceof Error ? err.message : String(err)}`, 'development', projectId);
+    }
+
+    // ============================================================
+    // PHASE 4: BUILD VERIFICATION (with cycle detection)
     // ============================================================
 
     await sendChatMessage(projectId, 'Verifying build before deployment...');
     await logger.info('Verifying build', 'development', projectId);
-    await updateProject(projectId, { progress: 72 });
+    await updateProject(projectId, { current_phase: 'build_verification', progress: 72 });
 
-    let buildPassed = false;
-    const previousAttempts: BuildFixAttempt[] = [];
-    const strategies: Array<'standard' | 'simplify' | 'regenerate' | 'isolate'> = [
-      'standard', 'standard', 'simplify', 'simplify', 'regenerate', 'regenerate', 'isolate', 'isolate',
-    ];
-    let duplicateCount = 0;
+    const finalGate = await buildGate(
+      fullName, projectId, project as unknown as Project, client, architecture,
+      config.max_corrections, 'final-build'
+    );
 
-    for (let attempt = 1; attempt <= config.max_corrections + 1; attempt++) {
-      const buildResult = await verifyBuild(fullName, projectId);
-      if (buildResult.success) {
-        buildPassed = true;
-        await sendChatMessage(projectId, attempt === 1 ? 'Build verified successfully.' : `Build verified after ${attempt - 1} fix(es).`);
-        break;
-      }
+    let buildPassed = finalGate.passed;
 
-      if (attempt > config.max_corrections) break;
-
-      const rawBuildErrors = extractBuildErrors(buildResult.errors || buildResult.output);
-      const buildErrors = deduplicateErrors(rawBuildErrors);
-      const errorHash = hashErrors(buildErrors);
-
-      const isDuplicate = previousAttempts.some((a) => a.errorHash === errorHash);
-      let forceOpus = false;
-      let strategy = strategies[Math.min(attempt - 1, strategies.length - 1)];
-
-      if (isDuplicate) {
-        duplicateCount++;
-        forceOpus = true;
-        strategy = duplicateCount >= 3 ? 'isolate' : duplicateCount >= 2 ? 'regenerate' : 'simplify';
-        await sendChatMessage(projectId, `Same errors persisting. Switching to ${strategy} strategy with Opus model...`);
-        await logger.warn(`Duplicate error hash #${duplicateCount}, escalating to Opus + ${strategy}`, 'development', projectId);
-      }
-
-      previousAttempts.push({
-        errorHash,
-        attempt,
-        errorsText: buildErrors.slice(0, 10).join('\n'),
-      });
-
-      await sendChatMessage(projectId, `Build failed (attempt ${attempt}/${config.max_corrections}): ${rawBuildErrors.length} error(s) (${buildErrors.length} root causes). Auto-fixing (${strategy})...`);
-
-      const allRepoFiles = await getRepoTree(fullName);
-      const buildFixCodeFiles = allRepoFiles.filter(
-        (f) => f.type === 'file' && /\.(tsx?|jsx?|css|json)$/.test(f.path)
-      );
-      const buildFixPathsBudgeted = selectPathsWithinBudget(
-        buildFixCodeFiles,
-        CONTEXT_BUDGETS.buildFix,
-        CORE_FILE_PATTERNS
-      );
-      const allCode = await getMultipleFileContents(fullName, buildFixPathsBudgeted);
-
-      const relevantFiles = filterRelevantFiles(allCode, buildErrors, CONTEXT_BUDGETS.buildFix);
-      const allFilePathsList = allRepoFiles.filter((f) => f.type === 'file').map((f) => f.path);
-      await logger.info(`Build fix context: ${relevantFiles.length}/${allCode.length} relevant files`, 'development', projectId);
-
-      const fixResult = await generateBuildFix(
-        buildErrors,
-        (buildResult.errors || buildResult.output).slice(-12000),
-        project as unknown as Project,
-        client,
-        architecture as unknown as Record<string, unknown>,
-        relevantFiles,
-        previousAttempts,
-        attempt,
-        config.max_corrections,
-        { forceOpus, strategy, allFilePaths: allFilePathsList }
-      );
-
-      if (fixResult.files.length > 0) {
-        await validateAndPush(fullName, fixResult.files, `fix: resolve build errors (attempt ${attempt}, ${strategy})`, projectId, allFilePathsList);
-      } else {
-        const stubs = buildErrors
-          .map((e) => generateStubForMissingImport(e, allFilePathsList))
-          .filter((s): s is NonNullable<typeof s> => s !== null);
-
-        if (stubs.length > 0) {
-          await pushFiles(fullName, stubs, `fix: generate stubs for missing modules (attempt ${attempt})`, projectId);
-          await logger.info(`Generated ${stubs.length} stub(s) for missing imports`, 'development', projectId);
-          continue;
-        }
-
-        const reconPaths = allRepoFiles.filter((f) => f.type === 'file').map((f) => f.path);
-        const fallbackAppContent = await getFileContent(fullName, 'src/App.tsx');
-        const reconciledApp = reconcileAppRoutes(reconPaths, architecture.pages || [], fallbackAppContent || undefined);
-        if (reconciledApp) {
-          await pushFiles(fullName, [reconciledApp], `fix: re-reconcile App.tsx routes (attempt ${attempt})`, projectId);
-          await logger.info('Re-reconciled App.tsx as fallback fix (structure preserved)', 'development', projectId);
-          continue;
-        }
-
-        await logger.warn('No fix generated and no fallback available, stopping build loop', 'development', projectId);
-        break;
-      }
+    if (buildPassed) {
+      await sendChatMessage(projectId, finalGate.attemptsUsed === 1 ? 'Build verified successfully.' : `Build verified after ${finalGate.attemptsUsed - 1} fix(es).`);
     }
 
     if (!buildPassed) {
@@ -1035,9 +1169,27 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
     if (!buildPassed) {
       await supabase.from('briefs').update({ status: 'failed' }).eq('id', briefId);
-      await updateProject(projectId, { agent_status: 'idle', last_error_message: 'Build failed after max correction attempts' });
-      await sendChatMessage(projectId, `Build failed after ${config.max_corrections} attempts. The repo is available at ${repoUrl} for manual fixes.`);
-      await notifyError(project.name, 'Build failed after max correction attempts', projectId);
+      await updateProject(projectId, {
+        agent_status: 'idle',
+        current_phase: 'failed',
+        last_error_message: `Build failed after ${config.max_corrections} correction attempts (${finalGate.errorsRemaining} errors remaining)`,
+      });
+      await sendChatMessage(projectId, `Build failed after ${config.max_corrections} attempts (${finalGate.errorsRemaining} errors remaining). The repo is available at ${repoUrl} for manual fixes.`);
+      await notifyError(
+        project.name,
+        `Build failed after ${config.max_corrections} attempts. ${finalGate.errorsRemaining} errors remaining. Repo: ${repoUrl}`,
+        projectId,
+        {
+          phase: 'build_verification',
+          modulesCompleted: completedModuleExports.length,
+          modulesTotal: modules.length,
+          buildErrors: finalGate.errorsRemaining,
+          repoUrl: repoUrl,
+          durationMinutes: Math.round((Date.now() - pipelineStart) / 60000),
+          strategy: finalGate.lastStrategy,
+        }
+      );
+      await clearCheckpoint(projectId, 'failed');
       return;
     }
 
@@ -1047,15 +1199,16 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       await sendChatMessage(projectId, `Build verified successfully. Auto-deploy is disabled. Repo: ${repoUrl}\nReady for manual deployment.`);
       await notifyBuildComplete(project.name, repoUrl, projectId);
       await logger.success('Brief processing complete (deploy skipped per config)', 'development', projectId);
+      await clearCheckpoint(projectId, 'completed');
       return;
     }
 
     // ============================================================
-    // PHASE 4: DEPLOYMENT
+    // PHASE 5: DEPLOYMENT
     // ============================================================
 
     await updateProject(projectId, { current_phase: 'deployment', progress: 80 });
-    await logger.info('Phase 4: Deploying to Vercel', 'deployment', projectId);
+    await logger.info('Phase 5: Deploying to Vercel', 'deployment', projectId);
     await sendChatMessage(projectId, 'Deploying to Vercel...');
 
     const vercelProjectId = await createVercelProject(repoName, fullName, projectId);
@@ -1064,15 +1217,19 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     if (architecture.requiresBackend) {
       const { data: freshProject } = await supabase
         .from('projects')
-        .select('supabase_url, supabase_anon_key')
+        .select('supabase_url, supabase_anon_key, supabase_service_role_key')
         .eq('id', projectId)
         .maybeSingle();
 
       if (freshProject?.supabase_url) {
-        await setEnvironmentVariables(vercelProjectId, [
+        const envVars: { key: string; value: string }[] = [
           { key: 'VITE_SUPABASE_URL', value: freshProject.supabase_url },
           { key: 'VITE_SUPABASE_ANON_KEY', value: freshProject.supabase_anon_key || '' },
-        ], projectId);
+        ];
+        if (freshProject.supabase_service_role_key) {
+          envVars.push({ key: 'SUPABASE_SERVICE_ROLE_KEY', value: freshProject.supabase_service_role_key });
+        }
+        await setEnvironmentVariables(vercelProjectId, envVars, projectId);
         await logger.info('Set Supabase env vars on Vercel project', 'deployment', projectId);
       }
     }
@@ -1095,7 +1252,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
     if (result.status !== 'ready') {
       await supabase.from('briefs').update({ status: 'failed' }).eq('id', briefId);
-      await updateProject(projectId, { agent_status: 'idle', last_error_message: result.buildLogs || 'Deployment failed' });
+      await updateProject(projectId, { agent_status: 'idle', current_phase: 'failed', last_error_message: result.buildLogs || 'Deployment failed' });
       await sendChatMessage(projectId, `Deployment failed: ${result.buildLogs || 'Unknown error'}. Check the logs.`);
       await notifyError(project.name, result.buildLogs || 'Deployment failed', projectId);
       await clearCheckpoint(projectId, 'failed');
@@ -1106,7 +1263,6 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     await sendChatMessage(projectId, `Deployed successfully: ${result.url}`);
     await notifyDeploySuccess(project.name, result.url, projectId);
 
-    // Custom domain setup
     const demoSubdomain = clientSlug;
     const demoDomain = `${demoSubdomain}.obzide.com`;
     const cnameSet = await setCnameRecord('obzide.com', demoSubdomain, 'cname.vercel-dns.com', projectId);
@@ -1137,14 +1293,14 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     }
 
     // ============================================================
-    // PHASE 5: QA
+    // PHASE 6: QA
     // ============================================================
 
     const pages = architecture.pages || [];
 
     if (config.auto_qa && result.url) {
       await updateProject(projectId, { current_phase: 'qa' });
-      await logger.info('Phase 5: Multi-viewport QA', 'qa', projectId);
+      await logger.info('Phase 6: Multi-viewport QA', 'qa', projectId);
       await sendChatMessage(projectId, 'Running multi-viewport QA (desktop, tablet, mobile)...');
 
       let qaVersion = 1;
@@ -1155,23 +1311,39 @@ export async function processBrief(projectId: string, briefId: string): Promise<
         qaVersion
       );
 
+      const QA_BATCH_SIZE = 5;
+
       for (let qaAttempt = 0; qaAttempt < config.max_corrections; qaAttempt++) {
         const failedPages: { pageName: string; issues: string[]; score: number }[] = [];
 
-        for (const ss of screenshotResults) {
-          const pageArch = pages.find((p) => p.name === ss.pageName);
-          const qaResult = await analyzeScreenshotAllViewports(
-            { desktop: ss.desktopUrl, tablet: ss.tabletUrl, mobile: ss.mobileUrl },
-            ss.pageName,
-            pageArch?.description || ss.pageName,
-            projectId
+        for (let ssIdx = 0; ssIdx < screenshotResults.length; ssIdx += QA_BATCH_SIZE) {
+          const ssBatch = screenshotResults.slice(ssIdx, ssIdx + QA_BATCH_SIZE);
+          const batchResults = await Promise.all(
+            ssBatch.map(async (ss) => {
+              const pageArch = pages.find((p) => p.name === ss.pageName);
+              return {
+                ss,
+                result: await analyzeScreenshotAllViewports(
+                  { desktop: ss.desktopUrl, tablet: ss.tabletUrl, mobile: ss.mobileUrl },
+                  ss.pageName,
+                  pageArch?.description || ss.pageName,
+                  projectId
+                ),
+              };
+            })
           );
 
-          if (!qaResult.overallPass) {
-            const allIssues = qaResult.viewports.flatMap(
-              (v) => v.issues.map((issue) => `[${v.viewport}] ${issue}`)
-            );
-            failedPages.push({ pageName: ss.pageName, issues: allIssues, score: qaResult.overallScore });
+          for (const { ss, result: qaResult } of batchResults) {
+            if (!qaResult.overallPass) {
+              const allIssues = qaResult.viewports.flatMap(
+                (v) => v.issues.map((issue) => `[${v.viewport}] ${issue}`)
+              );
+              failedPages.push({ pageName: ss.pageName, issues: allIssues, score: qaResult.overallScore });
+            }
+          }
+
+          if (ssIdx + QA_BATCH_SIZE < screenshotResults.length) {
+            await new Promise((r) => setTimeout(r, 3000));
           }
         }
 
@@ -1233,6 +1405,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
             );
           } else {
             await logger.warn('Redeploy failed during QA correction', 'qa', projectId);
+            await sendChatMessage(projectId, 'QA correction deployment failed. Sending current state to human QA.');
             break;
           }
         } else {
@@ -1271,7 +1444,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     try {
       await supabase.from('briefs').update({ status: 'failed' }).eq('id', briefId);
       await logger.error(`Brief processing failed: ${errMsg}`, 'development', projectId);
-      await updateProject(projectId, { agent_status: 'idle', last_error_message: errMsg });
+      await updateProject(projectId, { agent_status: 'idle', current_phase: 'failed', last_error_message: errMsg });
       await sendChatMessage(projectId, `An error occurred: ${errMsg}`);
       await clearCheckpoint(projectId, 'failed');
       const { data: proj } = await supabase.from('projects').select('name').eq('id', projectId).maybeSingle();
@@ -1280,6 +1453,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       console.error('Error in brief-processing catch block:', innerErr);
       try { await supabase.from('briefs').update({ status: 'failed' }).eq('id', briefId); } catch { /* ignore */ }
       try { await supabase.from('projects').update({ agent_status: 'idle', last_error_message: errMsg }).eq('id', projectId); } catch { /* ignore */ }
+      try { await clearCheckpoint(projectId, 'failed'); } catch { /* ignore */ }
     }
   }
 }

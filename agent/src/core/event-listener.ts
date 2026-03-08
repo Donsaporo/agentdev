@@ -17,6 +17,9 @@ const briefRetryCount = new Map<string, number>();
 const MAX_BRIEF_RETRIES = 2;
 
 const channelReconnectState: Map<string, { timer: NodeJS.Timeout | null; attempt: number }> = new Map();
+let lastBriefsEventTime = new Date().toISOString();
+let lastMessagesEventTime = new Date().toISOString();
+let lastQAEventTime = new Date().toISOString();
 
 export function setEventHandler(fn: EventHandler): void {
   handler = fn;
@@ -144,6 +147,97 @@ function stopAllChannels(): void {
   }
 }
 
+async function replayMissedBriefs(): Promise<void> {
+  try {
+    const supabase = getSupabase();
+    const { data: missed } = await supabase
+      .from('briefs')
+      .select('id, project_id, status, updated_at')
+      .eq('status', 'in_progress')
+      .gt('updated_at', lastBriefsEventTime);
+
+    if (missed && missed.length > 0) {
+      logger.info(`Replaying ${missed.length} missed brief event(s)`, 'system');
+      for (const brief of missed) {
+        enqueue({
+          type: 'brief_approved',
+          projectId: brief.project_id,
+          payload: { briefId: brief.id },
+          timestamp: Date.now(),
+        });
+      }
+    }
+    lastBriefsEventTime = new Date().toISOString();
+  } catch (err) {
+    logger.warn(`Brief replay failed: ${err instanceof Error ? err.message : String(err)}`, 'system');
+  }
+}
+
+async function replayMissedMessages(): Promise<void> {
+  try {
+    const supabase = getSupabase();
+    const { data: missed } = await supabase
+      .from('agent_messages')
+      .select('id, conversation_id, role, content, created_at')
+      .eq('role', 'user')
+      .gt('created_at', lastMessagesEventTime)
+      .order('created_at', { ascending: true });
+
+    if (missed && missed.length > 0) {
+      logger.info(`Replaying ${missed.length} missed chat message(s)`, 'system');
+      for (const msg of missed) {
+        const { data: conv } = await supabase
+          .from('agent_conversations')
+          .select('project_id')
+          .eq('id', msg.conversation_id)
+          .maybeSingle();
+
+        if (conv) {
+          enqueue({
+            type: 'chat_message',
+            projectId: conv.project_id,
+            payload: { messageId: msg.id, conversationId: msg.conversation_id, content: msg.content },
+            timestamp: Date.now(),
+          });
+        }
+      }
+    }
+    lastMessagesEventTime = new Date().toISOString();
+  } catch (err) {
+    logger.warn(`Message replay failed: ${err instanceof Error ? err.message : String(err)}`, 'system');
+  }
+}
+
+async function replayMissedQA(): Promise<void> {
+  try {
+    const supabase = getSupabase();
+    const { data: missed } = await supabase
+      .from('qa_screenshots')
+      .select('id, project_id, status, rejection_notes, page_name, updated_at')
+      .eq('status', 'rejected')
+      .gt('updated_at', lastQAEventTime);
+
+    if (missed && missed.length > 0) {
+      logger.info(`Replaying ${missed.length} missed QA rejection(s)`, 'system');
+      for (const ss of missed) {
+        enqueue({
+          type: 'qa_rejected',
+          projectId: ss.project_id,
+          payload: {
+            screenshotId: ss.id,
+            pageName: ss.page_name,
+            rejectionNotes: ss.rejection_notes,
+          },
+          timestamp: Date.now(),
+        });
+      }
+    }
+    lastQAEventTime = new Date().toISOString();
+  } catch (err) {
+    logger.warn(`QA replay failed: ${err instanceof Error ? err.message : String(err)}`, 'system');
+  }
+}
+
 function createMessagesChannel(): RealtimeChannel {
   const supabase = getSupabase();
   const channelName = 'agent-messages';
@@ -157,6 +251,7 @@ function createMessagesChannel(): RealtimeChannel {
         table: 'agent_messages',
       },
       async (payload) => {
+        lastMessagesEventTime = new Date().toISOString();
         const msg = payload.new as { id: string; conversation_id: string; role: string; content: string };
         if (msg.role !== 'user') return;
 
@@ -179,7 +274,11 @@ function createMessagesChannel(): RealtimeChannel {
     .subscribe((status) => {
       console.log(`[${channelName}] Status: ${status}`);
       if (status === 'SUBSCRIBED') {
+        const wasReconnect = (channelReconnectState.get(channelName)?.attempt || 0) > 0;
         resetReconnectState(channelName);
+        if (wasReconnect) {
+          replayMissedMessages();
+        }
         logger.info('Messages channel subscribed', 'system');
       } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
         logger.warn(`Messages channel ${status}`, 'system');
@@ -201,6 +300,7 @@ function createBriefsChannel(): RealtimeChannel {
         table: 'briefs',
       },
       (payload) => {
+        lastBriefsEventTime = new Date().toISOString();
         const brief = payload.new as { id: string; project_id: string; status: string };
         const oldBrief = payload.old as { status?: string } | undefined;
         const previousStatus = oldBrief?.status;
@@ -218,7 +318,11 @@ function createBriefsChannel(): RealtimeChannel {
     .subscribe((status) => {
       console.log(`[${channelName}] Status: ${status}`);
       if (status === 'SUBSCRIBED') {
+        const wasReconnect = (channelReconnectState.get(channelName)?.attempt || 0) > 0;
         resetReconnectState(channelName);
+        if (wasReconnect) {
+          replayMissedBriefs();
+        }
       } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
         logger.warn(`Briefs channel ${status}`, 'system');
         scheduleChannelReconnect(channelName, createBriefsChannel);
@@ -239,6 +343,7 @@ function createQAChannel(): RealtimeChannel {
         table: 'qa_screenshots',
       },
       (payload) => {
+        lastQAEventTime = new Date().toISOString();
         const screenshot = payload.new as { id: string; project_id: string; status: string; rejection_notes: string; page_name: string };
         if (screenshot.status === 'rejected') {
           enqueue({
@@ -257,7 +362,11 @@ function createQAChannel(): RealtimeChannel {
     .subscribe((status) => {
       console.log(`[${channelName}] Status: ${status}`);
       if (status === 'SUBSCRIBED') {
+        const wasReconnect = (channelReconnectState.get(channelName)?.attempt || 0) > 0;
         resetReconnectState(channelName);
+        if (wasReconnect) {
+          replayMissedQA();
+        }
       } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
         logger.warn(`QA channel ${status}`, 'system');
         scheduleChannelReconnect(channelName, createQAChannel);

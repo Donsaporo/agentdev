@@ -177,6 +177,7 @@ function parseCodeBlocks(text: string): GeneratedFile[] {
     /```(?:\w+)?\s*\n\/\/\s*FILE:\s*(.+?)\n([\s\S]*?)```/g,
     /---\s*(\S+)\s*---\n```(?:\w+)?\n([\s\S]*?)```/g,
     /```(?:\w+)?\s*\n\/\*\s*FILE:\s*(.+?)\s*\*\/\n([\s\S]*?)```/g,
+    /<file\s+path=["']([^"']+)["']\s*>\s*\n?([\s\S]*?)<\/file>/g,
   ];
 
   for (const regex of patterns) {
@@ -188,7 +189,6 @@ function parseCodeBlocks(text: string): GeneratedFile[] {
         seen.add(path);
       }
     }
-    if (files.length > 0) return files;
   }
 
   return files;
@@ -753,44 +753,56 @@ AUTH INTEGRATION:
   const systemPrompt = `You are a senior full-stack developer at Obzide Tech building production websites.
 Generate a complete project scaffold with all configuration, shared components, and infrastructure.
 
-THINK BEFORE CODING:
-1. Review the architecture plan - identify ALL files needed
-2. Plan the component hierarchy and shared styles
-3. Ensure brand colors and fonts are properly configured
-4. Plan responsive breakpoints and animation approach
-5. Ensure package.json has CORRECT dependency versions
+ENVIRONMENT CONSTRAINTS (CRITICAL - violating these causes build failures):
+- Target: Vite 5.x + React 18 + TypeScript 5.x
+- Node compatibility: ES2020+ modules only
+- ALLOWED dependencies (do NOT add ANY others):
+  react, react-dom, react-router-dom, lucide-react, date-fns${hasBackend ? ', @supabase/supabase-js' : ''}
+- ALLOWED devDependencies:
+  vite, @vitejs/plugin-react, typescript, tailwindcss, postcss, autoprefixer, @types/react, @types/react-dom
+- FORBIDDEN packages (NEVER include): react-native, expo, @emotion/*, styled-components, @mui/*, antd, @chakra-ui/*, next, gatsby, axios, lodash, moment, @headlessui/*, @radix-ui/*
+- Import rules: use RELATIVE paths only (./  ../) - NO @/ aliases
+- All component files: .tsx extension
+- All non-JSX files: .ts extension
+
+EXACT DEPENDENCY VERSIONS (use these exactly in package.json):
+"react": "^18.3.1", "react-dom": "^18.3.1", "react-router-dom": "^7.1.0"
+"lucide-react": "^0.344.0", "date-fns": "^4.1.0"${hasBackend ? '\n"@supabase/supabase-js": "^2.57.4"' : ''}
+"vite": "^5.4.2", "@vitejs/plugin-react": "^4.3.1", "typescript": "^5.5.3"
+"tailwindcss": "^3.4.1", "postcss": "^8.4.35", "autoprefixer": "^10.4.18"
+
+EXACT DIRECTORY STRUCTURE:
+src/
+  main.tsx            (entry point with BrowserRouter${hasBackend ? ', AuthProvider' : ''})
+  App.tsx             (ALL routes defined here, imports ALL page components)
+  index.css           (Tailwind directives + custom CSS)
+  vite-env.d.ts       (Vite type declarations)
+  components/         (shared reusable components: Layout, Navbar, Footer, etc.)
+  pages/              (ONE file per route, each with default export)
+  lib/                (${hasBackend ? 'supabase client, types, api helpers' : 'mock data, types, utilities'})
+  contexts/           (React contexts${hasBackend ? ': AuthContext' : ''})
+  hooks/              (custom hooks)
 
 FILE OUTPUT FORMAT:
 - Every file MUST start with: // FILE: path/to/file.ext
-- Wrap each file in a code block
+- Wrap each file in a fenced code block
 - Use the exact path relative to project root
 
-REQUIRED FILES:
-- package.json (MUST include: react, react-dom, react-router-dom, lucide-react, tailwindcss, postcss, autoprefixer, @vitejs/plugin-react, vite, typescript${hasBackend ? ', @supabase/supabase-js' : ''})
-- package.json MUST have scripts: {"dev": "vite", "build": "vite build", "preview": "vite preview"}
+REQUIRED FILES (generate ALL of these):
+- package.json (scripts: {"dev": "vite", "build": "vite build", "preview": "vite preview"})
 - vite.config.ts
 - tsconfig.json, tsconfig.app.json, tsconfig.node.json
-- tailwind.config.js (with brand colors as custom theme colors)
+- tailwind.config.js (brand colors as custom theme colors)
 - postcss.config.js
 - index.html (with Google Fonts link if custom fonts specified)
-- src/main.tsx (with BrowserRouter, ${hasBackend ? 'AuthProvider wrapping everything' : 'AppProvider if using context'})
-- src/App.tsx (with routes for ALL ${(architecture.pages || []).length} pages from the architecture)
+- src/main.tsx
+- src/App.tsx (routes for ALL ${(architecture.pages || []).length} pages)
 - src/index.css (Tailwind directives + custom fonts + base styles + scroll animations)
 - src/components/Layout.tsx (shared layout with nav + footer, responsive hamburger)
-- src/components/Navbar.tsx (sticky, responsive, brand-colored${hasBackend ? ', auth-aware with role-based navigation' : ''})
+- src/components/Navbar.tsx (sticky, responsive, brand-colored${hasBackend ? ', auth-aware with role-based nav' : ''})
 - src/components/Footer.tsx (professional with links, social, copyright)
 ${backendFiles}
-- One STUB file per page in src/pages/ (each page file should export a functional component with realistic placeholder content indicating what will be built)
-
-CRITICAL RULES:
-- NEVER use React Native, Expo, or any mobile-native libraries
-- NEVER include react-native or expo in package.json
-- package.json dependencies must be REAL npm packages with valid versions
-- Use "react": "^18.3.1", "react-dom": "^18.3.1", "react-router-dom": "^7.1.0"
-- Use "lucide-react": "^0.344.0", "tailwindcss": "^3.4.1"${hasBackend ? ', "@supabase/supabase-js": "^2.57.4"' : ''}
-- Use "@vitejs/plugin-react": "^4.3.1", "vite": "^5.4.2", "typescript": "^5.5.3"
-- Every page component must be exported as default
-- App.tsx must import ALL page components and define routes for them
+- One STUB file per page in src/pages/ (default export, realistic placeholder content)
 ${authInstructions}
 
 DESIGN RULES:
@@ -841,33 +853,49 @@ export async function generateDatabaseSchema(
 
   const systemPrompt = `You are a senior database architect generating PostgreSQL migrations for a Supabase project.
 
-RULES:
-- Generate CREATE TABLE statements for ALL data models
+STRUCTURE (output SQL in this EXACT order):
+1. Helper functions (updated_at trigger function)
+2. CREATE TABLE statements (dependency order: independent tables first, then dependent tables)
+3. ALTER TABLE ENABLE ROW LEVEL SECURITY for each table
+4. CREATE INDEX statements
+5. RLS policies for each table
+6. Storage bucket creation (if needed)
+7. Seed data (last, after all DDL)
+
+TABLE RULES:
 - Use uuid PRIMARY KEY DEFAULT gen_random_uuid() for id columns
 - Use timestamptz DEFAULT now() for created_at columns
 - Add updated_at timestamptz DEFAULT now() where appropriate
-- Add proper FOREIGN KEY constraints
-- Add indexes on frequently queried columns (foreign keys, status fields)
-- Enable RLS on EVERY table: ALTER TABLE tablename ENABLE ROW LEVEL SECURITY;
-- Create RLS policies based on the rls rules provided for each model
-- Use auth.uid() for user ownership checks
-- Add a trigger function for auto-updating updated_at columns
-- Generate realistic seed data (10-20 rows per table) unless the brief says "demo" or seed data is inappropriate
-- DO NOT wrap in transaction blocks (no BEGIN/COMMIT/ROLLBACK)
+- Add proper FOREIGN KEY constraints with ON DELETE CASCADE or SET NULL as appropriate
+- Add indexes on all foreign key columns and frequently queried columns (status fields, email, etc.)
+- Enable RLS on EVERY table
 - Use IF NOT EXISTS on ALL CREATE TABLE and CREATE INDEX statements
-- Create tables in DEPENDENCY ORDER: tables with no foreign keys first, then tables that reference them
-- ONLY reference tables that exist in the provided DATA MODELS list or are Supabase system tables (auth.users, storage.objects, storage.buckets)
-- Do NOT create a "profiles" table unless it is EXPLICITLY listed in the data models below
-- The ONLY valid table names you may create are: ${dataModelNames.join(', ')}
+- Create tables in DEPENDENCY ORDER: independent tables first, referencing tables after
+- ONLY create tables from this list: ${dataModelNames.join(', ')}
+- Do NOT create a "profiles" table unless explicitly listed above
+- ONLY reference tables from this list or Supabase system tables (auth.users, storage.objects, storage.buckets)
 
 RLS POLICY SYNTAX (CRITICAL - follow exactly):
-- For SELECT policies: CREATE POLICY "name" ON table FOR SELECT TO authenticated USING (condition);
-- For INSERT policies: CREATE POLICY "name" ON table FOR INSERT TO authenticated WITH CHECK (condition);  -- NEVER use USING for INSERT
-- For UPDATE policies: CREATE POLICY "name" ON table FOR UPDATE TO authenticated USING (condition) WITH CHECK (condition);
-- For DELETE policies: CREATE POLICY "name" ON table FOR DELETE TO authenticated USING (condition);
-- In policy conditions, ONLY reference columns that you defined in the CREATE TABLE statement for that table
-- Do NOT reference columns that do not exist in the table definition
-- Do NOT use FOR ALL -- always use separate SELECT/INSERT/UPDATE/DELETE policies
+- SELECT: CREATE POLICY "name" ON table FOR SELECT TO authenticated USING (condition);
+- INSERT: CREATE POLICY "name" ON table FOR INSERT TO authenticated WITH CHECK (condition);  -- NEVER use USING for INSERT
+- UPDATE: CREATE POLICY "name" ON table FOR UPDATE TO authenticated USING (condition) WITH CHECK (condition);
+- DELETE: CREATE POLICY "name" ON table FOR DELETE TO authenticated USING (condition);
+- ONLY reference columns that exist in the CREATE TABLE definition for that table
+- Do NOT use FOR ALL -- always separate into SELECT/INSERT/UPDATE/DELETE
+
+SEED DATA RULES (CRITICAL):
+- Use gen_random_uuid() for ALL id values in INSERT statements (NEVER hardcode UUIDs)
+- NEVER insert rows into auth.users -- that table is managed by Supabase Auth and is EMPTY at migration time
+- For tables with a user_id FK to auth.users: SKIP seed data entirely (no users exist yet)
+- For tables WITHOUT user_id references: generate 5-15 realistic rows with meaningful content
+- Wrap seed data in DO $$ blocks to prevent duplicates on re-run:
+  DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM table_name LIMIT 1) THEN INSERT INTO ... END IF; END $$;
+- NEVER use lorem ipsum -- generate realistic domain-appropriate content
+
+FORBIDDEN:
+- DO NOT wrap in transaction blocks (no BEGIN/COMMIT/ROLLBACK at the top level)
+- DO NOT create triggers or functions that reference non-existent tables
+- DO NOT use FOR ALL in policies
 
 Output ONLY raw SQL, no markdown wrapping, no explanations.`;
 
@@ -1099,22 +1127,26 @@ You are building ALL pages in this module together to ensure consistency.
 MODULE: ${module.name} (${module.pages.length} pages)
 ROLE: ${module.role}
 
-THINK BEFORE CODING:
-1. Study the existing components to match patterns exactly
-2. Plan shared state/hooks within this module
-3. Plan consistent styling across all pages in this module
-4. Ensure forms have real validation and call real API functions
-5. Ensure tables have search, filter, and pagination
-
-FILE OUTPUT FORMAT:
-- Every file MUST start with: // FILE: path/to/file.ext
-- Wrap each file in a code block
+FILE OUTPUT FORMAT (MANDATORY):
+- Every file MUST start with exactly: // FILE: path/to/file.ext
+- Wrap each file in a fenced code block (\`\`\`tsx or \`\`\`ts)
 - Output ONLY files that need to be created or modified
 - For page components, use EXACTLY the file paths listed in PAGE FILE PATHS below
 - NEVER put pages in subdirectories unless the existing stub is already in a subdirectory
 
+AVAILABLE IMPORTS (ONLY import from these sources):
+NPM packages: react, react-dom, react-router-dom, lucide-react, date-fns${hasBackend ? ', @supabase/supabase-js' : ''}
+Project files that EXIST (listed in "OTHER FILES IN PROJECT" below)
+Files you are CREATING in this same response
+
+FORBIDDEN IMPORTS (NEVER use these):
+- Any path not listed in "OTHER FILES IN PROJECT" or created in this response
+- @/ path aliases (use relative paths: ./ or ../)
+- react-native, expo, @mui/*, styled-components, axios, lodash, moment, @headlessui/*, @radix-ui/*
+- Hypothetical files or files that "might be created later" by another module
+
 IMPLEMENTATION RULES:
-- Follow existing code patterns, component structure, and styling conventions
+- Follow existing code patterns, component structure, and styling conventions exactly
 - Use the shared Layout, Navbar, Footer components already in the project
 - Use brand colors defined in tailwind.config.js as Tailwind classes
 - Every page must be fully responsive (mobile, tablet, desktop)
@@ -1128,14 +1160,14 @@ ${hasBackend ? `
 BACKEND INTEGRATION (CRITICAL):
 - Import and use Supabase client from src/lib/supabase.ts
 - Import types from src/lib/types.ts
-- Import API functions from src/lib/api.ts
+- Import API functions from src/lib/api.ts (use ONLY functions that are exported there)
 - Forms MUST call real API functions (create, update, delete) with proper error handling
 - Lists MUST fetch data using getAll/getById from api.ts with loading and error states
 - Tables MUST have: search input, column sorting, pagination (10-20 per page)
 - Protected pages MUST use useAuth() hook to check authentication and role
 - Show loading spinners during API calls
 - Show toast/alert on success and error
-- Modals for create/edit forms where appropriate` : `
+- If a needed API function is not in api.ts, use supabase client directly (do NOT assume functions exist)` : `
 DEMO DATA:
 - Import mock data from src/lib/mock-data.ts
 - Use local state for filtering, searching, and sorting
@@ -1165,12 +1197,7 @@ ISOLATION MODE (NUCLEAR - this module has failed multiple times):
 - Use inline mock data instead of importing from shared files
 - Each file is an independent island that CANNOT have import errors
 - Keep components simple but functional
-` : ''}
-IMPORT RULES (CRITICAL):
-- Every import MUST reference a file that exists in the "OTHER FILES IN PROJECT" list or a file you are creating in this response
-- Do NOT import from hypothetical files or files that might be created later
-- If you need a utility/hook that doesn't exist yet, create it in this same response
-- Use ONLY packages listed in package.json dependencies`;
+` : ''}`;
 
   const stubPathsSection = stubPathsHint
     ? `\nPAGE FILE PATHS (use these EXACT paths for each page component):\n${stubPathsHint}\n`
@@ -1306,7 +1333,12 @@ export async function generateBuildFix(
   const strategy = options?.strategy || 'standard';
 
   const previousAttemptsContext = previousAttempts.length > 0
-    ? `\n\nPREVIOUS FIX ATTEMPTS THAT FAILED:\n${previousAttempts.map((a, i) => `--- Attempt ${i + 1} ---\nErrors: ${a.errorsText}`).join('\n\n')}\n\nIMPORTANT: The above approaches did NOT work. Try a COMPLETELY DIFFERENT strategy.`
+    ? `\n\nPREVIOUS FIX ATTEMPTS THAT FAILED:\n${previousAttempts.map((a, i) => {
+      const filesModified = a.filesModified?.length
+        ? `\nFiles modified: ${a.filesModified.join(', ')}`
+        : '';
+      return `--- Attempt ${i + 1} (strategy: ${a.strategy || 'standard'}) ---\nErrors after fix: ${a.errorsText}${filesModified}`;
+    }).join('\n\n')}\n\nIMPORTANT: The above approaches did NOT work. Try a COMPLETELY DIFFERENT strategy. Do NOT repeat the same file changes.`
     : '';
 
   const MAX_CONTEXT_CHARS = 180_000;
