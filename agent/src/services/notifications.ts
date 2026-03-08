@@ -3,6 +3,15 @@ import { getConfig } from '../core/config.js';
 import { logger } from '../core/logger.js';
 import { getSecretWithFallback } from '../core/secrets.js';
 
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 let resend: Resend | null = null;
 let cachedKey: string = '';
 
@@ -51,8 +60,8 @@ export async function notifyBuildComplete(
     `Build Complete: ${projectName}`,
     `<div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
       <h2 style="color: #1a1a1a;">Build Complete</h2>
-      <p>The project <strong>${projectName}</strong> has been built and deployed successfully.</p>
-      <p><a href="${demoUrl}" style="display: inline-block; background: #0070f3; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none;">View Demo</a></p>
+      <p>The project <strong>${escapeHtml(projectName)}</strong> has been built and deployed successfully.</p>
+      <p><a href="${escapeHtml(demoUrl)}" style="display: inline-block; background: #0070f3; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none;">View Demo</a></p>
       <p style="color: #666; font-size: 14px;">QA screenshots are ready for review in the dashboard.</p>
     </div>`,
     projectId
@@ -68,7 +77,7 @@ export async function notifyQAReady(
     `QA Ready: ${projectName}`,
     `<div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
       <h2 style="color: #1a1a1a;">QA Screenshots Ready</h2>
-      <p><strong>${screenshotCount}</strong> screenshots for <strong>${projectName}</strong> are ready for your review.</p>
+      <p><strong>${screenshotCount}</strong> screenshots for <strong>${escapeHtml(projectName)}</strong> are ready for your review.</p>
       <p style="color: #666; font-size: 14px;">Open the dashboard to approve or reject each screenshot.</p>
     </div>`,
     projectId
@@ -108,8 +117,8 @@ export async function notifyError(
     `Error: ${projectName}`,
     `<div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
       <h2 style="color: #dc2626;">Agent Error</h2>
-      <p>An error occurred while working on <strong>${projectName}</strong>:</p>
-      <pre style="background: #f5f5f5; padding: 16px; border-radius: 8px; overflow-x: auto; font-size: 13px;">${errorMessage.slice(0, 2000)}</pre>
+      <p>An error occurred while working on <strong>${escapeHtml(projectName)}</strong>:</p>
+      <pre style="background: #f5f5f5; padding: 16px; border-radius: 8px; overflow-x: auto; font-size: 13px;">${escapeHtml(errorMessage.slice(0, 2000))}</pre>
       ${diagSection}
       <p style="color: #666; font-size: 14px;">Check the dashboard activity log for details.</p>
     </div>`,
@@ -126,8 +135,8 @@ export async function notifyDeploySuccess(
     `Deployed: ${projectName}`,
     `<div style="font-family: sans-serif; max-width: 600px; margin: 0 auto;">
       <h2 style="color: #16a34a;">Deployment Successful</h2>
-      <p><strong>${projectName}</strong> has been deployed to production.</p>
-      <p><a href="${deployUrl}" style="display: inline-block; background: #16a34a; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none;">View Live Site</a></p>
+      <p><strong>${escapeHtml(projectName)}</strong> has been deployed to production.</p>
+      <p><a href="${escapeHtml(deployUrl)}" style="display: inline-block; background: #16a34a; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none;">View Live Site</a></p>
     </div>`,
     projectId
   );

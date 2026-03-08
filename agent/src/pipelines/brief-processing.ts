@@ -474,7 +474,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
       await updateProject(projectId, { progress: 15 });
       await sendChatMessage(projectId, `Repository created: ${repoUrl}\nScaffold pushed with ${scaffold.files.length} files.`);
-      await saveCheckpoint(projectId, briefId, 'scaffolding_complete', {}, [], fullName);
+      await saveCheckpoint(projectId, briefId, 'scaffolding_complete', {}, checkpoint?.modules_completed || [], fullName);
     }
 
     // ============================================================
@@ -604,7 +604,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       }
     }
 
-    await saveCheckpoint(projectId, briefId, 'backend_complete', {}, [], fullName);
+    await saveCheckpoint(projectId, briefId, 'backend_complete', {}, checkpoint?.modules_completed || [], fullName);
 
     // ============================================================
     // PHASE 2.75: SCAFFOLD BUILD GATE
@@ -612,6 +612,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
     {
       await logger.info('Verifying scaffold builds before module generation...', 'development', projectId);
+      await updateProject(projectId, { current_phase: 'scaffold_verification', progress: 19 });
       const scaffoldGate = await buildGate(
         fullName, projectId, project as unknown as Project, client, architecture,
         4, 'scaffold'
@@ -619,7 +620,29 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       if (scaffoldGate.passed) {
         await logger.info('Scaffold build verified successfully', 'development', projectId);
       } else {
-        await logger.warn(`Scaffold build gate: ${scaffoldGate.errorsRemaining} errors remain after ${scaffoldGate.attemptsUsed} attempts`, 'development', projectId);
+        await sendChatMessage(projectId, `Scaffold failed to compile after 4 attempts (${scaffoldGate.errorsRemaining} errors). Regenerating scaffold from scratch...`);
+        await logger.warn('Scaffold build gate failed. Regenerating scaffold...', 'development', projectId);
+
+        const newScaffold = await generateProjectScaffold(project as unknown as Project, client, architecture);
+        const regenValidation = await validateScaffold(newScaffold.files, architecture);
+        for (const fix of regenValidation.fixedFiles) {
+          const idx = newScaffold.files.findIndex((f) => f.path === fix.path);
+          if (idx >= 0) newScaffold.files[idx] = fix;
+          else newScaffold.files.push(fix);
+        }
+        if (newScaffold.files.length > 0) {
+          await pushFiles(fullName, newScaffold.files, 'fix: regenerate scaffold from scratch', projectId);
+        }
+
+        const retryGate = await buildGate(
+          fullName, projectId, project as unknown as Project, client, architecture,
+          3, 'scaffold-retry'
+        );
+        if (retryGate.passed) {
+          await logger.info('Scaffold build verified after regeneration', 'development', projectId);
+        } else {
+          await logger.warn(`Scaffold still has ${retryGate.errorsRemaining} errors after regeneration. Continuing with best effort.`, 'development', projectId);
+        }
       }
     }
 
@@ -1254,7 +1277,11 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       await supabase.from('briefs').update({ status: 'failed' }).eq('id', briefId);
       await updateProject(projectId, { agent_status: 'idle', current_phase: 'failed', last_error_message: result.buildLogs || 'Deployment failed' });
       await sendChatMessage(projectId, `Deployment failed: ${result.buildLogs || 'Unknown error'}. Check the logs.`);
-      await notifyError(project.name, result.buildLogs || 'Deployment failed', projectId);
+      await notifyError(project.name, result.buildLogs || 'Deployment failed', projectId, {
+        phase: 'deployment',
+        repoUrl: repoUrl,
+        durationMinutes: Math.round((Date.now() - pipelineStart) / 60000),
+      });
       await clearCheckpoint(projectId, 'failed');
       return;
     }
@@ -1448,7 +1475,10 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       await sendChatMessage(projectId, `An error occurred: ${errMsg}`);
       await clearCheckpoint(projectId, 'failed');
       const { data: proj } = await supabase.from('projects').select('name').eq('id', projectId).maybeSingle();
-      if (proj) await notifyError(proj.name, errMsg, projectId);
+      if (proj) await notifyError(proj.name, errMsg, projectId, {
+        phase: 'unknown',
+        durationMinutes: Math.round((Date.now() - pipelineStart) / 60000),
+      });
     } catch (innerErr) {
       console.error('Error in brief-processing catch block:', innerErr);
       try { await supabase.from('briefs').update({ status: 'failed' }).eq('id', briefId); } catch { /* ignore */ }
