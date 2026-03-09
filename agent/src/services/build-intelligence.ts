@@ -560,6 +560,7 @@ function generateSmartStubContent(stubPath: string): string {
     .split('/')
     .pop()
     ?.replace(/[^a-zA-Z0-9]/g, '') || 'Placeholder';
+  const safeName = (!baseName || /^\d/.test(baseName)) ? 'Page' + baseName : baseName;
 
   if (lower.includes('/lib/types') || lower.includes('/types/') || lower.includes('/types.ts')) {
     return `export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
@@ -593,7 +594,7 @@ export type PlaceholderType = Record<string, unknown>;`;
   }
 
   if (lower.includes('/hooks/')) {
-    const hookName = 'use' + baseName.replace(/^use/i, '').charAt(0).toUpperCase() + baseName.replace(/^use/i, '').slice(1);
+    const hookName = 'use' + safeName.replace(/^use/i, '').charAt(0).toUpperCase() + safeName.replace(/^use/i, '').slice(1);
     return `export function ${hookName}() {
   return { data: null, loading: false, error: null };
 }
@@ -601,7 +602,7 @@ export default ${hookName};`;
   }
 
   if (lower.includes('/contexts/')) {
-    const ctxName = baseName.charAt(0).toUpperCase() + baseName.slice(1);
+    const ctxName = safeName.charAt(0).toUpperCase() + safeName.slice(1);
     return `import { createContext, useContext, type ReactNode } from 'react';
 const ${ctxName}Ctx = createContext<Record<string, unknown>>({});
 export function ${ctxName}Provider({ children }: { children: ReactNode }) {
@@ -611,7 +612,7 @@ export function use${ctxName}() { return useContext(${ctxName}Ctx); }
 export { ${ctxName}Ctx as ${ctxName} };`;
   }
 
-  const componentName = baseName.charAt(0).toUpperCase() + baseName.slice(1);
+  const componentName = safeName.charAt(0).toUpperCase() + safeName.slice(1);
   return `export default function ${componentName}() {
   return (
     <div className="min-h-screen flex items-center justify-center">

@@ -343,8 +343,6 @@ export async function verifyBuild(
       }
 
       buildDirCache.set(buildDir, { pkgHash: currentPkgHash });
-    } else {
-      await logger.info('Running build...', 'development', projectId);
     }
 
     const viteCheck = await runCommand('test -f node_modules/vite/bin/vite.js && echo VITE_OK || echo VITE_MISSING', buildDir);
