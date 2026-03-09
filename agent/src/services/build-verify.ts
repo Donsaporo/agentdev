@@ -175,12 +175,13 @@ export async function verifyBuild(
     }
 
     await logger.info('Running build...', 'development', projectId);
-    const build = await runCommand('npm run build 2>&1', buildDir);
+    const build = await runCommand('npm run build', buildDir);
+    const combinedBuildOutput = [build.stderr, build.stdout].filter(Boolean).join('\n');
 
     return {
       success: build.code === 0,
       output: build.stdout,
-      errors: build.code !== 0 ? (build.stderr || build.stdout) : '',
+      errors: build.code !== 0 ? combinedBuildOutput : '',
       errorType: build.code !== 0 ? 'build' : undefined,
     };
   } catch (err) {
@@ -195,15 +196,33 @@ export async function verifyBuild(
   }
 }
 
+const WARNING_PATTERNS = [
+  /\(!\)\s/,
+  /warning:/i,
+  /deprecated/i,
+  /experimental/i,
+  /hmr\s+update/i,
+  /chunks?\s+are\s+larger/i,
+  /sourcemap/i,
+  /Use of eval/i,
+  /CommonJS or AMD dependencies/i,
+];
+
+function isWarningLine(line: string): boolean {
+  return WARNING_PATTERNS.some((p) => p.test(line));
+}
+
 export function extractBuildErrors(output: string): string[] {
   const errors: string[] = [];
   const lines = output.split('\n');
 
   for (const line of lines) {
     const trimmed = line.trim();
-    if (
+    if (!trimmed || trimmed.length < 5) continue;
+    if (isWarningLine(trimmed)) continue;
+
+    const isDefiniteError =
       trimmed.includes('error TS') ||
-      trimmed.includes('Error:') ||
       trimmed.includes('SyntaxError') ||
       trimmed.includes('TypeError') ||
       trimmed.includes('ReferenceError') ||
@@ -217,13 +236,26 @@ export function extractBuildErrors(output: string): string[] {
       trimmed.includes('FATAL') ||
       trimmed.includes('Could not resolve') ||
       trimmed.includes('Failed to resolve') ||
-      trimmed.includes('[vite]') ||
-      trimmed.includes('[rollup]') ||
       trimmed.includes('Unexpected token') ||
       trimmed.includes('is not a function') ||
-      (trimmed.includes('Property') && trimmed.includes('does not exist'))
+      (trimmed.includes('Property') && trimmed.includes('does not exist'));
+
+    if (isDefiniteError) {
+      errors.push(trimmed);
+      continue;
+    }
+
+    if (trimmed.includes('Error:') && !trimmed.startsWith('//') && !trimmed.startsWith('*')) {
+      errors.push(trimmed);
+      continue;
+    }
+
+    if (
+      (trimmed.includes('[vite]') || trimmed.includes('[rollup]')) &&
+      (/error/i.test(trimmed) || /fail/i.test(trimmed) || /cannot/i.test(trimmed) || /not found/i.test(trimmed))
     ) {
       errors.push(trimmed);
+      continue;
     }
   }
 
@@ -319,10 +351,40 @@ export async function validateScaffold(
     }
   }
 
-  const hasViteConfig = files.some((f) => f.path.includes('vite.config'));
-  if (!hasViteConfig) {
+  const viteConfigFile = files.find((f) => f.path.includes('vite.config'));
+  if (!viteConfigFile) {
     issues.push('Missing vite.config.ts -- auto-generated');
     fixedFiles.push({ path: 'vite.config.ts', content: FALLBACK_VITE_CONFIG });
+  } else {
+    let viteContent = viteConfigFile.content;
+    let viteModified = false;
+
+    if (viteContent.includes('module.exports') || viteContent.includes('require(')) {
+      issues.push('vite.config uses CJS syntax -- replaced with ESM fallback');
+      viteContent = FALLBACK_VITE_CONFIG;
+      viteModified = true;
+    }
+
+    if (!viteContent.includes('@vitejs/plugin-react') || !viteContent.includes('react()')) {
+      issues.push('vite.config missing react plugin -- replaced with fallback');
+      viteContent = FALLBACK_VITE_CONFIG;
+      viteModified = true;
+    }
+
+    const anyFileUsesAlias = files.some((f) =>
+      /\.(tsx?|jsx?)$/.test(f.path) && /(?:from|import)\s+['"]@\//.test(f.content)
+    );
+    if (anyFileUsesAlias && !viteContent.includes('resolve') && !viteContent.includes('alias')) {
+      issues.push('Files use @/ alias but vite.config lacks resolve.alias -- adding');
+      viteContent = FALLBACK_VITE_CONFIG;
+      viteModified = true;
+    }
+
+    if (viteModified) {
+      const existing = fixedFiles.findIndex((f) => f.path === viteConfigFile.path);
+      if (existing >= 0) fixedFiles[existing] = { path: viteConfigFile.path, content: viteContent };
+      else fixedFiles.push({ path: viteConfigFile.path, content: viteContent });
+    }
   }
 
   const hasIndexHtml = files.some((f) => f.path === 'index.html');
@@ -351,15 +413,26 @@ export async function validateScaffold(
     fixedFiles.push({ path: 'tsconfig.node.json', content: FALLBACK_TSCONFIG_NODE });
   }
 
-  const hasTailwindConfig = files.some((f) => f.path.includes('tailwind.config'));
-  if (!hasTailwindConfig) {
+  const tailwindConfigFile = files.find((f) => f.path.includes('tailwind.config'));
+  if (!tailwindConfigFile) {
     issues.push('Missing tailwind.config.js -- auto-generated');
     fixedFiles.push({ path: 'tailwind.config.js', content: FALLBACK_TAILWIND_CONFIG });
+  } else if (tailwindConfigFile.content.includes('module.exports') || tailwindConfigFile.content.includes('require(')) {
+    issues.push('tailwind.config uses CJS syntax -- replaced with ESM');
+    const twContent = tailwindConfigFile.content
+      .replace(/module\.exports\s*=/, 'export default')
+      .replace(/const\s+\w+\s*=\s*require\([^)]+\);?\s*/g, '');
+    const existing = fixedFiles.findIndex((f) => f.path === tailwindConfigFile.path);
+    if (existing >= 0) fixedFiles[existing] = { path: tailwindConfigFile.path, content: twContent };
+    else fixedFiles.push({ path: tailwindConfigFile.path, content: twContent });
   }
 
-  const hasPostcssConfig = files.some((f) => f.path.includes('postcss.config'));
-  if (!hasPostcssConfig) {
+  const postcssConfigFile = files.find((f) => f.path.includes('postcss.config'));
+  if (!postcssConfigFile) {
     fixedFiles.push({ path: 'postcss.config.js', content: FALLBACK_POSTCSS_CONFIG });
+  } else if (postcssConfigFile.content.includes('module.exports') || postcssConfigFile.content.includes('require(')) {
+    issues.push('postcss.config uses CJS syntax -- replaced with ESM');
+    fixedFiles.push({ path: postcssConfigFile.path, content: FALLBACK_POSTCSS_CONFIG });
   }
 
   const hasIndexCss = files.some((f) => f.path === 'src/index.css');
@@ -447,9 +520,15 @@ ${routeLines}
 
 const FALLBACK_VITE_CONFIG = `import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import path from 'path';
 
 export default defineConfig({
   plugins: [react()],
+  resolve: {
+    alias: {
+      '@': path.resolve(__dirname, './src'),
+    },
+  },
 });`;
 
 const FALLBACK_INDEX_HTML = `<!DOCTYPE html>

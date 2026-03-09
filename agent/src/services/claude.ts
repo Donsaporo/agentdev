@@ -1408,7 +1408,7 @@ ${previousAttempts.length > 0 ? '- Previous fix attempts failed. You MUST take a
 ${buildErrors.join('\n')}
 
 FULL BUILD OUTPUT:
-${buildOutput.slice(-15000)}
+${buildOutput}
 ${previousAttemptsContext}
 
 EXISTING CODE:

@@ -2,7 +2,7 @@ import { getSupabase } from './supabase.js';
 import { logger } from './logger.js';
 import type { PipelineState } from './types.js';
 
-const STALE_CHECKPOINT_MINUTES = 10;
+const STALE_CHECKPOINT_MINUTES = 45;
 
 export async function saveCheckpoint(
   projectId: string,

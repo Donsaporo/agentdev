@@ -322,7 +322,7 @@ export function reconcileAppRoutes(
     const name = fp
       .replace('src/pages/', '')
       .replace(/\.tsx$/, '')
-      .replace(/\//g, '');
+      .replace(/[^a-zA-Z0-9]/g, '');
     fileMap.set(name.toLowerCase(), fp);
   }
 
@@ -427,7 +427,7 @@ export function resolveStubPaths(
     const name = fp
       .replace('src/pages/', '')
       .replace(/\.tsx$/, '')
-      .replace(/\//g, '');
+      .replace(/[^a-zA-Z0-9]/g, '');
     fileMap.set(name.toLowerCase(), fp);
   }
 

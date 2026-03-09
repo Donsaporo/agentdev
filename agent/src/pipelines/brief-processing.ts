@@ -40,6 +40,12 @@ const CORE_FILE_PATTERNS = [
   'package.json', 'vite.config',
 ];
 
+function sliceBuildOutput(output: string, budget: number): string {
+  if (output.length <= budget) return output;
+  const half = Math.floor(budget / 2) - 30;
+  return output.slice(0, half) + '\n\n... [truncated middle] ...\n\n' + output.slice(-half);
+}
+
 const PIPELINE_MAX_DURATION_MS = 4 * 60 * 60 * 1000;
 const SCAFFOLD_BUILD_GATE_ATTEMPTS = 4;
 const SCAFFOLD_RETRY_GATE_ATTEMPTS = 3;
@@ -225,7 +231,14 @@ async function buildGate(
 
     if (attempt === maxAttempts) {
       const rawErrors = extractBuildErrors(buildResult.errors || buildResult.output);
-      return { passed: false, errorsRemaining: rawErrors.length, attemptsUsed: attempt, lastStrategy: lastUsedStrategy, attempts: previousAttempts };
+      const dedupedFinal = deduplicateErrors(rawErrors);
+      await logger.warn(
+        `[${phaseName}] Build gate exhausted (${maxAttempts} attempts). ${dedupedFinal.length} root cause(s): ${dedupedFinal[0]?.slice(0, 300) || 'unknown'}`,
+        'development',
+        projectId,
+        { errors: dedupedFinal.slice(0, 10), rawErrorCount: rawErrors.length, attempts: previousAttempts.length }
+      );
+      return { passed: false, errorsRemaining: dedupedFinal.length, attemptsUsed: attempt, lastStrategy: lastUsedStrategy, attempts: previousAttempts };
     }
 
     const rawBuildErrors = extractBuildErrors(buildResult.errors || buildResult.output);
@@ -251,7 +264,12 @@ async function buildGate(
 
     lastUsedStrategy = strategy;
 
-    await logger.info(`[${phaseName}] Build fix attempt ${attempt}/${maxAttempts} (${strategy}): ${buildErrors.length} root cause(s)`, 'development', projectId);
+    await logger.info(
+      `[${phaseName}] Build fix attempt ${attempt}/${maxAttempts} (${strategy}): ${buildErrors.length} root cause(s) | ${buildErrors[0]?.slice(0, 200) || 'no error text'}`,
+      'development',
+      projectId,
+      { errors: buildErrors.slice(0, 10), strategy, errorHash, rawErrorCount: rawBuildErrors.length, isDuplicate }
+    );
 
     const allRepoFiles = await getRepoTree(fullName);
     const buildFixCodeFiles = allRepoFiles.filter(
@@ -275,7 +293,7 @@ async function buildGate(
 
     const fixResult = await generateBuildFix(
       buildErrors,
-      (buildResult.errors || buildResult.output).slice(-BUILD_OUTPUT_CONTEXT_SLICE),
+      sliceBuildOutput(buildResult.errors || buildResult.output, BUILD_OUTPUT_CONTEXT_SLICE),
       project,
       client,
       architecture as unknown as Record<string, unknown>,
@@ -301,9 +319,11 @@ async function buildGate(
 
       const postFixBuild = await verifyBuild(fullName, projectId);
       if (!postFixBuild.success) {
-        const postFixErrors = extractBuildErrors(postFixBuild.errors || postFixBuild.output);
-        if (postFixErrors.length > rawBuildErrors.length && preFixContents.length > 0) {
-          await logger.warn(`[${phaseName}] Fix made errors worse (${rawBuildErrors.length} -> ${postFixErrors.length}). Rolling back.`, 'development', projectId);
+        const postFixRawErrors = extractBuildErrors(postFixBuild.errors || postFixBuild.output);
+        const postFixDeduped = deduplicateErrors(postFixRawErrors);
+        const preFixDeduped = buildErrors;
+        if (postFixDeduped.length > preFixDeduped.length && preFixContents.length > 0) {
+          await logger.warn(`[${phaseName}] Fix made errors worse (${preFixDeduped.length} -> ${postFixDeduped.length} root causes). Rolling back.`, 'development', projectId);
           await pushFiles(
             fullName,
             preFixContents.map((f) => ({ path: f.path, content: f.content })),
@@ -504,7 +524,8 @@ export async function processBrief(projectId: string, briefId: string): Promise<
           }
         }
         if (scaffold.files.length > 0) {
-          await pushFiles(fullName, scaffold.files, 'Initial scaffold', projectId);
+          const scaffoldPaths = scaffold.files.map((f) => f.path);
+          await validateAndPush(fullName, scaffold.files, 'Initial scaffold', projectId, scaffoldPaths);
         }
       }
 
@@ -666,7 +687,23 @@ export async function processBrief(projectId: string, briefId: string): Promise<
           else newScaffold.files.push(fix);
         }
         if (newScaffold.files.length > 0) {
-          await pushFiles(fullName, newScaffold.files, 'fix: regenerate scaffold from scratch', projectId);
+          const regenPaths = newScaffold.files.map((f) => f.path);
+          await validateAndPush(fullName, newScaffold.files, 'fix: regenerate scaffold from scratch', projectId, regenPaths);
+        }
+
+        {
+          const repoTree = await getRepoTree(fullName);
+          const tsFiles = repoTree.filter((f) => f.type === 'file' && /\.(tsx?|jsx?)$/.test(f.path)).map((f) => f.path);
+          const tsContents = await getMultipleFileContents(fullName, tsFiles);
+          const rewritten = rewriteAliasImports(tsContents.map((f) => ({ path: f.path, content: f.content })));
+          const changed = rewritten.filter((r) => {
+            const original = tsContents.find((o) => o.path === r.path);
+            return original && original.content !== r.content;
+          });
+          if (changed.length > 0) {
+            await pushFiles(fullName, changed, 'fix: rewrite @/ alias imports across codebase', projectId);
+            await logger.info(`Rewrote @/ aliases in ${changed.length} file(s)`, 'development', projectId);
+          }
         }
 
         const retryGate = await buildGate(
@@ -922,7 +959,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
                 const midFix = await generateBuildFix(
                   freshDeduped,
-                  (freshBuild.errors || freshBuild.output).slice(-INTERMEDIATE_BUILD_OUTPUT_SLICE),
+                  sliceBuildOutput(freshBuild.errors || freshBuild.output, INTERMEDIATE_BUILD_OUTPUT_SLICE),
                   project as unknown as Project,
                   client,
                   architecture as unknown as Record<string, unknown>,
