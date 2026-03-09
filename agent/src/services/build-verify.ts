@@ -21,6 +21,12 @@ import type { GeneratedFile } from '../core/types.js';
 
 const BUILD_DIR = '/tmp/obzide-builds';
 
+const NPM_INSTALL_TIMEOUT = 300_000;
+const NPM_FORCE_INSTALL_TIMEOUT = 120_000;
+const BUILD_TIMEOUT = 180_000;
+const GIT_CLONE_TIMEOUT = 180_000;
+const DEFAULT_CMD_TIMEOUT = 180_000;
+
 interface BuildResult {
   success: boolean;
   output: string;
@@ -29,13 +35,22 @@ interface BuildResult {
   isEnvironmentError?: boolean;
 }
 
-function runCommand(cmd: string, cwd: string, timeoutMs = 120_000): Promise<{ stdout: string; stderr: string; code: number }> {
+interface CommandResult {
+  stdout: string;
+  stderr: string;
+  code: number;
+  timedOut: boolean;
+}
+
+function runCommand(cmd: string, cwd: string, timeoutMs = DEFAULT_CMD_TIMEOUT): Promise<CommandResult> {
   return new Promise((resolve) => {
     exec(cmd, { cwd, timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+      const timedOut = !!(error && 'killed' in error && (error as NodeJS.ErrnoException & { killed?: boolean }).killed);
       resolve({
         stdout: stdout?.toString() || '',
         stderr: stderr?.toString() || '',
         code: error ? (error.code ?? 1) : 0,
+        timedOut,
       });
     });
   });
@@ -226,7 +241,7 @@ export async function verifyBuild(
       const cloneUrl = token
         ? `https://${token}@github.com/${repoFullName}.git`
         : `https://github.com/${repoFullName}.git`;
-      const { code, stderr } = await runCommand(`git clone --depth 1 ${cloneUrl} .`, buildDir);
+      const { code, stderr } = await runCommand(`git clone --depth 1 ${cloneUrl} .`, buildDir, GIT_CLONE_TIMEOUT);
       if (code !== 0) {
         return { success: false, output: '', errors: `Git clone failed: ${stderr}`, errorType: 'clone' };
       }
@@ -238,28 +253,31 @@ export async function verifyBuild(
     }
 
     await logger.info('Installing dependencies...', 'development', projectId);
-    let install = await runCommand('npm install --no-audit --no-fund 2>&1', buildDir, 120_000);
+    let install = await runCommand('npm install --no-audit --no-fund 2>&1', buildDir, NPM_INSTALL_TIMEOUT);
 
     if (install.code !== 0) {
       const combinedOutput = `${install.stdout}\n${install.stderr}`;
 
-      if (detectRecursiveInstall(combinedOutput)) {
+      if (install.timedOut) {
+        await logger.warn(`npm install timed out after ${NPM_INSTALL_TIMEOUT / 1000}s. Server may be slow or resource-constrained.`, 'development', projectId);
+      } else if (detectRecursiveInstall(combinedOutput)) {
         await logger.warn('Detected recursive npm install loop, sanitizing package.json...', 'development', projectId);
         await autoFixPackageJson(buildDir, combinedOutput);
-        install = await runCommand('npm install --no-audit --no-fund 2>&1', buildDir, 120_000);
+        install = await runCommand('npm install --no-audit --no-fund 2>&1', buildDir, NPM_INSTALL_TIMEOUT);
       } else if (isNpmError(combinedOutput)) {
         const fixed = await autoFixPackageJson(buildDir, combinedOutput);
         if (fixed) {
           await logger.info('Auto-fixed package.json (removed bad packages), retrying install...', 'development', projectId);
-          install = await runCommand('npm install --no-audit --no-fund 2>&1', buildDir, 120_000);
+          install = await runCommand('npm install --no-audit --no-fund 2>&1', buildDir, NPM_INSTALL_TIMEOUT);
         }
       }
 
       if (install.code !== 0) {
+        const reason = install.timedOut ? `npm install timed out after ${NPM_INSTALL_TIMEOUT / 1000}s` : 'npm install failed';
         return {
           success: false,
           output: install.stdout,
-          errors: `npm install failed: ${install.stderr || install.stdout}`,
+          errors: `${reason}: ${install.stderr || install.stdout}`,
           errorType: 'npm_install',
           isEnvironmentError: true,
         };
@@ -269,7 +287,7 @@ export async function verifyBuild(
     const viteCheck = await runCommand('test -f node_modules/vite/bin/vite.js && echo VITE_OK || echo VITE_MISSING', buildDir);
     if (!viteCheck.stdout.includes('VITE_OK')) {
       await logger.warn('vite not found after npm install, force-installing critical deps...', 'development', projectId);
-      await runCommand('npm install vite@^5.4.2 @vitejs/plugin-react@^4.3.1 --no-audit --no-fund --no-save 2>&1', buildDir, 60_000);
+      await runCommand('npm install vite@^5.4.2 @vitejs/plugin-react@^4.3.1 --no-audit --no-fund --no-save 2>&1', buildDir, NPM_FORCE_INSTALL_TIMEOUT);
 
       const recheck = await runCommand('test -f node_modules/vite/bin/vite.js && echo VITE_OK || echo VITE_MISSING', buildDir);
       if (!recheck.stdout.includes('VITE_OK')) {
@@ -284,13 +302,15 @@ export async function verifyBuild(
     }
 
     await logger.info('Running build...', 'development', projectId);
-    let build = await runCommand('./node_modules/.bin/vite build 2>&1', buildDir);
+    let build = await runCommand('./node_modules/.bin/vite build 2>&1', buildDir, BUILD_TIMEOUT);
 
-    if (build.code !== 0) {
+    if (build.timedOut) {
+      await logger.warn(`vite build timed out after ${BUILD_TIMEOUT / 1000}s`, 'development', projectId);
+    } else if (build.code !== 0) {
       const buildErr = `${build.stderr}\n${build.stdout}`;
       if (buildErr.includes('not found') || buildErr.includes('ENOENT') || buildErr.includes('No such file')) {
         await logger.warn('vite binary not accessible, trying direct node execution...', 'development', projectId);
-        build = await runCommand('node ./node_modules/vite/bin/vite.js build 2>&1', buildDir);
+        build = await runCommand('node ./node_modules/vite/bin/vite.js build 2>&1', buildDir, BUILD_TIMEOUT);
       }
     }
 
