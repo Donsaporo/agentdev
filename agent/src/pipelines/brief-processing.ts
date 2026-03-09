@@ -240,8 +240,8 @@ async function buildGate(
     }
 
     if (buildResult.isEnvironmentError) {
-      await logger.warn(
-        `[${phaseName}] Environment error detected (not a code issue): ${(buildResult.errors || '').slice(0, 200)}. Skipping Claude fix.`,
+      await logger.error(
+        `[${phaseName}] System-level environment error (permissions/disk/memory): ${(buildResult.errors || '').slice(0, 200)}. Cannot proceed with build verification.`,
         'development',
         projectId,
       );
@@ -582,21 +582,32 @@ export async function processBrief(projectId: string, briefId: string): Promise<
         await logger.info('Verifying scaffold builds before pushing...', 'development', projectId);
         const localBuild = await verifyBuild('', projectId, scaffold.files);
         if (!localBuild.success) {
-          if (localBuild.isEnvironmentError) {
-            await logger.warn(`Local build env issue (not a code problem): ${(localBuild.errors || '').slice(0, 200)}. Pushing scaffold and relying on Vercel build.`, 'development', projectId);
+          const localErrors = extractBuildErrors(localBuild.errors || localBuild.output);
+          const localCategory = localBuild.isEnvironmentError ? 'environment' : classifyBuildError(localErrors);
+
+          if (localCategory === 'environment') {
+            await logger.warn(`Local build env issue: ${(localBuild.errors || '').slice(0, 200)}. Applying stubs as precaution before pushing.`, 'development', projectId);
+            const scaffoldPaths2 = scaffold.files.map((f) => f.path);
+            const { stubs: envStubs } = validateModuleImports(scaffold.files, scaffoldPaths2);
+            if (envStubs.length > 0) {
+              scaffold.files.push(...envStubs);
+              await logger.info(`Added ${envStubs.length} stub(s) as precaution`, 'development', projectId);
+            }
+          } else if (localCategory === 'code') {
+            await logger.warn(`Local build has code errors. Applying stubs before pushing...`, 'development', projectId);
+            const scaffoldPaths2 = scaffold.files.map((f) => f.path);
+            const { stubs: localStubs } = validateModuleImports(scaffold.files, scaffoldPaths2);
+            if (localStubs.length > 0) {
+              scaffold.files.push(...localStubs);
+              await logger.info(`Added ${localStubs.length} stub(s) to fix imports`, 'development', projectId);
+            }
           } else {
-            const localErrors = extractBuildErrors(localBuild.errors || localBuild.output);
-            const localCategory = classifyBuildError(localErrors);
-            if (localCategory === 'code') {
-              await logger.warn(`Local build has code errors. Applying stubs before pushing...`, 'development', projectId);
-              const scaffoldPaths2 = scaffold.files.map((f) => f.path);
-              const { stubs: localStubs } = validateModuleImports(scaffold.files, scaffoldPaths2);
-              if (localStubs.length > 0) {
-                scaffold.files.push(...localStubs);
-                await logger.info(`Added ${localStubs.length} stub(s) to fix imports`, 'development', projectId);
-              }
-            } else {
-              await logger.warn(`Local build failed (${localCategory}): ${(localBuild.errors || '').slice(0, 200)}. Pushing anyway.`, 'development', projectId);
+            await logger.warn(`Local build failed (${localCategory}): ${(localBuild.errors || '').slice(0, 200)}. Applying stubs before pushing.`, 'development', projectId);
+            const scaffoldPaths2 = scaffold.files.map((f) => f.path);
+            const { stubs: fallbackStubs } = validateModuleImports(scaffold.files, scaffoldPaths2);
+            if (fallbackStubs.length > 0) {
+              scaffold.files.push(...fallbackStubs);
+              await logger.info(`Added ${fallbackStubs.length} stub(s) to fix imports`, 'development', projectId);
             }
           }
         } else {
@@ -1019,7 +1030,8 @@ export async function processBrief(projectId: string, briefId: string): Promise<
           try {
             const midBuild = await verifyBuild(fullName, projectId);
             if (!midBuild.success && midBuild.isEnvironmentError) {
-              await logger.warn('Intermediate build check skipped (environment issue). Continuing module generation.', 'development', projectId);
+              await logger.warn('Intermediate build check: environment issue detected. Treating as potential build failure.', 'development', projectId);
+              cumulativeIntermediateErrors += 1;
             } else if (!midBuild.success) {
               const midErrors = extractBuildErrors(midBuild.errors || midBuild.output);
               const midDeduped = deduplicateErrors(midErrors);
@@ -1411,9 +1423,8 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     if (buildPassed) {
       await sendChatMessage(projectId, finalGate.attemptsUsed === 1 ? 'Build verified successfully.' : `Build verified after ${finalGate.attemptsUsed - 1} fix(es).`);
     } else if (finalGate.lastStrategy === 'environment_skip') {
-      buildPassed = true;
-      await logger.warn('Final build verification skipped (environment issue, not code). Relying on Vercel build.', 'development', projectId);
-      await sendChatMessage(projectId, 'Local build environment unavailable. Relying on Vercel for build verification.');
+      await logger.error('Build verification could not run due to environment issue. Build NOT marked as passed.', 'development', projectId);
+      await sendChatMessage(projectId, 'Build verification failed: environment issue prevented local build. Attempting recovery...');
     }
 
     if (!buildPassed) {

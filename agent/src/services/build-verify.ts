@@ -273,13 +273,18 @@ export async function verifyBuild(
       }
 
       if (install.code !== 0) {
+        const combinedInstallOutput = `${install.stdout}\n${install.stderr}`;
         const reason = install.timedOut ? `npm install timed out after ${NPM_INSTALL_TIMEOUT / 1000}s` : 'npm install failed';
+        const isEnv = install.timedOut ||
+          /EACCES|permission denied/i.test(combinedInstallOutput) ||
+          /ENOSPC|no space left/i.test(combinedInstallOutput) ||
+          /command not found.*npm/i.test(combinedInstallOutput);
         return {
           success: false,
           output: install.stdout,
           errors: `${reason}: ${install.stderr || install.stdout}`,
           errorType: 'npm_install',
-          isEnvironmentError: true,
+          isEnvironmentError: isEnv,
         };
       }
     }
@@ -311,6 +316,14 @@ export async function verifyBuild(
       if (buildErr.includes('not found') || buildErr.includes('ENOENT') || buildErr.includes('No such file')) {
         await logger.warn('vite binary not accessible, trying direct node execution...', 'development', projectId);
         build = await runCommand('node ./node_modules/vite/bin/vite.js build 2>&1', buildDir, BUILD_TIMEOUT);
+
+        if (build.code !== 0) {
+          const nodeErr = `${build.stderr}\n${build.stdout}`;
+          if (nodeErr.includes('not found') || nodeErr.includes('ENOENT') || nodeErr.includes('Cannot find module')) {
+            await logger.warn('Direct node execution failed, trying npx vite build...', 'development', projectId);
+            build = await runCommand('npx vite build 2>&1', buildDir, BUILD_TIMEOUT);
+          }
+        }
       }
     }
 
@@ -337,15 +350,11 @@ export async function verifyBuild(
 }
 
 const ENVIRONMENT_ERROR_PATTERNS = [
-  /Cannot find package '(vite|@vitejs|tailwindcss|postcss|autoprefixer)'/i,
-  /ERR_MODULE_NOT_FOUND.*node_modules/i,
-  /Cannot find module '(vite|@vitejs|tailwindcss|postcss|autoprefixer)'/i,
-  /failed to load config.*vite\.config/i,
-  /Loading PostCSS Plugin failed.*Cannot find module/i,
   /EACCES.*permission denied/i,
   /ENOSPC.*no space left/i,
-  /npm ERR! code E(RESOLVE|TARGET|404)/i,
-  /config must export or return an object/i,
+  /command not found/i,
+  /Cannot allocate memory/i,
+  /ENOMEM/i,
 ];
 
 const CONFIG_ERROR_PATTERNS = [
@@ -353,6 +362,10 @@ const CONFIG_ERROR_PATTERNS = [
   /Loading PostCSS Plugin failed/i,
   /\[vite:css\].*Failed to load PostCSS config/i,
   /tailwind\.config.*Error/i,
+  /config must export or return an object/i,
+  /Cannot find package '(vite|@vitejs|tailwindcss|postcss|autoprefixer)'/i,
+  /Cannot find module '(vite|@vitejs|tailwindcss|postcss|autoprefixer)'/i,
+  /ERR_MODULE_NOT_FOUND.*node_modules/i,
 ];
 
 export type BuildErrorCategory = 'environment' | 'config' | 'code';
