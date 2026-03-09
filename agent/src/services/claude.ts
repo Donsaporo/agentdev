@@ -8,6 +8,7 @@ import type {
   FullArchitecture, ArchitecturePage, FeatureModule, BuildFixAttempt,
 } from '../core/types.js';
 import { getProjectTemplate, findMissingPages, findMissingModels } from './project-templates.js';
+import { getAllTemplateFiles, sanitizePackageJson, PROHIBITED_PACKAGES } from './scaffold-templates.js';
 
 const MODELS = {
   opus: 'claude-opus-4-20250514',
@@ -733,108 +734,112 @@ export async function generateProjectScaffold(
 
   const hasBackend = architecture.requiresBackend;
 
-  const backendFiles = hasBackend ? `
-- src/lib/supabase.ts (Supabase client singleton using VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY env vars)
+  const templateFiles = getAllTemplateFiles(project.name, architecture);
+
+  const backendAppFiles = hasBackend ? `
+- src/lib/supabase.ts (Supabase client singleton using import.meta.env.VITE_SUPABASE_URL and import.meta.env.VITE_SUPABASE_ANON_KEY)
 - src/lib/types.ts (TypeScript interfaces for ALL data models: ${(architecture.dataModels || []).map((m) => m.name).join(', ')})
-- src/lib/api.ts (CRUD helper functions for each data model using Supabase client - getAll, getById, create, update, delete)
-- src/contexts/AuthContext.tsx (Supabase Auth context with signUp, signIn, signOut, session management, role from user metadata)
-- src/hooks/useAuth.ts (hook wrapping AuthContext for easy consumption)
-- .env.example (VITE_SUPABASE_URL=your-project-url, VITE_SUPABASE_ANON_KEY=your-anon-key)` : `
-- src/lib/mock-data.ts (realistic mock data for all entities, shared by all pages - NOT lorem ipsum)
-- src/contexts/AppContext.tsx (local state management for the demo with all mock data)`;
+- src/lib/api.ts (CRUD helper functions for each data model using Supabase client)
+- src/contexts/AuthContext.tsx (Supabase Auth context with signUp, signIn, signOut, session management)
+- src/hooks/useAuth.ts (hook wrapping AuthContext)` : `
+- src/lib/mock-data.ts (realistic mock data for all entities)
+- src/contexts/AppContext.tsx (local state management with mock data)`;
 
   const authInstructions = hasBackend ? `
 AUTH INTEGRATION:
-- Wrap App in AuthProvider from AuthContext
 - Login page must use supabase.auth.signInWithPassword()
 - Register page must use supabase.auth.signUp()
 - Protected routes check auth state and redirect to /login if not authenticated
-- Navbar shows user info when logged in, Login/Register when not
-- Use role from user_metadata to show/hide admin-only navigation` : '';
+- Navbar shows user info when logged in, Login/Register when not` : '';
 
   const systemPrompt = `You are a senior full-stack developer at Obzide Tech building production websites.
-Generate a complete project scaffold with all configuration, shared components, and infrastructure.
+Generate ONLY application code files (src/ directory). Configuration files are already handled.
 
-ENVIRONMENT CONSTRAINTS (CRITICAL - violating these causes build failures):
+CRITICAL: DO NOT generate these files (they are pre-configured and immutable):
+- package.json (ALREADY GENERATED - DO NOT OUTPUT)
+- vite.config.ts (ALREADY GENERATED - DO NOT OUTPUT)
+- tsconfig.json, tsconfig.app.json, tsconfig.node.json (ALREADY GENERATED - DO NOT OUTPUT)
+- tailwind.config.js (ALREADY GENERATED - DO NOT OUTPUT)
+- postcss.config.js (ALREADY GENERATED - DO NOT OUTPUT)
+- index.html (ALREADY GENERATED - DO NOT OUTPUT)
+- src/main.tsx (ALREADY GENERATED - DO NOT OUTPUT)
+- src/index.css (ALREADY GENERATED - DO NOT OUTPUT)
+- src/vite-env.d.ts (ALREADY GENERATED - DO NOT OUTPUT)
+- .env.example (ALREADY GENERATED - DO NOT OUTPUT)
+
+You MUST ONLY generate files inside src/ (excluding main.tsx, index.css, vite-env.d.ts).
+
+ENVIRONMENT CONSTRAINTS (CRITICAL):
 - Target: Vite 5.x + React 18 + TypeScript 5.x
-- Node compatibility: ES2020+ modules only
-- ALLOWED dependencies (do NOT add ANY others):
-  react, react-dom, react-router-dom, lucide-react, date-fns${hasBackend ? ', @supabase/supabase-js' : ''}
-- ALLOWED devDependencies:
-  vite, @vitejs/plugin-react, typescript, tailwindcss, postcss, autoprefixer, @types/react, @types/react-dom
-- FORBIDDEN packages (NEVER include): react-native, expo, @emotion/*, styled-components, @mui/*, antd, @chakra-ui/*, next, gatsby, axios, lodash, moment, @headlessui/*, @radix-ui/*
-- Import rules: use RELATIVE paths only (./  ../) - NO @/ aliases
+- ALLOWED npm imports ONLY: react, react-dom, react-router-dom, lucide-react, date-fns${hasBackend ? ', @supabase/supabase-js' : ''}
+- FORBIDDEN packages: ${PROHIBITED_PACKAGES.join(', ')}
+- Import rules: use RELATIVE paths only (./  ../) - NEVER use @/ aliases
 - All component files: .tsx extension
 - All non-JSX files: .ts extension
-
-EXACT DEPENDENCY VERSIONS (use these exactly in package.json):
-"react": "^18.3.1", "react-dom": "^18.3.1", "react-router-dom": "^7.1.0"
-"lucide-react": "^0.344.0", "date-fns": "^4.1.0"${hasBackend ? '\n"@supabase/supabase-js": "^2.57.4"' : ''}
-"vite": "^5.4.2", "@vitejs/plugin-react": "^4.3.1", "typescript": "^5.5.3"
-"tailwindcss": "^3.4.1", "postcss": "^8.4.35", "autoprefixer": "^10.4.18"
-
-EXACT DIRECTORY STRUCTURE:
-src/
-  main.tsx            (entry point with BrowserRouter${hasBackend ? ', AuthProvider' : ''})
-  App.tsx             (ALL routes defined here, imports ALL page components)
-  index.css           (Tailwind directives + custom CSS)
-  vite-env.d.ts       (Vite type declarations)
-  components/         (shared reusable components: Layout, Navbar, Footer, etc.)
-  pages/              (ONE file per route, each with default export)
-  lib/                (${hasBackend ? 'supabase client, types, api helpers' : 'mock data, types, utilities'})
-  contexts/           (React contexts${hasBackend ? ': AuthContext' : ''})
-  hooks/              (custom hooks)
+- NEVER add "npm install" or any package manager command to any script
+- NEVER generate package.json - it is FORBIDDEN
 
 FILE OUTPUT FORMAT:
 - Every file MUST start with: // FILE: path/to/file.ext
 - Wrap each file in a fenced code block
-- Use the exact path relative to project root
+- Use the exact path relative to project root (e.g., src/App.tsx)
 
-REQUIRED FILES (generate ALL of these):
-- package.json (scripts: {"dev": "vite", "build": "vite build", "preview": "vite preview"})
-- vite.config.ts
-- tsconfig.json, tsconfig.app.json, tsconfig.node.json
-- tailwind.config.js (brand colors as custom theme colors)
-- postcss.config.js
-- index.html (with Google Fonts link if custom fonts specified)
-- src/main.tsx
-- src/App.tsx (routes for ALL ${(architecture.pages || []).length} pages)
-- src/index.css (Tailwind directives + custom fonts + base styles + scroll animations)
+GENERATE THESE APPLICATION FILES:
+- src/App.tsx (ALL routes defined here, imports ALL page components)
 - src/components/Layout.tsx (shared layout with nav + footer, responsive hamburger)
-- src/components/Navbar.tsx (sticky, responsive, brand-colored${hasBackend ? ', auth-aware with role-based nav' : ''})
+- src/components/Navbar.tsx (sticky, responsive, brand-colored${hasBackend ? ', auth-aware' : ''})
 - src/components/Footer.tsx (professional with links, social, copyright)
-${backendFiles}
-- One STUB file per page in src/pages/ (default export, realistic placeholder content)
+${backendAppFiles}
+- One STUB file per page in src/pages/ (default export, realistic placeholder content matching the app theme)
 ${authInstructions}
 
 DESIGN RULES:
-- Brand colors: ${JSON.stringify(client.brand_colors)} - use as primary/accent in Tailwind config
-- Brand fonts: ${JSON.stringify(client.brand_fonts)} - configure in Tailwind and import in CSS
+- Brand colors: ${JSON.stringify(client.brand_colors)} - use in Tailwind classes
+- Brand fonts: ${JSON.stringify(client.brand_fonts)}
 - Modern, beautiful, production-ready design
-- Responsive: mobile-first, works on all screen sizes
-- Add CSS transitions and keyframe animations in index.css
-- Consistent spacing (8px system)
-- Professional typography hierarchy
+- Responsive: mobile-first
+- Use lucide-react for all icons
 - NEVER use purple/indigo unless brand colors include them
-- Use lucide-react for all icons`;
+- Consistent 8px spacing system`;
 
   const response = await callWithRetry(
     () => ai.messages.create({
       model,
       max_tokens: 32000,
       system: systemPrompt,
-      messages: [{ role: 'user', content: `Generate the complete scaffold for:\n\n${JSON.stringify(architecture, null, 2)}` }],
+      messages: [{ role: 'user', content: `Generate the application code files for:\n\n${JSON.stringify(architecture, null, 2)}` }],
     }),
     3,
     'scaffold'
   );
 
   const text = extractText(response);
-  const files = parseCodeBlocks(text);
+  let aiFiles = parseCodeBlocks(text);
   await trackUsage(model, response.usage.input_tokens, response.usage.output_tokens, 'scaffold', project.id);
 
+  const configPaths = new Set(templateFiles.map((f) => f.path));
+  aiFiles = aiFiles.filter((f) => !configPaths.has(f.path));
+
+  aiFiles.forEach((f) => {
+    if (f.path === 'package.json') return;
+    if (f.path.includes('vite.config')) return;
+    if (f.path.includes('tsconfig')) return;
+    if (f.path.includes('tailwind.config')) return;
+    if (f.path.includes('postcss.config')) return;
+  });
+  aiFiles = aiFiles.filter((f) =>
+    !f.path.includes('package.json') &&
+    !f.path.includes('vite.config') &&
+    !f.path.includes('tsconfig') &&
+    !f.path.includes('tailwind.config') &&
+    !f.path.includes('postcss.config') &&
+    f.path !== 'index.html'
+  );
+
+  const allFiles = [...templateFiles, ...aiFiles];
+
   return {
-    files,
+    files: allFiles,
     explanation: text.replace(/```[\s\S]*?```/g, '').trim().slice(0, 500),
     tokensUsed: { input: response.usage.input_tokens, output: response.usage.output_tokens },
   };
@@ -1361,20 +1366,33 @@ export async function generateBuildFix(
     }
   }
 
+  const PACKAGE_JSON_RULES = `
+PACKAGE.JSON RULES (ABSOLUTE - VIOLATING THESE CAUSES INFINITE LOOPS):
+- NEVER add "npm install", "npm i", "pnpm install", or "yarn install" to ANY script
+- NEVER add scripts named "install", "postinstall", "preinstall", or "prepare" that call package managers
+- scripts.build MUST be exactly "vite build" (not "tsc && vite build", not "tsc -b && vite build")
+- scripts.dev MUST be exactly "vite"
+- If the error is "vite: not found", ensure vite is in devDependencies, do NOT change the build script
+- NEVER add react-native, expo, or any mobile framework packages
+- FORBIDDEN packages: ${PROHIBITED_PACKAGES.join(', ')}`;
+
   const strategyInstructions: Record<string, string> = {
     standard: `Fix the root cause, not just the symptom.
 - If a dependency doesn't exist in npm, REMOVE it from package.json
-- If an import references a file that doesn't exist, either create the file or remove the import`,
+- If an import references a file that doesn't exist, either create the file or remove the import
+${PACKAGE_JSON_RULES}`,
     simplify: `SIMPLIFICATION STRATEGY: Remove complexity to make the build pass.
 - Remove ALL imports that reference non-existent files instead of creating them
 - Replace complex components with simple placeholder implementations
 - Remove unused dependencies from package.json
-- Goal: make the build PASS even if some features are simplified`,
+- Goal: make the build PASS even if some features are simplified
+${PACKAGE_JSON_RULES}`,
     regenerate: `REGENERATION STRATEGY: Rewrite broken files from scratch.
 - Do NOT try to patch existing code -- write fresh implementations
 - Use ONLY imports that you can verify exist in the files provided below
 - Keep implementations simple but functional
-- Every component must compile independently`,
+- Every component must compile independently
+${PACKAGE_JSON_RULES}`,
     isolate: `ISOLATION STRATEGY (NUCLEAR OPTION): Each file MUST be 100% self-contained.
 - Each component file MUST compile with ZERO imports from other src/ files
 - The ONLY allowed imports are: react, react-dom, react-router-dom, lucide-react, @supabase/supabase-js, date-fns (npm packages only)
@@ -1383,7 +1401,8 @@ export async function generateBuildFix(
 - Use inline mock data instead of importing from shared files
 - Each file must be a completely independent island that cannot possibly have import errors
 - Keep components simple: a header, some content, basic styling with Tailwind
-- This MUST compile. Simplicity over features.`,
+- This MUST compile. Simplicity over features.
+- DO NOT modify package.json at all. It is LOCKED.`,
   };
 
   const allFilePathsSection = options?.allFilePaths?.length
@@ -1431,8 +1450,14 @@ Fix all errors. Output complete corrected files.`;
   );
 
   const { text } = extractThinkingAndText(response);
-  const files = parseCodeBlocks(text);
+  let files = parseCodeBlocks(text);
   await trackUsage(model, response.usage.input_tokens, response.usage.output_tokens, 'build_fix', project.id);
+
+  const pkgFix = files.find((f) => f.path === 'package.json');
+  if (pkgFix) {
+    const { sanitized } = sanitizePackageJson(pkgFix.content);
+    pkgFix.content = sanitized;
+  }
 
   return {
     files,

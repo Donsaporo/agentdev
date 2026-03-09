@@ -11,7 +11,8 @@ import { researchReferenceUrls } from '../services/web-research.js';
 import { createRepo, pushFiles, getMultipleFileContents, getRepoTree, getFileContent } from '../services/github.js';
 import { createProject as createVercelProject, triggerDeployment, waitForDeployment, addDomain, setEnvironmentVariables } from '../services/vercel.js';
 import { captureAllPages } from '../services/screenshots.js';
-import { verifyBuild, extractBuildErrors, hashErrors, validateScaffold, areAllErrorsTypeOnly, generateTsNoCheckFiles } from '../services/build-verify.js';
+import { verifyBuild, extractBuildErrors, hashErrors, validateScaffold, areAllErrorsTypeOnly, generateTsNoCheckFiles, preFlightCheck } from '../services/build-verify.js';
+import { sanitizePackageJson } from '../services/scaffold-templates.js';
 import { notifyBuildComplete, notifyQAReady, notifyError, notifyDeploySuccess } from '../services/notifications.js';
 import type { ErrorDiagnostics } from '../services/notifications.js';
 import { setCnameRecord } from '../services/namecheap.js';
@@ -125,6 +126,15 @@ async function validateAndPush(
   allFilePaths: string[]
 ): Promise<string> {
   let processed = rewriteAliasImports(files);
+
+  const pkgFile = processed.find((f) => f.path === 'package.json');
+  if (pkgFile) {
+    const { sanitized, issues } = sanitizePackageJson(pkgFile.content);
+    if (issues.length > 0) {
+      await logger.warn(`validateAndPush: sanitized package.json: ${issues.join('; ')}`, 'development', projectId);
+      pkgFile.content = sanitized;
+    }
+  }
 
   const { stubs, warnings } = validateModuleImports(processed, allFilePaths);
   if (warnings.length > 0) {
@@ -523,9 +533,38 @@ export async function processBrief(projectId: string, briefId: string): Promise<
             else scaffold.files.push(fix);
           }
         }
+
+        const scaffoldPaths = scaffold.files.map((f) => f.path);
+        const preflight = preFlightCheck(scaffold.files, scaffoldPaths);
+        if (!preflight.passed) {
+          await logger.warn(`Pre-flight check: ${preflight.issues.join('; ')}`, 'development', projectId);
+          for (const fix of preflight.fixes) {
+            const idx = scaffold.files.findIndex((f) => f.path === fix.path);
+            if (idx >= 0) scaffold.files[idx] = fix;
+            else scaffold.files.push(fix);
+          }
+        }
+
+        const pkgFile = scaffold.files.find((f) => f.path === 'package.json');
+        if (pkgFile) {
+          const { sanitized, issues: pkgIssues } = sanitizePackageJson(pkgFile.content);
+          if (pkgIssues.length > 0) {
+            await logger.warn(`Final package.json sanitization: ${pkgIssues.join('; ')}`, 'development', projectId);
+            pkgFile.content = sanitized;
+          }
+        }
+
+        await logger.info('Verifying scaffold builds before pushing...', 'development', projectId);
+        const localBuild = await verifyBuild('', projectId, scaffold.files);
+        if (!localBuild.success) {
+          await logger.warn(`Local build failed: ${(localBuild.errors || '').slice(0, 200)}. Pushing anyway for remote fix.`, 'development', projectId);
+        } else {
+          await logger.info('Local build passed! Pushing to GitHub...', 'development', projectId);
+        }
+
         if (scaffold.files.length > 0) {
-          const scaffoldPaths = scaffold.files.map((f) => f.path);
-          await validateAndPush(fullName, scaffold.files, 'Initial scaffold', projectId, scaffoldPaths);
+          const finalPaths = scaffold.files.map((f) => f.path);
+          await validateAndPush(fullName, scaffold.files, 'Initial scaffold', projectId, finalPaths);
         }
       }
 

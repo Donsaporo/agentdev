@@ -200,12 +200,126 @@ export interface SqlExecutionResult {
   failedStatements: { sql: string; error: string }[];
 }
 
+function topologicallySortStatements(statements: string[]): string[] {
+  const createTypes: string[] = [];
+  const createExtensions: string[] = [];
+  const createFunctions: string[] = [];
+  const createTables: string[] = [];
+  const alterTables: string[] = [];
+  const createIndexes: string[] = [];
+  const createPolicies: string[] = [];
+  const inserts: string[] = [];
+  const others: string[] = [];
+
+  for (const stmt of statements) {
+    const upper = stmt.toUpperCase().trimStart();
+    if (upper.startsWith('CREATE TYPE') || upper.startsWith('DO $$') && stmt.includes('CREATE TYPE')) {
+      createTypes.push(stmt);
+    } else if (upper.startsWith('CREATE EXTENSION')) {
+      createExtensions.push(stmt);
+    } else if (upper.startsWith('CREATE FUNCTION') || upper.startsWith('CREATE OR REPLACE FUNCTION')) {
+      createFunctions.push(stmt);
+    } else if (upper.startsWith('CREATE TABLE')) {
+      createTables.push(stmt);
+    } else if (upper.startsWith('ALTER TABLE')) {
+      if (upper.includes('ENABLE ROW LEVEL SECURITY')) {
+        alterTables.push(stmt);
+      } else {
+        others.push(stmt);
+      }
+    } else if (upper.startsWith('CREATE INDEX') || upper.startsWith('CREATE UNIQUE INDEX')) {
+      createIndexes.push(stmt);
+    } else if (upper.startsWith('CREATE POLICY')) {
+      createPolicies.push(stmt);
+    } else if (upper.startsWith('INSERT') || (upper.startsWith('DO $$') && stmt.toUpperCase().includes('INSERT'))) {
+      inserts.push(stmt);
+    } else {
+      others.push(stmt);
+    }
+  }
+
+  const sortedTables = sortTablesByDependency(createTables);
+
+  return [
+    ...createExtensions,
+    ...createTypes,
+    ...createFunctions,
+    ...sortedTables,
+    ...alterTables,
+    ...createIndexes,
+    ...createPolicies,
+    ...others,
+    ...inserts,
+  ];
+}
+
+function sortTablesByDependency(tables: string[]): string[] {
+  const tableNames = new Map<string, string>();
+  const deps = new Map<string, Set<string>>();
+
+  for (const stmt of tables) {
+    const nameMatch = stmt.match(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:public\.)?(\w+)/i);
+    if (nameMatch) {
+      const name = nameMatch[1].toLowerCase();
+      tableNames.set(name, stmt);
+
+      const refMatches = stmt.matchAll(/REFERENCES\s+(?:public\.)?(\w+)/gi);
+      const tableDeps = new Set<string>();
+      for (const ref of refMatches) {
+        const refName = ref[1].toLowerCase();
+        if (refName !== name) {
+          tableDeps.add(refName);
+        }
+      }
+      deps.set(name, tableDeps);
+    }
+  }
+
+  const sorted: string[] = [];
+  const visited = new Set<string>();
+  const visiting = new Set<string>();
+
+  function visit(name: string): void {
+    if (visited.has(name)) return;
+    if (visiting.has(name)) {
+      visited.add(name);
+      return;
+    }
+    visiting.add(name);
+    const tableDeps = deps.get(name);
+    if (tableDeps) {
+      for (const dep of tableDeps) {
+        if (tableNames.has(dep)) {
+          visit(dep);
+        }
+      }
+    }
+    visiting.delete(name);
+    visited.add(name);
+    const stmt = tableNames.get(name);
+    if (stmt) sorted.push(stmt);
+  }
+
+  for (const name of tableNames.keys()) {
+    visit(name);
+  }
+
+  for (const stmt of tables) {
+    if (!sorted.includes(stmt)) {
+      sorted.push(stmt);
+    }
+  }
+
+  return sorted;
+}
+
 export async function executeSqlStatements(
   projectRef: string,
   sql: string,
   projectId: string
 ): Promise<SqlExecutionResult> {
-  const statements = splitSqlStatements(sql).filter((s) => s.trim().length >= 5);
+  const rawStatements = splitSqlStatements(sql).filter((s) => s.trim().length >= 5);
+  const statements = topologicallySortStatements(rawStatements);
   let succeeded = 0;
   let failed = 0;
   const errors: string[] = [];

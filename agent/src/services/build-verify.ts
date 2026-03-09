@@ -3,6 +3,21 @@ import { mkdir, rm, writeFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { logger } from '../core/logger.js';
 import { getSecretWithFallback } from '../core/secrets.js';
+import {
+  sanitizePackageJson,
+  generatePackageJson,
+  generateViteConfig,
+  generateTsConfig,
+  generateTsConfigApp,
+  generateTsConfigNode,
+  generatePostcssConfig,
+  generateTailwindConfig,
+  generateIndexHtml,
+  generateMainTsx,
+  generateIndexCss,
+  PROHIBITED_PACKAGES,
+} from './scaffold-templates.js';
+import type { GeneratedFile } from '../core/types.js';
 
 const BUILD_DIR = '/tmp/obzide-builds';
 
@@ -34,7 +49,41 @@ const NPM_ERROR_PATTERNS = [
 const REACT_NATIVE_PACKAGES = [
   'react-native', 'expo', '@react-native', 'react-native-web',
   '@expo/', 'expo-', 'react-native-',
+  '@react-native-community/',
 ];
+
+const DANGEROUS_SCRIPT_PATTERNS = [
+  /npm\s+install/i,
+  /npm\s+i\b/i,
+  /pnpm\s+install/i,
+  /yarn\s+install/i,
+  /yarn\s+add/i,
+  /pnpm\s+add/i,
+];
+
+function detectRecursiveInstall(output: string): boolean {
+  const lines = output.split('\n');
+  const installLines = lines.filter((l) => />\s*.*\binstall\b/.test(l));
+  if (installLines.length >= 3) {
+    const unique = new Set(installLines.map((l) => l.trim()));
+    if (unique.size <= 2) return true;
+  }
+  return false;
+}
+
+async function sanitizePackageJsonOnDisk(buildDir: string): Promise<string[]> {
+  const pkgPath = join(buildDir, 'package.json');
+  try {
+    const raw = await readFile(pkgPath, 'utf-8');
+    const { sanitized, issues } = sanitizePackageJson(raw);
+    if (issues.length > 0) {
+      await writeFile(pkgPath, sanitized, 'utf-8');
+    }
+    return issues;
+  } catch {
+    return [];
+  }
+}
 
 function isNpmError(output: string): boolean {
   return NPM_ERROR_PATTERNS.some((p) => p.test(output));
@@ -77,6 +126,25 @@ async function autoFixPackageJson(buildDir: string, output: string): Promise<boo
     const pkg = JSON.parse(raw);
     let modified = false;
 
+    const scripts = (pkg.scripts || {}) as Record<string, string>;
+    for (const [name, value] of Object.entries(scripts)) {
+      if (typeof value !== 'string') continue;
+      const isDangerous = DANGEROUS_SCRIPT_PATTERNS.some((p) => p.test(value));
+      if (isDangerous) {
+        delete scripts[name];
+        modified = true;
+      }
+    }
+    scripts.dev = 'vite';
+    scripts.build = 'vite build';
+    scripts.preview = 'vite preview';
+    pkg.scripts = scripts;
+
+    if (!pkg.type || pkg.type !== 'module') {
+      pkg.type = 'module';
+      modified = true;
+    }
+
     const badPackages = extractBadPackages(output);
     for (const bad of badPackages) {
       if (pkg.dependencies?.[bad]) {
@@ -101,14 +169,26 @@ async function autoFixPackageJson(buildDir: string, output: string): Promise<boo
       }
     }
 
-    if (!pkg.scripts?.build) {
-      pkg.scripts = pkg.scripts || {};
-      pkg.scripts.build = 'vite build';
+    for (const deps of [pkg.dependencies, pkg.devDependencies]) {
+      if (!deps) continue;
+      for (const key of Object.keys(deps)) {
+        const isProhibited = PROHIBITED_PACKAGES.some(
+          (p) => key === p || key.startsWith(p)
+        );
+        if (isProhibited) {
+          delete deps[key];
+          modified = true;
+        }
+      }
+    }
+
+    if (!pkg.devDependencies?.vite) {
+      pkg.devDependencies = pkg.devDependencies || {};
+      pkg.devDependencies.vite = '^5.4.2';
       modified = true;
     }
-    if (!pkg.scripts?.dev) {
-      pkg.scripts = pkg.scripts || {};
-      pkg.scripts.dev = 'vite';
+    if (!pkg.devDependencies?.['@vitejs/plugin-react']) {
+      pkg.devDependencies['@vitejs/plugin-react'] = '^4.3.1';
       modified = true;
     }
 
@@ -151,16 +231,26 @@ export async function verifyBuild(
       }
     }
 
+    const sanitizeIssues = await sanitizePackageJsonOnDisk(buildDir);
+    if (sanitizeIssues.length > 0) {
+      await logger.info(`Pre-install package.json sanitization: ${sanitizeIssues.join('; ')}`, 'development', projectId);
+    }
+
     await logger.info('Installing dependencies...', 'development', projectId);
-    let install = await runCommand('npm install --no-audit --no-fund 2>&1', buildDir, 180_000);
+    let install = await runCommand('npm install --no-audit --no-fund --ignore-scripts 2>&1', buildDir, 90_000);
 
     if (install.code !== 0) {
       const combinedOutput = `${install.stdout}\n${install.stderr}`;
-      if (isNpmError(combinedOutput)) {
+
+      if (detectRecursiveInstall(combinedOutput)) {
+        await logger.warn('Detected recursive npm install loop, sanitizing package.json...', 'development', projectId);
+        await autoFixPackageJson(buildDir, combinedOutput);
+        install = await runCommand('npm install --no-audit --no-fund --ignore-scripts 2>&1', buildDir, 90_000);
+      } else if (isNpmError(combinedOutput)) {
         const fixed = await autoFixPackageJson(buildDir, combinedOutput);
         if (fixed) {
           await logger.info('Auto-fixed package.json (removed bad packages), retrying install...', 'development', projectId);
-          install = await runCommand('npm install --no-audit --no-fund 2>&1', buildDir, 180_000);
+          install = await runCommand('npm install --no-audit --no-fund --ignore-scripts 2>&1', buildDir, 90_000);
         }
       }
 
@@ -175,7 +265,16 @@ export async function verifyBuild(
     }
 
     await logger.info('Running build...', 'development', projectId);
-    const build = await runCommand('npm run build', buildDir);
+    let build = await runCommand('npm run build', buildDir);
+
+    if (build.code !== 0) {
+      const buildErr = `${build.stderr}\n${build.stdout}`;
+      if (buildErr.includes('vite: not found') || buildErr.includes('sh: 1: vite')) {
+        await logger.warn('vite not found in PATH, trying npx vite build...', 'development', projectId);
+        build = await runCommand('npx vite build', buildDir);
+      }
+    }
+
     const combinedBuildOutput = [build.stderr, build.stdout].filter(Boolean).join('\n');
 
     return {
@@ -294,197 +393,154 @@ export async function validateScaffold(
 ): Promise<{ valid: boolean; issues: string[]; fixedFiles: { path: string; content: string }[] }> {
   const issues: string[] = [];
   const fixedFiles: { path: string; content: string }[] = [];
+  const hasBackend = architecture?.requiresBackend || false;
 
   const pkgFile = files.find((f) => f.path === 'package.json');
   if (!pkgFile) {
-    issues.push('Missing package.json');
-    fixedFiles.push({ path: 'package.json', content: JSON.stringify(generateFallbackPackageJson(architecture?.requiresBackend), null, 2) });
-  }
-
-  const pkgContent = pkgFile?.content || fixedFiles.find((f) => f.path === 'package.json')?.content;
-  if (pkgContent) {
-    try {
-      const pkg = JSON.parse(pkgContent);
-      let modified = false;
-
-      if (!pkg.scripts?.build) {
-        pkg.scripts = pkg.scripts || {};
-        pkg.scripts.build = 'vite build';
-        issues.push('Added missing "build" script');
-        modified = true;
-      }
-      if (!pkg.scripts?.dev) {
-        pkg.scripts = pkg.scripts || {};
-        pkg.scripts.dev = 'vite';
-        issues.push('Added missing "dev" script');
-        modified = true;
-      }
-
-      const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
-      for (const key of Object.keys(allDeps)) {
-        for (const rnPkg of REACT_NATIVE_PACKAGES) {
-          if (key === rnPkg || key.startsWith(rnPkg)) {
-            if (pkg.dependencies?.[key]) delete pkg.dependencies[key];
-            if (pkg.devDependencies?.[key]) delete pkg.devDependencies[key];
-            issues.push(`Removed React Native package: ${key}`);
-            modified = true;
-          }
-        }
-      }
-
-      if (!pkg.dependencies?.react) { pkg.dependencies = pkg.dependencies || {}; pkg.dependencies.react = '^18.3.1'; modified = true; }
-      if (!pkg.dependencies?.['react-dom']) { pkg.dependencies['react-dom'] = '^18.3.1'; modified = true; }
-      if (!pkg.dependencies?.['react-router-dom']) { pkg.dependencies['react-router-dom'] = '^7.1.0'; modified = true; }
-      if (!pkg.dependencies?.['lucide-react']) { pkg.dependencies['lucide-react'] = '^0.344.0'; modified = true; }
-      if (!pkg.devDependencies?.vite) { pkg.devDependencies = pkg.devDependencies || {}; pkg.devDependencies.vite = '^5.4.2'; modified = true; }
-      if (!pkg.devDependencies?.['@vitejs/plugin-react']) { pkg.devDependencies['@vitejs/plugin-react'] = '^4.3.1'; modified = true; }
-      if (!pkg.devDependencies?.typescript) { pkg.devDependencies.typescript = '^5.5.3'; modified = true; }
-      if (!pkg.devDependencies?.tailwindcss && !pkg.dependencies?.tailwindcss) { pkg.devDependencies.tailwindcss = '^3.4.1'; modified = true; }
-
-      if (modified) {
-        const existing = fixedFiles.findIndex((f) => f.path === 'package.json');
-        if (existing >= 0) fixedFiles[existing] = { path: 'package.json', content: JSON.stringify(pkg, null, 2) };
-        else fixedFiles.push({ path: 'package.json', content: JSON.stringify(pkg, null, 2) });
-      }
-    } catch {
-      issues.push('Invalid package.json JSON');
+    issues.push('Missing package.json -- replaced with template');
+    fixedFiles.push({ path: 'package.json', content: generatePackageJson('project', hasBackend) });
+  } else {
+    const { sanitized, issues: pkgIssues } = sanitizePackageJson(pkgFile.content);
+    if (pkgIssues.length > 0) {
+      issues.push(...pkgIssues);
+      const existing = fixedFiles.findIndex((f) => f.path === 'package.json');
+      if (existing >= 0) fixedFiles[existing] = { path: 'package.json', content: sanitized };
+      else fixedFiles.push({ path: 'package.json', content: sanitized });
     }
   }
 
   const viteConfigFile = files.find((f) => f.path.includes('vite.config'));
   if (!viteConfigFile) {
-    issues.push('Missing vite.config.ts -- auto-generated');
-    fixedFiles.push({ path: 'vite.config.ts', content: FALLBACK_VITE_CONFIG });
+    issues.push('Missing vite.config.ts -- replaced with template');
+    fixedFiles.push({ path: 'vite.config.ts', content: generateViteConfig() });
   } else {
-    let viteContent = viteConfigFile.content;
-    let viteModified = false;
-
-    if (viteContent.includes('module.exports') || viteContent.includes('require(')) {
-      issues.push('vite.config uses CJS syntax -- replaced with ESM fallback');
-      viteContent = FALLBACK_VITE_CONFIG;
-      viteModified = true;
-    }
-
-    if (!viteContent.includes('@vitejs/plugin-react') || !viteContent.includes('react()')) {
-      issues.push('vite.config missing react plugin -- replaced with fallback');
-      viteContent = FALLBACK_VITE_CONFIG;
-      viteModified = true;
-    }
-
-    const anyFileUsesAlias = files.some((f) =>
-      /\.(tsx?|jsx?)$/.test(f.path) && /(?:from|import)\s+['"]@\//.test(f.content)
-    );
-    if (anyFileUsesAlias && !viteContent.includes('resolve') && !viteContent.includes('alias')) {
-      issues.push('Files use @/ alias but vite.config lacks resolve.alias -- adding');
-      viteContent = FALLBACK_VITE_CONFIG;
-      viteModified = true;
-    }
-
-    if (viteModified) {
-      const existing = fixedFiles.findIndex((f) => f.path === viteConfigFile.path);
-      if (existing >= 0) fixedFiles[existing] = { path: viteConfigFile.path, content: viteContent };
-      else fixedFiles.push({ path: viteConfigFile.path, content: viteContent });
+    const vc = viteConfigFile.content;
+    if (vc.includes('module.exports') || vc.includes('require(') ||
+        !vc.includes('@vitejs/plugin-react') || !vc.includes('react()')) {
+      issues.push('vite.config invalid -- replaced with template');
+      fixedFiles.push({ path: viteConfigFile.path, content: generateViteConfig() });
     }
   }
 
-  const hasIndexHtml = files.some((f) => f.path === 'index.html');
-  if (!hasIndexHtml) {
-    issues.push('Missing index.html -- auto-generated');
-    fixedFiles.push({ path: 'index.html', content: FALLBACK_INDEX_HTML });
+  if (!files.some((f) => f.path === 'index.html')) {
+    issues.push('Missing index.html -- replaced with template');
+    fixedFiles.push({ path: 'index.html', content: generateIndexHtml('App') });
   }
 
-  const hasMainTsx = files.some((f) => f.path.includes('src/main.tsx'));
-  if (!hasMainTsx) {
-    issues.push('Missing src/main.tsx -- auto-generated');
-    fixedFiles.push({ path: 'src/main.tsx', content: generateFallbackMain() });
+  if (!files.some((f) => f.path.includes('src/main.tsx'))) {
+    issues.push('Missing src/main.tsx -- replaced with template');
+    fixedFiles.push({ path: 'src/main.tsx', content: generateMainTsx(hasBackend) });
   }
 
-  const hasAppTsx = files.some((f) => f.path.includes('src/App.tsx'));
-  if (!hasAppTsx) {
+  if (!files.some((f) => f.path.includes('src/App.tsx'))) {
     issues.push('Missing src/App.tsx -- auto-generated');
     fixedFiles.push({ path: 'src/App.tsx', content: generateFallbackApp(architecture?.pages) });
   }
 
-  const hasTsConfig = files.some((f) => f.path === 'tsconfig.json');
-  if (!hasTsConfig) {
-    issues.push('Missing tsconfig.json -- auto-generated');
-    fixedFiles.push({ path: 'tsconfig.json', content: FALLBACK_TSCONFIG });
-    fixedFiles.push({ path: 'tsconfig.app.json', content: FALLBACK_TSCONFIG_APP });
-    fixedFiles.push({ path: 'tsconfig.node.json', content: FALLBACK_TSCONFIG_NODE });
+  if (!files.some((f) => f.path === 'tsconfig.json')) {
+    issues.push('Missing tsconfig.json -- replaced with template');
+    fixedFiles.push({ path: 'tsconfig.json', content: generateTsConfig() });
+    fixedFiles.push({ path: 'tsconfig.app.json', content: generateTsConfigApp() });
+    fixedFiles.push({ path: 'tsconfig.node.json', content: generateTsConfigNode() });
   }
 
-  const tailwindConfigFile = files.find((f) => f.path.includes('tailwind.config'));
-  if (!tailwindConfigFile) {
-    issues.push('Missing tailwind.config.js -- auto-generated');
-    fixedFiles.push({ path: 'tailwind.config.js', content: FALLBACK_TAILWIND_CONFIG });
-  } else if (tailwindConfigFile.content.includes('module.exports') || tailwindConfigFile.content.includes('require(')) {
-    issues.push('tailwind.config uses CJS syntax -- replaced with ESM');
-    const twContent = tailwindConfigFile.content
-      .replace(/module\.exports\s*=/, 'export default')
-      .replace(/const\s+\w+\s*=\s*require\([^)]+\);?\s*/g, '');
-    const existing = fixedFiles.findIndex((f) => f.path === tailwindConfigFile.path);
-    if (existing >= 0) fixedFiles[existing] = { path: tailwindConfigFile.path, content: twContent };
-    else fixedFiles.push({ path: tailwindConfigFile.path, content: twContent });
+  const tailwindFile = files.find((f) => f.path.includes('tailwind.config'));
+  if (!tailwindFile) {
+    issues.push('Missing tailwind.config.js -- replaced with template');
+    fixedFiles.push({ path: 'tailwind.config.js', content: generateTailwindConfig() });
+  } else if (tailwindFile.content.includes('module.exports') || tailwindFile.content.includes('require(')) {
+    issues.push('tailwind.config uses CJS syntax -- replaced with template');
+    fixedFiles.push({ path: tailwindFile.path, content: generateTailwindConfig() });
   }
 
-  const postcssConfigFile = files.find((f) => f.path.includes('postcss.config'));
-  if (!postcssConfigFile) {
-    fixedFiles.push({ path: 'postcss.config.js', content: FALLBACK_POSTCSS_CONFIG });
-  } else if (postcssConfigFile.content.includes('module.exports') || postcssConfigFile.content.includes('require(')) {
-    issues.push('postcss.config uses CJS syntax -- replaced with ESM');
-    fixedFiles.push({ path: postcssConfigFile.path, content: FALLBACK_POSTCSS_CONFIG });
+  const postcssFile = files.find((f) => f.path.includes('postcss.config'));
+  if (!postcssFile) {
+    fixedFiles.push({ path: 'postcss.config.js', content: generatePostcssConfig() });
+  } else if (postcssFile.content.includes('module.exports') || postcssFile.content.includes('require(')) {
+    issues.push('postcss.config uses CJS syntax -- replaced with template');
+    fixedFiles.push({ path: postcssFile.path, content: generatePostcssConfig() });
   }
 
-  const hasIndexCss = files.some((f) => f.path === 'src/index.css');
-  if (!hasIndexCss) {
-    fixedFiles.push({ path: 'src/index.css', content: FALLBACK_INDEX_CSS });
+  if (!files.some((f) => f.path === 'src/index.css')) {
+    fixedFiles.push({ path: 'src/index.css', content: generateIndexCss() });
   }
 
   return { valid: issues.length === 0, issues, fixedFiles };
 }
 
-function generateFallbackPackageJson(hasBackend?: boolean): Record<string, unknown> {
-  const deps: Record<string, string> = {
-    'react': '^18.3.1',
-    'react-dom': '^18.3.1',
-    'react-router-dom': '^7.1.0',
-    'lucide-react': '^0.344.0',
-  };
-  if (hasBackend) deps['@supabase/supabase-js'] = '^2.57.4';
-  return {
-    name: 'project',
-    private: true,
-    version: '0.0.0',
-    type: 'module',
-    scripts: { dev: 'vite', build: 'vite build', preview: 'vite preview' },
-    dependencies: deps,
-    devDependencies: {
-      '@vitejs/plugin-react': '^4.3.1',
-      'autoprefixer': '^10.4.18',
-      'postcss': '^8.4.35',
-      'tailwindcss': '^3.4.1',
-      'typescript': '^5.5.3',
-      'vite': '^5.4.2',
-      '@types/react': '^18.3.5',
-      '@types/react-dom': '^18.3.0',
-    },
-  };
-}
+export function preFlightCheck(
+  files: GeneratedFile[],
+  allFilePaths?: string[]
+): { passed: boolean; issues: string[]; fixes: GeneratedFile[] } {
+  const issues: string[] = [];
+  const fixes: GeneratedFile[] = [];
+  const filePaths = allFilePaths || files.map((f) => f.path);
 
-function generateFallbackMain(): string {
-  return `import React from 'react';
-import ReactDOM from 'react-dom/client';
-import { BrowserRouter } from 'react-router-dom';
-import App from './App';
-import './index.css';
+  const pkgFile = files.find((f) => f.path === 'package.json');
+  if (pkgFile) {
+    try {
+      const pkg = JSON.parse(pkgFile.content);
+      const scripts = pkg.scripts || {};
+      for (const [name, value] of Object.entries(scripts)) {
+        if (typeof value === 'string' && DANGEROUS_SCRIPT_PATTERNS.some((p) => p.test(value))) {
+          issues.push(`Dangerous script "${name}": "${value}"`);
+        }
+      }
+      if (scripts.build && scripts.build !== 'vite build') {
+        issues.push(`Build script is "${scripts.build}" instead of "vite build"`);
+      }
+      if (!pkg.devDependencies?.vite) {
+        issues.push('vite missing from devDependencies');
+      }
+    } catch {
+      issues.push('Invalid package.json');
+    }
+  }
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <BrowserRouter>
-      <App />
-    </BrowserRouter>
-  </React.StrictMode>
-);`;
+  for (const file of files) {
+    if (!/\.(tsx?|jsx?)$/.test(file.path)) continue;
+
+    const importRegex = /(?:import|from)\s+['"](\.\/?[^'"]+)['"]/g;
+    let match: RegExpExecArray | null;
+    while ((match = importRegex.exec(file.content)) !== null) {
+      const importPath = match[1];
+      if (importPath.startsWith('.')) {
+        const fileDir = file.path.substring(0, file.path.lastIndexOf('/')) || 'src';
+        const parts = fileDir.split('/');
+        const importParts = importPath.split('/');
+        const baseParts = [...parts];
+        for (const part of importParts) {
+          if (part === '.') continue;
+          else if (part === '..') baseParts.pop();
+          else baseParts.push(part);
+        }
+        const resolved = baseParts.join('/');
+        const candidates = [
+          resolved, resolved + '.tsx', resolved + '.ts',
+          resolved + '/index.tsx', resolved + '/index.ts',
+        ];
+        const found = candidates.some((c) => filePaths.includes(c));
+        if (!found) {
+          const stubPath = resolved.endsWith('.tsx') || resolved.endsWith('.ts')
+            ? resolved : resolved + '.tsx';
+          if (!fixes.some((f) => f.path === stubPath)) {
+            const name = stubPath.split('/').pop()?.replace(/\.[^.]+$/, '') || 'Stub';
+            fixes.push({
+              path: stubPath,
+              content: `export default function ${name}() {\n  return <div className="min-h-screen flex items-center justify-center"><p>${name}</p></div>;\n}`,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  if (issues.length > 0 && pkgFile) {
+    const { sanitized } = sanitizePackageJson(pkgFile.content);
+    fixes.push({ path: 'package.json', content: sanitized });
+  }
+
+  return { passed: issues.length === 0, issues, fixes };
 }
 
 function generateFallbackApp(pages?: { name: string; route: string }[]): string {
@@ -518,84 +574,6 @@ ${routeLines}
 }`;
 }
 
-const FALLBACK_VITE_CONFIG = `import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
-import path from 'path';
-
-export default defineConfig({
-  plugins: [react()],
-  resolve: {
-    alias: {
-      '@': path.resolve(__dirname, './src'),
-    },
-  },
-});`;
-
-const FALLBACK_INDEX_HTML = `<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>App</title>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
-</html>`;
-
-const FALLBACK_TSCONFIG = `{
-  "files": [],
-  "references": [
-    { "path": "./tsconfig.app.json" },
-    { "path": "./tsconfig.node.json" }
-  ]
-}`;
-
-const FALLBACK_TSCONFIG_APP = `{
-  "compilerOptions": {
-    "target": "ES2020",
-    "useDefineForClassFields": true,
-    "lib": ["ES2020", "DOM", "DOM.Iterable"],
-    "module": "ESNext",
-    "skipLibCheck": true,
-    "moduleResolution": "bundler",
-    "allowImportingTsExtensions": true,
-    "isolatedModules": true,
-    "moduleDetection": "force",
-    "noEmit": true,
-    "jsx": "react-jsx",
-    "strict": true,
-    "noUnusedLocals": false,
-    "noUnusedParameters": false,
-    "noFallthroughCasesInSwitch": true
-  },
-  "include": ["src"]
-}`;
-
-const FALLBACK_TSCONFIG_NODE = `{
-  "compilerOptions": {
-    "target": "ES2022",
-    "lib": ["ES2023"],
-    "module": "ESNext",
-    "skipLibCheck": true,
-    "moduleResolution": "bundler",
-    "allowImportingTsExtensions": true,
-    "isolatedModules": true,
-    "moduleDetection": "force",
-    "noEmit": true,
-    "strict": true
-  },
-  "include": ["vite.config.ts"]
-}`;
-
-const FALLBACK_TAILWIND_CONFIG = `/** @type {import('tailwindcss').Config} */
-export default {
-  content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
-  theme: { extend: {} },
-  plugins: [],
-};`;
 
 export function areAllErrorsTypeOnly(errors: string[]): boolean {
   const runtimePatterns = [
@@ -649,13 +627,3 @@ export function generateTsNoCheckFiles(
   return fixes;
 }
 
-const FALLBACK_POSTCSS_CONFIG = `export default {
-  plugins: {
-    tailwindcss: {},
-    autoprefixer: {},
-  },
-};`;
-
-const FALLBACK_INDEX_CSS = `@tailwind base;
-@tailwind components;
-@tailwind utilities;`;
