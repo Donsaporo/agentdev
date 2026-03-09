@@ -755,6 +755,9 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       );
       if (scaffoldGate.passed) {
         await logger.info('Scaffold build verified successfully', 'development', projectId);
+      } else if (scaffoldGate.lastStrategy === 'environment_skip') {
+        await logger.warn('Scaffold build skipped (environment issue, not code). Relying on Vercel build.', 'development', projectId);
+        await sendChatMessage(projectId, 'Local build environment unavailable. Continuing -- Vercel will handle the build.');
       } else {
         await sendChatMessage(projectId, `Scaffold failed to compile after 4 attempts (${scaffoldGate.errorsRemaining} errors). Regenerating scaffold from scratch...`);
         await logger.warn('Scaffold build gate failed. Regenerating scaffold...', 'development', projectId);
@@ -1015,7 +1018,9 @@ export async function processBrief(projectId: string, briefId: string): Promise<
           modulesSinceLastBuildCheck = 0;
           try {
             const midBuild = await verifyBuild(fullName, projectId);
-            if (!midBuild.success) {
+            if (!midBuild.success && midBuild.isEnvironmentError) {
+              await logger.warn('Intermediate build check skipped (environment issue). Continuing module generation.', 'development', projectId);
+            } else if (!midBuild.success) {
               const midErrors = extractBuildErrors(midBuild.errors || midBuild.output);
               const midDeduped = deduplicateErrors(midErrors);
               await logger.warn(`Intermediate build check: ${midDeduped.length} error(s). Fixing before next module...`, 'development', projectId);
@@ -1405,6 +1410,10 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
     if (buildPassed) {
       await sendChatMessage(projectId, finalGate.attemptsUsed === 1 ? 'Build verified successfully.' : `Build verified after ${finalGate.attemptsUsed - 1} fix(es).`);
+    } else if (finalGate.lastStrategy === 'environment_skip') {
+      buildPassed = true;
+      await logger.warn('Final build verification skipped (environment issue, not code). Relying on Vercel build.', 'development', projectId);
+      await sendChatMessage(projectId, 'Local build environment unavailable. Relying on Vercel for build verification.');
     }
 
     if (!buildPassed) {
