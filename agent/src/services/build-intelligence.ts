@@ -499,27 +499,17 @@ export function validateModuleImports(
           : resolved + '.tsx';
 
         if (!allKnownPaths.has(stubPath) && !stubs.some((s) => s.path === stubPath)) {
-          const componentName = stubPath
-            .replace(/^src\//, '')
-            .replace(/\.(tsx?|jsx?)$/, '')
-            .split('/')
-            .pop()
-            ?.replace(/[^a-zA-Z0-9]/g, '') || 'Placeholder';
+          const isNonJsx = stubPath.includes('/lib/') || stubPath.includes('/utils/') ||
+            stubPath.includes('/hooks/') || stubPath.includes('/services/') ||
+            stubPath.includes('/types') || stubPath.endsWith('.ts');
+          const finalPath = isNonJsx && stubPath.endsWith('.tsx') ? stubPath.replace(/\.tsx$/, '.ts') : stubPath;
 
           stubs.push({
-            path: stubPath,
-            content: `export default function ${componentName}() {
-  return (
-    <div className="min-h-screen flex items-center justify-center">
-      <div className="text-center">
-        <h1 className="text-2xl font-bold mb-4">${componentName}</h1>
-        <p className="text-gray-500">This page is under construction.</p>
-      </div>
-    </div>
-  );
-}`,
+            path: finalPath,
+            content: generateSmartStubContent(finalPath),
           });
           allKnownPaths.add(stubPath);
+          allKnownPaths.add(finalPath);
         }
       }
     }
@@ -557,6 +547,78 @@ export function rewriteAliasImports(files: GeneratedFile[]): GeneratedFile[] {
     );
     return content !== file.content ? { ...file, content } : file;
   });
+}
+
+function generateSmartStubContent(stubPath: string): string {
+  const lower = stubPath.toLowerCase();
+  const baseName = stubPath
+    .replace(/^src\//, '')
+    .replace(/\.(tsx?|jsx?)$/, '')
+    .split('/')
+    .pop()
+    ?.replace(/[^a-zA-Z0-9]/g, '') || 'Placeholder';
+
+  if (lower.includes('/lib/types') || lower.includes('/types/') || lower.includes('/types.ts')) {
+    return `export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
+export interface Placeholder { id: string; created_at: string; }`;
+  }
+
+  if (lower.includes('/lib/supabase') || lower.includes('/supabase.ts')) {
+    return `import { createClient } from '@supabase/supabase-js';
+export const supabase = createClient(
+  import.meta.env.VITE_SUPABASE_URL || 'https://placeholder.supabase.co',
+  import.meta.env.VITE_SUPABASE_ANON_KEY || 'placeholder-key'
+);`;
+  }
+
+  if (lower.includes('/lib/api') || lower.includes('/services/') || lower.includes('/api.ts')) {
+    return `import { supabase } from './supabase';
+export async function fetchData(table: string) {
+  const { data, error } = await supabase.from(table).select('*');
+  if (error) throw error;
+  return data;
+}`;
+  }
+
+  if (lower.includes('/lib/mock-data') || lower.includes('/mock')) {
+    return `export const mockData: Record<string, unknown[]> = {};`;
+  }
+
+  if (lower.includes('/lib/') || lower.includes('/utils/') || lower.includes('/helpers/')) {
+    return `export const placeholder = {};
+export type PlaceholderType = Record<string, unknown>;`;
+  }
+
+  if (lower.includes('/hooks/')) {
+    const hookName = 'use' + baseName.replace(/^use/i, '').charAt(0).toUpperCase() + baseName.replace(/^use/i, '').slice(1);
+    return `export function ${hookName}() {
+  return { data: null, loading: false, error: null };
+}
+export default ${hookName};`;
+  }
+
+  if (lower.includes('/contexts/')) {
+    const ctxName = baseName.charAt(0).toUpperCase() + baseName.slice(1);
+    return `import { createContext, useContext, type ReactNode } from 'react';
+const ${ctxName}Ctx = createContext<Record<string, unknown>>({});
+export function ${ctxName}Provider({ children }: { children: ReactNode }) {
+  return <${ctxName}Ctx.Provider value={{}}>{children}</${ctxName}Ctx.Provider>;
+}
+export function use${ctxName}() { return useContext(${ctxName}Ctx); }
+export { ${ctxName}Ctx as ${ctxName} };`;
+  }
+
+  const componentName = baseName.charAt(0).toUpperCase() + baseName.slice(1);
+  return `export default function ${componentName}() {
+  return (
+    <div className="min-h-screen flex items-center justify-center">
+      <div className="text-center">
+        <h1 className="text-2xl font-bold mb-4">${componentName}</h1>
+        <p className="text-gray-500">This page is under construction.</p>
+      </div>
+    </div>
+  );
+}`;
 }
 
 function resolveRelativePath(fromFile: string, importPath: string): string {
@@ -600,29 +662,13 @@ export function generateStubForMissingImport(
   }
 
   if (!modulePath.includes('.')) {
-    modulePath += '.tsx';
+    const isNonJsx = modulePath.includes('/lib/') || modulePath.includes('/utils/') ||
+      modulePath.includes('/hooks/') || modulePath.includes('/services/') ||
+      modulePath.includes('/types');
+    modulePath += isNonJsx ? '.ts' : '.tsx';
   }
 
   if (allFilePaths.includes(modulePath)) return null;
 
-  let componentName = modulePath
-    .replace(/^src\//, '')
-    .replace(/\.(tsx?|jsx?)$/, '')
-    .split('/')
-    .pop()
-    ?.replace(/[^a-zA-Z0-9]/g, '') || 'Placeholder';
-  if (!componentName || /^\d/.test(componentName)) componentName = 'Stub' + componentName;
-
-  const content = `export default function ${componentName}() {
-  return (
-    <div className="min-h-screen flex items-center justify-center">
-      <div className="text-center">
-        <h1 className="text-2xl font-bold mb-4">${componentName}</h1>
-        <p className="text-gray-500">This page is under construction.</p>
-      </div>
-    </div>
-  );
-}`;
-
-  return { path: modulePath, content };
+  return { path: modulePath, content: generateSmartStubContent(modulePath) };
 }

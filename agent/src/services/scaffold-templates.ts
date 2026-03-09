@@ -200,7 +200,7 @@ export function generateIndexHtml(
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%230F172A'/><text x='16' y='22' text-anchor='middle' fill='white' font-size='18' font-family='sans-serif'>O</text></svg>" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     ${fontLink}
     <title>${escapeHtml(title)}</title>
@@ -305,6 +305,235 @@ export function generateEnvExample(): string {
 VITE_SUPABASE_ANON_KEY=your-anon-key`;
 }
 
+export function generateGitignore(): string {
+  return `node_modules
+dist
+.env
+.env.local
+.env.*.local
+*.log
+.DS_Store
+.vite`;
+}
+
+export function generateSupabaseClient(): string {
+  return `import { createClient } from '@supabase/supabase-js';
+
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+if (!supabaseUrl || !supabaseAnonKey) {
+  console.warn('Supabase environment variables are not set. Database features will not work.');
+}
+
+export const supabase = createClient(
+  supabaseUrl || 'https://placeholder.supabase.co',
+  supabaseAnonKey || 'placeholder-key'
+);`;
+}
+
+export function generateAuthContext(): string {
+  return `import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import type { User, Session } from '@supabase/supabase-js';
+import { supabase } from '../lib/supabase';
+
+interface AuthState {
+  user: User | null;
+  session: Session | null;
+  loading: boolean;
+  signUp: (email: string, password: string) => Promise<{ error: Error | null }>;
+  signIn: (email: string, password: string) => Promise<{ error: Error | null }>;
+  signOut: () => Promise<void>;
+}
+
+const AuthContext = createContext<AuthState>({
+  user: null,
+  session: null,
+  loading: true,
+  signUp: async () => ({ error: null }),
+  signIn: async () => ({ error: null }),
+  signOut: async () => {},
+});
+
+export function AuthProvider({ children }: { children: ReactNode }) {
+  const [user, setUser] = useState<User | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session: s } }) => {
+      setSession(s);
+      setUser(s?.user ?? null);
+      setLoading(false);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, s) => {
+      setSession(s);
+      setUser(s?.user ?? null);
+      setLoading(false);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const signUp = async (email: string, password: string) => {
+    const { error } = await supabase.auth.signUp({ email, password });
+    return { error: error ? new Error(error.message) : null };
+  };
+
+  const signIn = async (email: string, password: string) => {
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    return { error: error ? new Error(error.message) : null };
+  };
+
+  const signOut = async () => {
+    await supabase.auth.signOut();
+  };
+
+  return (
+    <AuthContext.Provider value={{ user, session, loading, signUp, signIn, signOut }}>
+      {children}
+    </AuthContext.Provider>
+  );
+}
+
+export function useAuth() {
+  const context = useContext(AuthContext);
+  if (!context) throw new Error('useAuth must be used within an AuthProvider');
+  return context;
+}
+
+export { AuthContext };`;
+}
+
+export function generateUseAuth(): string {
+  return `export { useAuth } from '../contexts/AuthContext';`;
+}
+
+export function generateLibTypes(architecture: FullArchitecture): string {
+  const models = architecture.dataModels || [];
+  if (models.length === 0) {
+    return `export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
+
+export interface UserProfile {
+  id: string;
+  email: string;
+  created_at: string;
+}`;
+  }
+
+  const typeMap: Record<string, string> = {
+    uuid: 'string',
+    text: 'string',
+    integer: 'number',
+    numeric: 'number',
+    boolean: 'boolean',
+    timestamptz: 'string',
+    jsonb: 'Record<string, unknown>',
+    'text[]': 'string[]',
+  };
+
+  const lines: string[] = [
+    'export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];',
+    '',
+  ];
+
+  for (const model of models) {
+    const name = model.name.replace(/[^a-zA-Z0-9_]/g, '');
+    const pascalName = name
+      .split(/[-_]/)
+      .map((w: string) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join('');
+
+    lines.push(`export interface ${pascalName} {`);
+
+    const fields = model.fields || [];
+    for (const field of fields) {
+      const tsType = typeMap[field.type] || 'string';
+      const optional = !field.required && !field.pk ? '?' : '';
+      lines.push(`  ${field.name}${optional}: ${tsType};`);
+    }
+
+    if (!fields.some((f: { name: string }) => f.name === 'id')) {
+      lines.push('  id: string;');
+    }
+    if (!fields.some((f: { name: string }) => f.name === 'created_at')) {
+      lines.push('  created_at: string;');
+    }
+
+    lines.push('}');
+    lines.push('');
+  }
+
+  return lines.join('\n');
+}
+
+export function generateLibApi(architecture: FullArchitecture): string {
+  const models = architecture.dataModels || [];
+  if (models.length === 0) {
+    return `import { supabase } from './supabase';
+
+export async function fetchData(table: string) {
+  const { data, error } = await supabase.from(table).select('*');
+  if (error) throw error;
+  return data;
+}`;
+  }
+
+  const lines: string[] = [
+    "import { supabase } from './supabase';",
+    '',
+  ];
+
+  for (const model of models) {
+    const table = model.name;
+    const camel = table
+      .split(/[-_]/)
+      .map((w: string, i: number) => (i === 0 ? w : w.charAt(0).toUpperCase() + w.slice(1)))
+      .join('');
+    const pascal = table
+      .split(/[-_]/)
+      .map((w: string) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join('');
+
+    lines.push(`export async function get${pascal}() {`);
+    lines.push(`  const { data, error } = await supabase.from('${table}').select('*');`);
+    lines.push('  if (error) throw error;');
+    lines.push('  return data;');
+    lines.push('}');
+    lines.push('');
+
+    lines.push(`export async function get${pascal}ById(id: string) {`);
+    lines.push(`  const { data, error } = await supabase.from('${table}').select('*').eq('id', id).maybeSingle();`);
+    lines.push('  if (error) throw error;');
+    lines.push('  return data;');
+    lines.push('}');
+    lines.push('');
+
+    lines.push(`export async function create${pascal}(record: Omit<Record<string, unknown>, 'id' | 'created_at'>) {`);
+    lines.push(`  const { data, error } = await supabase.from('${table}').insert(record).select().maybeSingle();`);
+    lines.push('  if (error) throw error;');
+    lines.push('  return data;');
+    lines.push('}');
+    lines.push('');
+
+    lines.push(`export async function update${pascal}(id: string, updates: Record<string, unknown>) {`);
+    lines.push(`  const { data, error } = await supabase.from('${table}').update(updates).eq('id', id).select().maybeSingle();`);
+    lines.push('  if (error) throw error;');
+    lines.push('  return data;');
+    lines.push('}');
+    lines.push('');
+
+    lines.push(`export async function delete${pascal}(id: string) {`);
+    lines.push(`  const { error } = await supabase.from('${table}').delete().eq('id', id);`);
+    lines.push('  if (error) throw error;');
+    lines.push('}');
+    lines.push('');
+  }
+
+  return lines.join('\n');
+}
+
 export function sanitizePackageJson(content: string): {
   sanitized: string;
   issues: string[];
@@ -406,10 +635,18 @@ export function getAllTemplateFiles(
     { path: 'src/main.tsx', content: generateMainTsx(hasBackend) },
     { path: 'src/index.css', content: generateIndexCss(fonts) },
     { path: 'src/vite-env.d.ts', content: generateViteEnvDts() },
+    { path: '.gitignore', content: generateGitignore() },
   ];
 
   if (hasBackend) {
-    files.push({ path: '.env.example', content: generateEnvExample() });
+    files.push(
+      { path: '.env.example', content: generateEnvExample() },
+      { path: 'src/lib/supabase.ts', content: generateSupabaseClient() },
+      { path: 'src/contexts/AuthContext.tsx', content: generateAuthContext() },
+      { path: 'src/hooks/useAuth.ts', content: generateUseAuth() },
+      { path: 'src/lib/types.ts', content: generateLibTypes(architecture) },
+      { path: 'src/lib/api.ts', content: generateLibApi(architecture) },
+    );
   }
 
   return files;

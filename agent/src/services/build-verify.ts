@@ -25,7 +25,8 @@ interface BuildResult {
   success: boolean;
   output: string;
   errors: string;
-  errorType?: 'npm_install' | 'build' | 'clone' | 'unknown';
+  errorType?: 'npm_install' | 'build' | 'clone' | 'environment' | 'unknown';
+  isEnvironmentError?: boolean;
 }
 
 function runCommand(cmd: string, cwd: string, timeoutMs = 120_000): Promise<{ stdout: string; stderr: string; code: number }> {
@@ -237,7 +238,7 @@ export async function verifyBuild(
     }
 
     await logger.info('Installing dependencies...', 'development', projectId);
-    let install = await runCommand('npm install --no-audit --no-fund --ignore-scripts 2>&1', buildDir, 90_000);
+    let install = await runCommand('npm install --no-audit --no-fund 2>&1', buildDir, 120_000);
 
     if (install.code !== 0) {
       const combinedOutput = `${install.stdout}\n${install.stderr}`;
@@ -245,12 +246,12 @@ export async function verifyBuild(
       if (detectRecursiveInstall(combinedOutput)) {
         await logger.warn('Detected recursive npm install loop, sanitizing package.json...', 'development', projectId);
         await autoFixPackageJson(buildDir, combinedOutput);
-        install = await runCommand('npm install --no-audit --no-fund --ignore-scripts 2>&1', buildDir, 90_000);
+        install = await runCommand('npm install --no-audit --no-fund 2>&1', buildDir, 120_000);
       } else if (isNpmError(combinedOutput)) {
         const fixed = await autoFixPackageJson(buildDir, combinedOutput);
         if (fixed) {
           await logger.info('Auto-fixed package.json (removed bad packages), retrying install...', 'development', projectId);
-          install = await runCommand('npm install --no-audit --no-fund --ignore-scripts 2>&1', buildDir, 90_000);
+          install = await runCommand('npm install --no-audit --no-fund 2>&1', buildDir, 120_000);
         }
       }
 
@@ -260,28 +261,48 @@ export async function verifyBuild(
           output: install.stdout,
           errors: `npm install failed: ${install.stderr || install.stdout}`,
           errorType: 'npm_install',
+          isEnvironmentError: true,
+        };
+      }
+    }
+
+    const viteCheck = await runCommand('test -f node_modules/vite/bin/vite.js && echo VITE_OK || echo VITE_MISSING', buildDir);
+    if (!viteCheck.stdout.includes('VITE_OK')) {
+      await logger.warn('vite not found after npm install, force-installing critical deps...', 'development', projectId);
+      await runCommand('npm install vite@^5.4.2 @vitejs/plugin-react@^4.3.1 --no-audit --no-fund --no-save 2>&1', buildDir, 60_000);
+
+      const recheck = await runCommand('test -f node_modules/vite/bin/vite.js && echo VITE_OK || echo VITE_MISSING', buildDir);
+      if (!recheck.stdout.includes('VITE_OK')) {
+        return {
+          success: false,
+          output: '',
+          errors: 'vite could not be installed in the build environment. npm install may be broken.',
+          errorType: 'environment',
+          isEnvironmentError: true,
         };
       }
     }
 
     await logger.info('Running build...', 'development', projectId);
-    let build = await runCommand('npm run build', buildDir);
+    let build = await runCommand('./node_modules/.bin/vite build 2>&1', buildDir);
 
     if (build.code !== 0) {
       const buildErr = `${build.stderr}\n${build.stdout}`;
-      if (buildErr.includes('vite: not found') || buildErr.includes('sh: 1: vite')) {
-        await logger.warn('vite not found in PATH, trying npx vite build...', 'development', projectId);
-        build = await runCommand('npx vite build', buildDir);
+      if (buildErr.includes('not found') || buildErr.includes('ENOENT') || buildErr.includes('No such file')) {
+        await logger.warn('vite binary not accessible, trying direct node execution...', 'development', projectId);
+        build = await runCommand('node ./node_modules/vite/bin/vite.js build 2>&1', buildDir);
       }
     }
 
     const combinedBuildOutput = [build.stderr, build.stdout].filter(Boolean).join('\n');
+    const envError = isEnvironmentBuildError(combinedBuildOutput);
 
     return {
       success: build.code === 0,
       output: build.stdout,
       errors: build.code !== 0 ? combinedBuildOutput : '',
-      errorType: build.code !== 0 ? 'build' : undefined,
+      errorType: build.code !== 0 ? (envError ? 'environment' : 'build') : undefined,
+      isEnvironmentError: build.code !== 0 ? envError : false,
     };
   } catch (err) {
     return {
@@ -293,6 +314,45 @@ export async function verifyBuild(
   } finally {
     await rm(buildDir, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+const ENVIRONMENT_ERROR_PATTERNS = [
+  /Cannot find package '(vite|@vitejs|tailwindcss|postcss|autoprefixer)'/i,
+  /ERR_MODULE_NOT_FOUND.*node_modules/i,
+  /Cannot find module '(vite|@vitejs|tailwindcss|postcss|autoprefixer)'/i,
+  /failed to load config.*vite\.config/i,
+  /Loading PostCSS Plugin failed.*Cannot find module/i,
+  /EACCES.*permission denied/i,
+  /ENOSPC.*no space left/i,
+  /npm ERR! code E(RESOLVE|TARGET|404)/i,
+  /config must export or return an object/i,
+];
+
+const CONFIG_ERROR_PATTERNS = [
+  /failed to load config from.*vite\.config/i,
+  /Loading PostCSS Plugin failed/i,
+  /\[vite:css\].*Failed to load PostCSS config/i,
+  /tailwind\.config.*Error/i,
+];
+
+export type BuildErrorCategory = 'environment' | 'config' | 'code';
+
+export function classifyBuildError(errors: string[]): BuildErrorCategory {
+  const combined = errors.join('\n');
+
+  if (ENVIRONMENT_ERROR_PATTERNS.some((p) => p.test(combined))) {
+    return 'environment';
+  }
+
+  if (CONFIG_ERROR_PATTERNS.some((p) => p.test(combined))) {
+    return 'config';
+  }
+
+  return 'code';
+}
+
+function isEnvironmentBuildError(output: string): boolean {
+  return ENVIRONMENT_ERROR_PATTERNS.some((p) => p.test(output));
 }
 
 const WARNING_PATTERNS = [

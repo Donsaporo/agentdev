@@ -737,11 +737,9 @@ export async function generateProjectScaffold(
   const templateFiles = getAllTemplateFiles(project.name, architecture);
 
   const backendAppFiles = hasBackend ? `
-- src/lib/supabase.ts (Supabase client singleton using import.meta.env.VITE_SUPABASE_URL and import.meta.env.VITE_SUPABASE_ANON_KEY)
-- src/lib/types.ts (TypeScript interfaces for ALL data models: ${(architecture.dataModels || []).map((m) => m.name).join(', ')})
-- src/lib/api.ts (CRUD helper functions for each data model using Supabase client)
-- src/contexts/AuthContext.tsx (Supabase Auth context with signUp, signIn, signOut, session management)
-- src/hooks/useAuth.ts (hook wrapping AuthContext)` : `
+NOTE: src/lib/supabase.ts, src/lib/types.ts, src/lib/api.ts, src/contexts/AuthContext.tsx, src/hooks/useAuth.ts are ALREADY generated as templates.
+Import from them freely: import { supabase } from '../lib/supabase'; import { useAuth } from '../hooks/useAuth'; etc.
+DO NOT regenerate these files.` : `
 - src/lib/mock-data.ts (realistic mock data for all entities)
 - src/contexts/AppContext.tsx (local state management with mock data)`;
 
@@ -766,8 +764,14 @@ CRITICAL: DO NOT generate these files (they are pre-configured and immutable):
 - src/index.css (ALREADY GENERATED - DO NOT OUTPUT)
 - src/vite-env.d.ts (ALREADY GENERATED - DO NOT OUTPUT)
 - .env.example (ALREADY GENERATED - DO NOT OUTPUT)
+- .gitignore (ALREADY GENERATED - DO NOT OUTPUT)
+- src/lib/supabase.ts (ALREADY GENERATED - DO NOT OUTPUT)
+- src/contexts/AuthContext.tsx (ALREADY GENERATED - DO NOT OUTPUT)
+- src/hooks/useAuth.ts (ALREADY GENERATED - DO NOT OUTPUT)
+- src/lib/types.ts (ALREADY GENERATED - DO NOT OUTPUT)
+- src/lib/api.ts (ALREADY GENERATED - DO NOT OUTPUT)
 
-You MUST ONLY generate files inside src/ (excluding main.tsx, index.css, vite-env.d.ts).
+You MUST ONLY generate files inside src/ that are NOT listed above.
 
 ENVIRONMENT CONSTRAINTS (CRITICAL):
 - Target: Vite 5.x + React 18 + TypeScript 5.x
@@ -820,20 +824,14 @@ DESIGN RULES:
   const configPaths = new Set(templateFiles.map((f) => f.path));
   aiFiles = aiFiles.filter((f) => !configPaths.has(f.path));
 
-  aiFiles.forEach((f) => {
-    if (f.path === 'package.json') return;
-    if (f.path.includes('vite.config')) return;
-    if (f.path.includes('tsconfig')) return;
-    if (f.path.includes('tailwind.config')) return;
-    if (f.path.includes('postcss.config')) return;
-  });
   aiFiles = aiFiles.filter((f) =>
     !f.path.includes('package.json') &&
     !f.path.includes('vite.config') &&
     !f.path.includes('tsconfig') &&
     !f.path.includes('tailwind.config') &&
     !f.path.includes('postcss.config') &&
-    f.path !== 'index.html'
+    f.path !== 'index.html' &&
+    f.path !== '.gitignore'
   );
 
   const allFiles = [...templateFiles, ...aiFiles];

@@ -11,7 +11,7 @@ import { researchReferenceUrls } from '../services/web-research.js';
 import { createRepo, pushFiles, getMultipleFileContents, getRepoTree, getFileContent } from '../services/github.js';
 import { createProject as createVercelProject, triggerDeployment, waitForDeployment, addDomain, setEnvironmentVariables } from '../services/vercel.js';
 import { captureAllPages } from '../services/screenshots.js';
-import { verifyBuild, extractBuildErrors, hashErrors, validateScaffold, areAllErrorsTypeOnly, generateTsNoCheckFiles, preFlightCheck } from '../services/build-verify.js';
+import { verifyBuild, extractBuildErrors, hashErrors, validateScaffold, areAllErrorsTypeOnly, generateTsNoCheckFiles, preFlightCheck, classifyBuildError } from '../services/build-verify.js';
 import { sanitizePackageJson } from '../services/scaffold-templates.js';
 import { notifyBuildComplete, notifyQAReady, notifyError, notifyDeploySuccess } from '../services/notifications.js';
 import type { ErrorDiagnostics } from '../services/notifications.js';
@@ -237,6 +237,31 @@ async function buildGate(
     const buildResult = await verifyBuild(fullName, projectId);
     if (buildResult.success) {
       return { passed: true, errorsRemaining: 0, attemptsUsed: attempt, attempts: previousAttempts };
+    }
+
+    if (buildResult.isEnvironmentError) {
+      await logger.warn(
+        `[${phaseName}] Environment error detected (not a code issue): ${(buildResult.errors || '').slice(0, 200)}. Skipping Claude fix.`,
+        'development',
+        projectId,
+      );
+      return { passed: false, errorsRemaining: 1, attemptsUsed: attempt, lastStrategy: 'environment_skip', attempts: previousAttempts };
+    }
+
+    const rawBuildErrorsCheck = extractBuildErrors(buildResult.errors || buildResult.output);
+    const errorCategory = classifyBuildError(rawBuildErrorsCheck);
+    if (errorCategory === 'config') {
+      await logger.info(`[${phaseName}] Config error detected, replacing config files with templates`, 'development', projectId);
+      const { getAllTemplateFiles } = await import('../services/scaffold-templates.js');
+      const templateFiles = getAllTemplateFiles(project.name, architecture);
+      const configOnly = templateFiles.filter((f) =>
+        f.path.includes('vite.config') || f.path.includes('postcss.config') ||
+        f.path.includes('tailwind.config') || f.path.includes('tsconfig')
+      );
+      if (configOnly.length > 0) {
+        await pushFiles(fullName, configOnly, `fix: replace config files with templates (${phaseName})`, projectId);
+        continue;
+      }
     }
 
     if (attempt === maxAttempts) {
@@ -557,7 +582,23 @@ export async function processBrief(projectId: string, briefId: string): Promise<
         await logger.info('Verifying scaffold builds before pushing...', 'development', projectId);
         const localBuild = await verifyBuild('', projectId, scaffold.files);
         if (!localBuild.success) {
-          await logger.warn(`Local build failed: ${(localBuild.errors || '').slice(0, 200)}. Pushing anyway for remote fix.`, 'development', projectId);
+          if (localBuild.isEnvironmentError) {
+            await logger.warn(`Local build env issue (not a code problem): ${(localBuild.errors || '').slice(0, 200)}. Pushing scaffold and relying on Vercel build.`, 'development', projectId);
+          } else {
+            const localErrors = extractBuildErrors(localBuild.errors || localBuild.output);
+            const localCategory = classifyBuildError(localErrors);
+            if (localCategory === 'code') {
+              await logger.warn(`Local build has code errors. Applying stubs before pushing...`, 'development', projectId);
+              const scaffoldPaths2 = scaffold.files.map((f) => f.path);
+              const { stubs: localStubs } = validateModuleImports(scaffold.files, scaffoldPaths2);
+              if (localStubs.length > 0) {
+                scaffold.files.push(...localStubs);
+                await logger.info(`Added ${localStubs.length} stub(s) to fix imports`, 'development', projectId);
+              }
+            } else {
+              await logger.warn(`Local build failed (${localCategory}): ${(localBuild.errors || '').slice(0, 200)}. Pushing anyway.`, 'development', projectId);
+            }
+          }
         } else {
           await logger.info('Local build passed! Pushing to GitHub...', 'development', projectId);
         }
