@@ -621,6 +621,124 @@ export { ${ctxName}Ctx as ${ctxName} };`;
 }`;
 }
 
+const VALID_LUCIDE_ICONS = new Set([
+  'Activity', 'Airplay', 'AlertCircle', 'AlertOctagon', 'AlertTriangle', 'AlignCenter',
+  'AlignJustify', 'AlignLeft', 'AlignRight', 'Anchor', 'Archive', 'ArrowBigDown',
+  'ArrowBigLeft', 'ArrowBigRight', 'ArrowBigUp', 'ArrowDown', 'ArrowDownCircle',
+  'ArrowDownLeft', 'ArrowDownRight', 'ArrowLeft', 'ArrowLeftCircle', 'ArrowLeftRight',
+  'ArrowRight', 'ArrowRightCircle', 'ArrowUp', 'ArrowUpCircle', 'ArrowUpDown',
+  'ArrowUpLeft', 'ArrowUpRight', 'Award', 'Axe', 'BadgeCheck', 'BadgeDollarSign',
+  'BadgePercent', 'BarChart', 'BarChart2', 'BarChart3', 'BarChartHorizontal',
+  'Battery', 'BatteryCharging', 'BatteryFull', 'BatteryLow', 'BatteryMedium',
+  'Beaker', 'Bell', 'BellDot', 'BellOff', 'BellRing', 'Bike', 'Binary', 'Bitcoin',
+  'Bluetooth', 'Bold', 'Bomb', 'Bone', 'Book', 'BookOpen', 'BookMarked', 'Bookmark',
+  'Bot', 'Box', 'Boxes', 'Brain', 'Briefcase', 'Brush', 'Bug', 'Building',
+  'Building2', 'Bus', 'Calculator', 'Calendar', 'CalendarCheck', 'CalendarClock',
+  'CalendarDays', 'CalendarHeart', 'CalendarPlus', 'CalendarRange', 'CalendarSearch',
+  'Camera', 'CameraOff', 'Car', 'Check', 'CheckCheck', 'CheckCircle', 'CheckCircle2',
+  'CheckSquare', 'ChevronDown', 'ChevronFirst', 'ChevronLast', 'ChevronLeft',
+  'ChevronRight', 'ChevronUp', 'ChevronsDown', 'ChevronsLeft', 'ChevronsRight',
+  'ChevronsUp', 'ChevronsUpDown', 'Chrome', 'Circle', 'CircleDot', 'CircleOff',
+  'CircleSlash', 'Clipboard', 'ClipboardCheck', 'ClipboardCopy', 'ClipboardList',
+  'Clock', 'Clock1', 'Clock2', 'Clock3', 'Clock4', 'Cloud', 'CloudDownload',
+  'CloudOff', 'CloudUpload', 'Code', 'Code2', 'Cog', 'Coins', 'Columns',
+  'Command', 'Compass', 'Component', 'Contact', 'Copy', 'Copyright', 'CreditCard',
+  'Crop', 'Cross', 'Crosshair', 'Crown', 'Cup', 'Database', 'Delete', 'Diamond',
+  'Disc', 'DollarSign', 'Download', 'DownloadCloud', 'Droplet', 'Droplets',
+  'Edit', 'Edit2', 'Edit3', 'Eraser', 'Euro', 'Expand', 'ExternalLink',
+  'Eye', 'EyeOff', 'Facebook', 'FastForward', 'Feather', 'File', 'FileCheck',
+  'FileCode', 'FileDown', 'FileEdit', 'FileImage', 'FileMinus', 'FilePlus',
+  'FileQuestion', 'FileSearch', 'FileSpreadsheet', 'FileText', 'FileUp', 'FileVideo',
+  'Files', 'Film', 'Filter', 'Fingerprint', 'Flag', 'FlagTriangleLeft',
+  'FlagTriangleRight', 'Flame', 'FlameKindling', 'Flashlight', 'FlaskConical',
+  'FlipHorizontal', 'FlipVertical', 'Flower', 'Focus', 'Folder', 'FolderCheck',
+  'FolderClosed', 'FolderDown', 'FolderEdit', 'FolderMinus', 'FolderOpen',
+  'FolderPlus', 'FolderUp', 'Footprints', 'Frame', 'Frown', 'Fuel', 'Gamepad',
+  'Gauge', 'Gem', 'Ghost', 'Gift', 'GitBranch', 'GitCommit', 'GitMerge',
+  'GitPullRequest', 'Github', 'Globe', 'Globe2', 'GraduationCap', 'Grape',
+  'Grid', 'GripHorizontal', 'GripVertical', 'Group', 'Hammer', 'Hand',
+  'HandMetal', 'HardDrive', 'Hash', 'Headphones', 'Heart', 'HeartHandshake',
+  'HeartPulse', 'HelpCircle', 'Hexagon', 'History', 'Home', 'Hourglass', 'Image',
+  'ImagePlus', 'Import', 'Inbox', 'Indent', 'IndianRupee', 'Infinity', 'Info',
+  'Instagram', 'Italic', 'JapaneseYen', 'Key', 'Keyboard', 'Lamp', 'Landmark',
+  'Languages', 'Laptop', 'Laptop2', 'Lasso', 'Layers', 'Layout', 'LayoutDashboard',
+  'LayoutGrid', 'LayoutList', 'LayoutTemplate', 'Leaf', 'Library', 'LifeBuoy',
+  'Lightbulb', 'LineChart', 'Link', 'Link2', 'Linkedin', 'List', 'ListChecks',
+  'ListFilter', 'ListMinus', 'ListMusic', 'ListOrdered', 'ListPlus', 'ListTodo',
+  'ListTree', 'Loader', 'Loader2', 'Locate', 'Lock', 'LogIn', 'LogOut',
+  'Luggage', 'Mail', 'MailCheck', 'MailMinus', 'MailOpen', 'MailPlus',
+  'MailQuestion', 'MailSearch', 'MailWarning', 'Mailbox', 'Map', 'MapPin',
+  'MapPinOff', 'Maximize', 'Maximize2', 'Medal', 'Megaphone', 'Meh', 'Menu',
+  'MessageCircle', 'MessageSquare', 'Mic', 'MicOff', 'Microscope', 'Milestone',
+  'Minimize', 'Minimize2', 'Minus', 'MinusCircle', 'MinusSquare', 'Monitor',
+  'MonitorOff', 'Moon', 'MoreHorizontal', 'MoreVertical', 'Mountain', 'Mouse',
+  'Move', 'Music', 'Navigation', 'Network', 'Newspaper', 'Octagon', 'Option',
+  'Orbit', 'Outdent', 'Package', 'PackageCheck', 'PackageMinus', 'PackageOpen',
+  'PackagePlus', 'PackageSearch', 'Paintbrush', 'Palette', 'Palmtree', 'Paperclip',
+  'Pause', 'PauseCircle', 'Pencil', 'PenLine', 'PenTool', 'Percent', 'PersonStanding',
+  'Phone', 'PhoneCall', 'PhoneForwarded', 'PhoneIncoming', 'PhoneMissed', 'PhoneOff',
+  'PhoneOutgoing', 'PieChart', 'Pin', 'PinOff', 'Pipette', 'Plane', 'Play',
+  'PlayCircle', 'Plug', 'Plus', 'PlusCircle', 'PlusSquare', 'Pocket', 'Podcast',
+  'Pointer', 'PoundSterling', 'Power', 'PowerOff', 'Printer', 'Projector', 'Puzzle',
+  'QrCode', 'Quote', 'Radio', 'RadioReceiver', 'Receipt', 'Redo', 'RefreshCcw',
+  'RefreshCw', 'Repeat', 'Repeat1', 'Reply', 'ReplyAll', 'Rewind', 'Rocket',
+  'RotateCcw', 'RotateCw', 'Router', 'Rss', 'Ruler', 'Save', 'Scale', 'Scan',
+  'ScanLine', 'Scissors', 'ScreenShare', 'ScreenShareOff', 'Search', 'Send',
+  'SendHorizonal', 'Server', 'ServerCog', 'ServerCrash', 'ServerOff', 'Settings',
+  'Settings2', 'Share', 'Share2', 'Sheet', 'Shield', 'ShieldAlert', 'ShieldCheck',
+  'ShieldOff', 'Shirt', 'ShoppingBag', 'ShoppingCart', 'Shovel', 'ShrinkIcon',
+  'Shuffle', 'Sidebar', 'SidebarClose', 'SidebarOpen', 'Sigma', 'Signal',
+  'SignalHigh', 'SignalLow', 'SignalMedium', 'SignalZero', 'Siren', 'SkipBack',
+  'SkipForward', 'Skull', 'Slack', 'Slash', 'Slice', 'Sliders', 'SlidersHorizontal',
+  'Smartphone', 'SmartphoneCharging', 'Smile', 'SmilePlus', 'Snowflake', 'SortAsc',
+  'SortDesc', 'Sparkle', 'Sparkles', 'Speaker', 'Spline', 'Split', 'SprayCan',
+  'Square', 'Star', 'StarHalf', 'StarOff', 'Stethoscope', 'Sticker', 'StickyNote',
+  'Store', 'StretchHorizontal', 'StretchVertical', 'Strikethrough', 'Subscript',
+  'Sun', 'SunDim', 'SunMedium', 'SunMoon', 'Sunrise', 'Sunset', 'Superscript',
+  'SwissFranc', 'SwitchCamera', 'Sword', 'Swords', 'Table', 'Table2', 'Tablet',
+  'Tag', 'Tags', 'Target', 'Tent', 'Terminal', 'TerminalSquare', 'TestTube',
+  'TestTubes', 'Text', 'TextCursor', 'TextCursorInput', 'Thermometer', 'ThumbsDown',
+  'ThumbsUp', 'Ticket', 'Timer', 'TimerOff', 'TimerReset', 'ToggleLeft',
+  'ToggleRight', 'Tornado', 'Trash', 'Trash2', 'TreeDeciduous', 'TreePine',
+  'Trees', 'Trending', 'TrendingDown', 'TrendingUp', 'Triangle', 'Trophy', 'Truck',
+  'Tv', 'Tv2', 'Twitch', 'Twitter', 'Type', 'Umbrella', 'Underline', 'Undo',
+  'Undo2', 'Unlink', 'Unlock', 'Upload', 'UploadCloud', 'Usb', 'User', 'UserCheck',
+  'UserCog', 'UserMinus', 'UserPlus', 'UserSquare', 'UserX', 'Users', 'Utensils',
+  'UtensilsCrossed', 'Verified', 'Video', 'VideoOff', 'View', 'Voicemail',
+  'Volume', 'Volume1', 'Volume2', 'VolumeX', 'Wallet', 'Wand', 'Wand2', 'Warehouse',
+  'Watch', 'Waves', 'Webcam', 'Webhook', 'Wifi', 'WifiOff', 'Wind', 'Wine',
+  'Wrench', 'X', 'XCircle', 'XOctagon', 'XSquare', 'Youtube', 'Zap', 'ZapOff',
+  'ZoomIn', 'ZoomOut',
+]);
+
+const LUCIDE_FALLBACK_ICON = 'Circle';
+
+export function sanitizeLucideImports(files: GeneratedFile[]): GeneratedFile[] {
+  return files.map((file) => {
+    if (!/\.(tsx?|jsx?)$/.test(file.path)) return file;
+
+    const replaced = file.content.replace(
+      /import\s*\{([^}]+)\}\s*from\s*['"]lucide-react['"]/g,
+      (_match, imports: string) => {
+        const icons = imports.split(',').map((s: string) => s.trim()).filter(Boolean);
+        const fixed = icons.map((icon: string) => {
+          const cleanIcon = icon.replace(/\s+as\s+\w+/, '').trim();
+          if (VALID_LUCIDE_ICONS.has(cleanIcon)) return icon;
+          const aliasMatch = icon.match(/(\w+)\s+as\s+(\w+)/);
+          if (aliasMatch && VALID_LUCIDE_ICONS.has(aliasMatch[1])) return icon;
+          return icon.includes(' as ')
+            ? `${LUCIDE_FALLBACK_ICON} as ${icon.split(' as ')[1].trim()}`
+            : LUCIDE_FALLBACK_ICON;
+        });
+        const deduped = [...new Set(fixed)];
+        return `import { ${deduped.join(', ')} } from 'lucide-react'`;
+      }
+    );
+
+    return replaced !== file.content ? { ...file, content: replaced } : file;
+  });
+}
+
 function resolveRelativePath(fromFile: string, importPath: string): string {
   if (importPath.startsWith('@/')) {
     return 'src/' + importPath.slice(2);

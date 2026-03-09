@@ -1,5 +1,5 @@
 import { exec } from 'node:child_process';
-import { mkdir, rm, writeFile, readFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile, readFile, access, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { logger } from '../core/logger.js';
 import { getSecretWithFallback } from '../core/secrets.js';
@@ -218,32 +218,77 @@ async function autoFixPackageJson(buildDir: string, output: string): Promise<boo
   return false;
 }
 
+const buildDirCache = new Map<string, { pkgHash: string }>();
+
+async function dirExists(dir: string): Promise<boolean> {
+  try {
+    await access(dir);
+    const s = await stat(dir);
+    return s.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+async function hashFile(filePath: string): Promise<string> {
+  try {
+    const content = await readFile(filePath, 'utf-8');
+    let h = 0x811c9dc5 >>> 0;
+    for (let i = 0; i < content.length; i++) {
+      h = Math.imul(h ^ content.charCodeAt(i), 0x01000193) >>> 0;
+    }
+    return h.toString(36);
+  } catch {
+    return '';
+  }
+}
+
 export async function verifyBuild(
   repoFullName: string,
   projectId: string,
   files?: { path: string; content: string }[]
 ): Promise<BuildResult> {
   const buildDir = join(BUILD_DIR, projectId.slice(0, 8));
+  const isFileMode = files && files.length > 0;
 
   try {
-    await rm(buildDir, { recursive: true, force: true });
-    await mkdir(buildDir, { recursive: true });
+    const cachedDir = !isFileMode && await dirExists(join(buildDir, 'node_modules'));
+    const cachedEntry = buildDirCache.get(buildDir);
 
-    if (files && files.length > 0) {
-      for (const file of files) {
-        const filePath = join(buildDir, file.path);
-        const dir = filePath.substring(0, filePath.lastIndexOf('/'));
-        await mkdir(dir, { recursive: true });
-        await writeFile(filePath, file.content, 'utf-8');
+    if (isFileMode || !cachedDir) {
+      await rm(buildDir, { recursive: true, force: true });
+      await mkdir(buildDir, { recursive: true });
+
+      if (isFileMode) {
+        for (const file of files) {
+          const filePath = join(buildDir, file.path);
+          const dir = filePath.substring(0, filePath.lastIndexOf('/'));
+          await mkdir(dir, { recursive: true });
+          await writeFile(filePath, file.content, 'utf-8');
+        }
+      } else {
+        const token = await getSecretWithFallback('github');
+        const cloneUrl = token
+          ? `https://${token}@github.com/${repoFullName}.git`
+          : `https://github.com/${repoFullName}.git`;
+        const { code, stderr } = await runCommand(`git clone --depth 1 ${cloneUrl} .`, buildDir, GIT_CLONE_TIMEOUT);
+        if (code !== 0) {
+          return { success: false, output: '', errors: `Git clone failed: ${stderr}`, errorType: 'clone' };
+        }
       }
     } else {
-      const token = await getSecretWithFallback('github');
-      const cloneUrl = token
-        ? `https://${token}@github.com/${repoFullName}.git`
-        : `https://github.com/${repoFullName}.git`;
-      const { code, stderr } = await runCommand(`git clone --depth 1 ${cloneUrl} .`, buildDir, GIT_CLONE_TIMEOUT);
+      const { code } = await runCommand('git fetch origin main && git reset --hard origin/main', buildDir, GIT_CLONE_TIMEOUT);
       if (code !== 0) {
-        return { success: false, output: '', errors: `Git clone failed: ${stderr}`, errorType: 'clone' };
+        await rm(buildDir, { recursive: true, force: true });
+        await mkdir(buildDir, { recursive: true });
+        const token = await getSecretWithFallback('github');
+        const cloneUrl = token
+          ? `https://${token}@github.com/${repoFullName}.git`
+          : `https://github.com/${repoFullName}.git`;
+        const { code: cloneCode, stderr } = await runCommand(`git clone --depth 1 ${cloneUrl} .`, buildDir, GIT_CLONE_TIMEOUT);
+        if (cloneCode !== 0) {
+          return { success: false, output: '', errors: `Git clone failed: ${stderr}`, errorType: 'clone' };
+        }
       }
     }
 
@@ -252,41 +297,50 @@ export async function verifyBuild(
       await logger.info(`Pre-install package.json sanitization: ${sanitizeIssues.join('; ')}`, 'development', projectId);
     }
 
-    await logger.info('Installing dependencies...', 'development', projectId);
-    let install = await runCommand('npm install --no-audit --no-fund --include=dev 2>&1', buildDir, NPM_INSTALL_TIMEOUT);
+    const currentPkgHash = await hashFile(join(buildDir, 'package.json'));
+    const needsInstall = !cachedEntry || cachedEntry.pkgHash !== currentPkgHash || !cachedDir;
 
-    if (install.code !== 0) {
-      const combinedOutput = `${install.stdout}\n${install.stderr}`;
+    if (needsInstall) {
+      await logger.info('Installing dependencies...', 'development', projectId);
+      let install = await runCommand('npm install --no-audit --no-fund --include=dev 2>&1', buildDir, NPM_INSTALL_TIMEOUT);
 
-      if (install.timedOut) {
-        await logger.warn(`npm install timed out after ${NPM_INSTALL_TIMEOUT / 1000}s. Server may be slow or resource-constrained.`, 'development', projectId);
-      } else if (detectRecursiveInstall(combinedOutput)) {
-        await logger.warn('Detected recursive npm install loop, sanitizing package.json...', 'development', projectId);
-        await autoFixPackageJson(buildDir, combinedOutput);
-        install = await runCommand('npm install --no-audit --no-fund --include=dev 2>&1', buildDir, NPM_INSTALL_TIMEOUT);
-      } else if (isNpmError(combinedOutput)) {
-        const fixed = await autoFixPackageJson(buildDir, combinedOutput);
-        if (fixed) {
-          await logger.info('Auto-fixed package.json (removed bad packages), retrying install...', 'development', projectId);
+      if (install.code !== 0) {
+        const combinedOutput = `${install.stdout}\n${install.stderr}`;
+
+        if (install.timedOut) {
+          await logger.warn(`npm install timed out after ${NPM_INSTALL_TIMEOUT / 1000}s. Server may be slow or resource-constrained.`, 'development', projectId);
+        } else if (detectRecursiveInstall(combinedOutput)) {
+          await logger.warn('Detected recursive npm install loop, sanitizing package.json...', 'development', projectId);
+          await autoFixPackageJson(buildDir, combinedOutput);
           install = await runCommand('npm install --no-audit --no-fund --include=dev 2>&1', buildDir, NPM_INSTALL_TIMEOUT);
+        } else if (isNpmError(combinedOutput)) {
+          const fixed = await autoFixPackageJson(buildDir, combinedOutput);
+          if (fixed) {
+            await logger.info('Auto-fixed package.json (removed bad packages), retrying install...', 'development', projectId);
+            install = await runCommand('npm install --no-audit --no-fund --include=dev 2>&1', buildDir, NPM_INSTALL_TIMEOUT);
+          }
+        }
+
+        if (install.code !== 0) {
+          const combinedInstallOutput = `${install.stdout}\n${install.stderr}`;
+          const reason = install.timedOut ? `npm install timed out after ${NPM_INSTALL_TIMEOUT / 1000}s` : 'npm install failed';
+          const isEnv = install.timedOut ||
+            /EACCES|permission denied/i.test(combinedInstallOutput) ||
+            /ENOSPC|no space left/i.test(combinedInstallOutput) ||
+            /command not found.*npm/i.test(combinedInstallOutput);
+          return {
+            success: false,
+            output: install.stdout,
+            errors: `${reason}: ${install.stderr || install.stdout}`,
+            errorType: 'npm_install',
+            isEnvironmentError: isEnv,
+          };
         }
       }
 
-      if (install.code !== 0) {
-        const combinedInstallOutput = `${install.stdout}\n${install.stderr}`;
-        const reason = install.timedOut ? `npm install timed out after ${NPM_INSTALL_TIMEOUT / 1000}s` : 'npm install failed';
-        const isEnv = install.timedOut ||
-          /EACCES|permission denied/i.test(combinedInstallOutput) ||
-          /ENOSPC|no space left/i.test(combinedInstallOutput) ||
-          /command not found.*npm/i.test(combinedInstallOutput);
-        return {
-          success: false,
-          output: install.stdout,
-          errors: `${reason}: ${install.stderr || install.stdout}`,
-          errorType: 'npm_install',
-          isEnvironmentError: isEnv,
-        };
-      }
+      buildDirCache.set(buildDir, { pkgHash: currentPkgHash });
+    } else {
+      await logger.info('Running build...', 'development', projectId);
     }
 
     const viteCheck = await runCommand('test -f node_modules/vite/bin/vite.js && echo VITE_OK || echo VITE_MISSING', buildDir);
@@ -344,9 +398,13 @@ export async function verifyBuild(
       errors: `Build verification error: ${err instanceof Error ? err.message : String(err)}`,
       errorType: 'unknown',
     };
-  } finally {
-    await rm(buildDir, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+export async function cleanupBuildDir(projectId: string): Promise<void> {
+  const buildDir = join(BUILD_DIR, projectId.slice(0, 8));
+  buildDirCache.delete(buildDir);
+  await rm(buildDir, { recursive: true, force: true }).catch(() => {});
 }
 
 const ENVIRONMENT_ERROR_PATTERNS = [

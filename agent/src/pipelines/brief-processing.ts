@@ -9,9 +9,9 @@ import {
 import { processAttachments } from '../services/file-processing.js';
 import { researchReferenceUrls } from '../services/web-research.js';
 import { createRepo, pushFiles, getMultipleFileContents, getRepoTree, getFileContent } from '../services/github.js';
-import { createProject as createVercelProject, triggerDeployment, waitForDeployment, addDomain, setEnvironmentVariables } from '../services/vercel.js';
+import { createProject as createVercelProject, triggerDeployment, waitForDeployment, addDomain, setEnvironmentVariables, VercelConfigError } from '../services/vercel.js';
 import { captureAllPages } from '../services/screenshots.js';
-import { verifyBuild, extractBuildErrors, hashErrors, validateScaffold, areAllErrorsTypeOnly, generateTsNoCheckFiles, preFlightCheck, classifyBuildError } from '../services/build-verify.js';
+import { verifyBuild, extractBuildErrors, hashErrors, validateScaffold, areAllErrorsTypeOnly, generateTsNoCheckFiles, preFlightCheck, classifyBuildError, cleanupBuildDir } from '../services/build-verify.js';
 import { sanitizePackageJson } from '../services/scaffold-templates.js';
 import { notifyBuildComplete, notifyQAReady, notifyError, notifyDeploySuccess } from '../services/notifications.js';
 import type { ErrorDiagnostics } from '../services/notifications.js';
@@ -26,6 +26,7 @@ import {
   extractExportSignatures, buildExportContext, deduplicateErrors,
   filterRelevantFiles, reconcileAppRoutes, resolveStubPaths,
   generateStubForMissingImport, validateModuleImports, rewriteAliasImports,
+  sanitizeLucideImports,
 } from '../services/build-intelligence.js';
 import type { ExportSignature } from '../services/build-intelligence.js';
 import {
@@ -43,8 +44,23 @@ const CORE_FILE_PATTERNS = [
 
 function sliceBuildOutput(output: string, budget: number): string {
   if (output.length <= budget) return output;
-  const half = Math.floor(budget / 2) - 30;
-  return output.slice(0, half) + '\n\n... [truncated middle] ...\n\n' + output.slice(-half);
+  const lines = output.split('\n');
+  const headLines: string[] = [];
+  const tailLines: string[] = [];
+  const half = Math.floor(budget / 2) - 40;
+  let headLen = 0;
+  for (const line of lines) {
+    if (headLen + line.length + 1 > half) break;
+    headLines.push(line);
+    headLen += line.length + 1;
+  }
+  let tailLen = 0;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (tailLen + lines[i].length + 1 > half) break;
+    tailLines.unshift(lines[i]);
+    tailLen += lines[i].length + 1;
+  }
+  return headLines.join('\n') + '\n\n... [truncated middle] ...\n\n' + tailLines.join('\n');
 }
 
 const PIPELINE_MAX_DURATION_MS = 4 * 60 * 60 * 1000;
@@ -126,6 +142,7 @@ async function validateAndPush(
   allFilePaths: string[]
 ): Promise<string> {
   let processed = rewriteAliasImports(files);
+  processed = sanitizeLucideImports(processed);
 
   const pkgFile = processed.find((f) => f.path === 'package.json');
   if (pkgFile) {
@@ -162,15 +179,23 @@ function programmaticCompletenessCheck(
   );
 
   const missingPageFiles: string[] = [];
+  const pageFileKeys = Array.from(pageFileNormalized);
   for (const page of (architecture.pages || [])) {
     const normalized = page.name.toLowerCase().replace(/[^a-z0-9]/g, '');
-    if (!pageFileNormalized.has(normalized)) {
-      const partials = page.name.split(/[\s/]+/).map((p) => p.toLowerCase().replace(/[^a-z0-9]/g, ''));
-      const found = partials.some((partial) => pageFileNormalized.has(partial));
-      if (!found) {
-        missingPageFiles.push(page.name);
-      }
-    }
+    if (pageFileNormalized.has(normalized)) continue;
+
+    const substringMatch = pageFileKeys.some(
+      (key) => key.includes(normalized) || normalized.includes(key)
+    );
+    if (substringMatch) continue;
+
+    const partials = page.name.split(/[\s/]+/).map((p) => p.toLowerCase().replace(/[^a-z0-9]/g, ''));
+    const partialMatch = partials.length > 1 && partials.some(
+      (partial) => partial.length >= 3 && pageFileKeys.some((key) => key.includes(partial) || partial.includes(key))
+    );
+    if (partialMatch) continue;
+
+    missingPageFiles.push(page.name);
   }
 
   const brokenImports: string[] = [];
@@ -345,12 +370,23 @@ async function buildGate(
         lastAttempt.filesModified = fixResult.files.map((f) => f.path);
       }
 
+      const fixTouchesApp = fixResult.files.some((f) => f.path === 'src/App.tsx');
       const preFixContents = await getMultipleFileContents(
         fullName,
         fixResult.files.map((f) => f.path).filter((p) => allFilePathsList.includes(p))
       );
 
       await validateAndPush(fullName, fixResult.files, `fix: ${phaseName} build errors (attempt ${attempt}, ${strategy})`, projectId, allFilePathsList);
+
+      if (fixTouchesApp) {
+        const gateReconFiles = await getRepoTree(fullName);
+        const gateReconPaths = gateReconFiles.filter((f) => f.type === 'file').map((f) => f.path);
+        const gateReconApp = await getFileContent(fullName, 'src/App.tsx');
+        const gateReconciled = reconcileAppRoutes(gateReconPaths, architecture.pages || [], gateReconApp || undefined);
+        if (gateReconciled) {
+          await pushFiles(fullName, [gateReconciled], `fix: re-reconcile App.tsx after build fix (${phaseName})`, projectId);
+        }
+      }
 
       const postFixBuild = await verifyBuild(fullName, projectId);
       if (!postFixBuild.success) {
@@ -421,9 +457,10 @@ export async function processBrief(projectId: string, briefId: string): Promise<
   }
 
   const resumePhase = (isResuming && !checkpointExpired) ? checkpoint!.current_phase : null;
-  const skipAnalysis = resumePhase && ['scaffolding', 'scaffolding_complete', 'backend_setup', 'development', 'completeness_check'].includes(resumePhase);
-  const skipScaffolding = resumePhase && ['backend_setup', 'development', 'completeness_check'].includes(resumePhase);
-  const skipBackend = resumePhase && ['development', 'completeness_check'].includes(resumePhase);
+  const skipAnalysis = resumePhase && ['scaffolding', 'scaffolding_complete', 'backend_setup', 'development', 'completeness_check', 'build_verified'].includes(resumePhase);
+  const skipScaffolding = resumePhase && ['backend_setup', 'development', 'completeness_check', 'build_verified'].includes(resumePhase);
+  const skipBackend = resumePhase && ['development', 'completeness_check', 'build_verified'].includes(resumePhase);
+  const skipToBuildVerified = resumePhase === 'build_verified';
 
   try {
     await supabase.from('briefs').update({ status: 'processing' }).eq('id', briefId);
@@ -833,6 +870,12 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     let modulesSinceLastBuildCheck = 0;
     let cumulativeIntermediateErrors = 0;
 
+    if (skipToBuildVerified) {
+      await logger.info('Skipping to deployment -- build already verified from checkpoint', 'development', projectId);
+      await sendChatMessage(projectId, 'Build already verified. Resuming at deployment...');
+    }
+
+    if (!skipToBuildVerified) {
     // ============================================================
     // PHASE 2.8: EXTRACT SCAFFOLD EXPORTS
     // ============================================================
@@ -1067,7 +1110,17 @@ export async function processBrief(projectId: string, briefId: string): Promise<
                   { strategy: midAttempt === 0 ? 'standard' : 'simplify', allFilePaths: freshAllPaths }
                 );
                 if (midFix.files.length > 0) {
+                  const midFixTouchesApp = midFix.files.some((f) => f.path === 'src/App.tsx');
                   await validateAndPush(fullName, midFix.files, `fix: intermediate build errors after ${batchNames}`, projectId, freshAllPaths);
+                  if (midFixTouchesApp) {
+                    const reconFiles = await getRepoTree(fullName);
+                    const reconPaths = reconFiles.filter((f) => f.type === 'file').map((f) => f.path);
+                    const reconApp = await getFileContent(fullName, 'src/App.tsx');
+                    const reconciled = reconcileAppRoutes(reconPaths, architecture.pages || [], reconApp || undefined);
+                    if (reconciled) {
+                      await pushFiles(fullName, [reconciled], 'fix: re-reconcile App.tsx after intermediate build fix', projectId);
+                    }
+                  }
                 } else {
                   break;
                 }
@@ -1269,6 +1322,23 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     checkPipelineTimeout(pipelineStart);
 
     // ============================================================
+    // PHASE 3.5: PRE-COMPLETENESS App.tsx RECONCILIATION
+    // ============================================================
+
+    try {
+      const preReconRepoFiles = await getRepoTree(fullName);
+      const preReconPaths = preReconRepoFiles.filter((f) => f.type === 'file').map((f) => f.path);
+      const preReconAppContent = await getFileContent(fullName, 'src/App.tsx');
+      const preReconciledApp = reconcileAppRoutes(preReconPaths, architecture.pages || [], preReconAppContent || undefined);
+      if (preReconciledApp) {
+        await pushFiles(fullName, [preReconciledApp], 'fix: reconcile App.tsx routes before completeness check', projectId);
+        await logger.info('Reconciled App.tsx routes before completeness check', 'development', projectId);
+      }
+    } catch (err) {
+      await logger.warn(`Pre-completeness App.tsx reconciliation failed (non-critical): ${err instanceof Error ? err.message : String(err)}`, 'development', projectId);
+    }
+
+    // ============================================================
     // PHASE 3.5: COMPLETENESS CHECK (multi-pass)
     // ============================================================
 
@@ -1360,13 +1430,17 @@ export async function processBrief(projectId: string, briefId: string): Promise<
             const allPaths = repoFilesNow.filter((f) => f.type === 'file').map((f) => f.path);
 
             try {
+              const compStubPaths = resolveStubPaths(batchPages, allPaths);
+              const compExportCtx = buildExportContext(allExportSignatures);
               const codeResult = await generateModuleCode(
                 tempModule,
                 project as unknown as Project,
                 client,
                 architecture,
                 coreFiles,
-                allPaths
+                allPaths,
+                compExportCtx,
+                compStubPaths
               );
               if (codeResult.files.length > 0) {
                 await validateAndPush(fullName, codeResult.files, `fix: generate missing pages (${batch.join(', ')})`, projectId, allPaths);
@@ -1389,7 +1463,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     }
 
     // ============================================================
-    // PHASE 3.75: RECONCILE App.tsx ROUTES (AFTER completeness)
+    // PHASE 3.75: FINAL App.tsx RECONCILIATION (AFTER completeness)
     // ============================================================
 
     try {
@@ -1398,11 +1472,11 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       const existingAppContent = await getFileContent(fullName, 'src/App.tsx');
       const reconciledApp = reconcileAppRoutes(reconPaths, architecture.pages || [], existingAppContent || undefined);
       if (reconciledApp) {
-        await pushFiles(fullName, [reconciledApp], 'fix: reconcile App.tsx routes with actual page files', projectId);
-        await logger.info('Reconciled App.tsx routes with actual page files (structure preserved)', 'development', projectId);
+        await pushFiles(fullName, [reconciledApp], 'fix: final App.tsx route reconciliation', projectId);
+        await logger.info('Final App.tsx route reconciliation complete', 'development', projectId);
       }
     } catch (err) {
-      await logger.warn(`App.tsx reconciliation failed (non-critical): ${err instanceof Error ? err.message : String(err)}`, 'development', projectId);
+      await logger.warn(`Final App.tsx reconciliation failed (non-critical): ${err instanceof Error ? err.message : String(err)}`, 'development', projectId);
     }
 
     // ============================================================
@@ -1488,6 +1562,10 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       return;
     }
 
+    await saveCheckpoint(projectId, briefId, 'build_verified', {}, checkpoint?.modules_completed || [], fullName);
+
+    } // end if (!skipToBuildVerified)
+
     if (!config.auto_deploy) {
       await supabase.from('briefs').update({ status: 'completed' }).eq('id', briefId);
       await updateProject(projectId, { status: 'review', progress: 100, agent_status: 'idle', current_phase: 'deployment' });
@@ -1506,7 +1584,30 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     await logger.info('Phase 5: Deploying to Vercel', 'deployment', projectId);
     await sendChatMessage(projectId, 'Deploying to Vercel...');
 
-    const vercelProjectId = await createVercelProject(repoName, fullName, projectId);
+    let vercelProjectId: string;
+    try {
+      vercelProjectId = await createVercelProject(repoName, fullName, projectId);
+    } catch (vercelErr) {
+      if (vercelErr instanceof VercelConfigError) {
+        await supabase.from('briefs').update({ status: 'completed' }).eq('id', briefId);
+        await updateProject(projectId, {
+          status: 'review',
+          progress: 100,
+          agent_status: 'idle',
+          current_phase: 'build_complete',
+          last_error_message: vercelErr.message,
+        });
+        await sendChatMessage(projectId,
+          `Build completed successfully! Repo: ${repoUrl}\n\n` +
+          `Deployment could not proceed: ${vercelErr.message}\n\n` +
+          `Once you install the Vercel GitHub App, retry the brief to deploy automatically.`
+        );
+        await notifyBuildComplete(project.name, repoUrl, projectId);
+        await saveCheckpoint(projectId, briefId, 'build_verified', {}, checkpoint?.modules_completed || [], fullName);
+        return;
+      }
+      throw vercelErr;
+    }
     await updateProject(projectId, { vercel_project_id: vercelProjectId });
 
     if (architecture.requiresBackend) {
@@ -1731,6 +1832,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
     await supabase.from('briefs').update({ status: 'completed' }).eq('id', briefId);
     await clearCheckpoint(projectId, 'completed');
+    await cleanupBuildDir(projectId);
     await logger.success('Brief processing pipeline complete', 'development', projectId);
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);

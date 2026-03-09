@@ -59,7 +59,35 @@ export async function createProject(
   });
 
   if (!res.ok) {
-    const err = await res.json();
+    const err = await res.json().catch(() => ({ error: { message: `HTTP ${res.status}` } }));
+    const errMsg = err?.error?.message || JSON.stringify(err);
+    const isGitHubIntegration = errMsg.includes('GitHub integration') || errMsg.includes('Install GitHub App');
+
+    if (isGitHubIntegration) {
+      await logger.warn(`Vercel GitHub integration not installed. Creating project without git link...`, 'vercel', projectId);
+      const fallbackRes = await vercelFetch('/v10/projects', {
+        method: 'POST',
+        body: JSON.stringify({
+          name,
+          framework: 'vite',
+          buildCommand: 'npm run build',
+          outputDirectory: 'dist',
+          installCommand: 'npm install',
+        }),
+      });
+
+      if (fallbackRes.ok) {
+        const fallbackData = await fallbackRes.json();
+        await logger.success(`Created Vercel project (no git link): ${name}`, 'vercel', projectId);
+        return fallbackData.id;
+      }
+
+      const fallbackErr = await fallbackRes.json().catch(() => ({}));
+      throw new VercelConfigError(
+        `Vercel project creation failed. Install the Vercel GitHub App: https://github.com/apps/vercel -- then retry. Error: ${JSON.stringify(fallbackErr)}`
+      );
+    }
+
     throw new Error(`Vercel createProject failed: ${JSON.stringify(err)}`);
   }
 
@@ -67,6 +95,13 @@ export async function createProject(
   await logger.success(`Created Vercel project: ${name}`, 'vercel', projectId);
 
   return data.id;
+}
+
+export class VercelConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'VercelConfigError';
+  }
 }
 
 export async function triggerDeployment(
