@@ -270,7 +270,10 @@ function matchPagesToFiles(
 
     if (!matchedFile) continue;
 
-    const componentName = page.name.replace(/[^a-zA-Z0-9]/g, '');
+    let componentName = page.name.replace(/[^a-zA-Z0-9]/g, '');
+    if (!componentName || /^\d/.test(componentName)) {
+      componentName = 'Page' + (componentName || 'Unknown');
+    }
     if (usedComponents.has(componentName)) continue;
     usedComponents.add(componentName);
 

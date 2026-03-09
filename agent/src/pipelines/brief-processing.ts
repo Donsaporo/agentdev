@@ -383,7 +383,8 @@ async function buildGate(
 
       await validateAndPush(fullName, fixResult.files, `fix: ${phaseName} build errors (attempt ${attempt}, ${strategy})`, projectId, allFilePathsList);
 
-      if (fixTouchesApp) {
+      const errorInAppTsx = buildErrors.some((e) => e.includes('App.tsx'));
+      if (fixTouchesApp && !errorInAppTsx) {
         const gateReconFiles = await getRepoTree(fullName);
         const gateReconPaths = gateReconFiles.filter((f) => f.type === 'file').map((f) => f.path);
         const gateReconApp = await getFileContent(fullName, 'src/App.tsx');

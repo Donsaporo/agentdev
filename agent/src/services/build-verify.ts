@@ -722,8 +722,11 @@ export default function App() {
   const fileSet = new Set(existingFiles || []);
   const imports = pages
     .map((p) => {
-      const componentName = p.name.replace(/[^a-zA-Z0-9]/g, '');
+      let componentName = p.name.replace(/[^a-zA-Z0-9]/g, '');
       const fileName = componentName;
+      if (!componentName || /^\d/.test(componentName)) {
+        componentName = 'Page' + (componentName || 'Unknown');
+      }
       return { componentName, fileName, route: p.route };
     })
     .filter((i) => {
