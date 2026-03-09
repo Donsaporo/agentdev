@@ -177,10 +177,13 @@ export async function findExistingProject(
   return null;
 }
 
-const SQL_RATE_LIMIT_BASE_WAIT_MS = 3000;
-const SQL_MAX_RETRIES = 3;
-const SQL_MAX_TOTAL_TIME_MS = 5 * 60 * 1000;
-const SQL_INTER_BATCH_DELAY_MS = 500;
+const SQL_RATE_LIMIT_BASE_WAIT_MS = 5000;
+const SQL_MAX_RETRIES = 4;
+const SQL_MAX_TOTAL_TIME_MS = 8 * 60 * 1000;
+const SQL_INTER_BATCH_DELAY_MS = 1000;
+
+let lastRateLimitTimestamp = 0;
+const RATE_LIMIT_GLOBAL_COOLDOWN_MS = 15_000;
 
 export interface SqlExecutionResult {
   succeeded: number;
@@ -318,6 +321,11 @@ async function executeBatchWithRetry(
   stmtCount: number,
 ): Promise<{ succeeded: number; failed: number; errors: string[]; failedStatements: { sql: string; error: string }[] }> {
   for (let retry = 0; retry < SQL_MAX_RETRIES; retry++) {
+    const timeSinceRateLimit = Date.now() - lastRateLimitTimestamp;
+    if (lastRateLimitTimestamp > 0 && timeSinceRateLimit < RATE_LIMIT_GLOBAL_COOLDOWN_MS) {
+      await new Promise((r) => setTimeout(r, RATE_LIMIT_GLOBAL_COOLDOWN_MS - timeSinceRateLimit));
+    }
+
     try {
       await executeSqlOnProject(projectRef, batchSql, projectId);
       return { succeeded: stmtCount, failed: 0, errors: [], failedStatements: [] };
@@ -330,6 +338,7 @@ async function executeBatchWithRetry(
       }
 
       if (sqlErr.isRateLimit) {
+        lastRateLimitTimestamp = Date.now();
         const backoffMs = SQL_RATE_LIMIT_BASE_WAIT_MS * Math.pow(2, Math.min(retry, 3));
         await logger.warn(`Rate limited on ${categoryName} batch (attempt ${retry + 1}/${SQL_MAX_RETRIES}), waiting ${backoffMs}ms...`, 'supabase', projectId);
         await new Promise((r) => setTimeout(r, backoffMs));
@@ -406,7 +415,7 @@ export async function executeSqlStatements(
         allErrors.push(...singleResult.errors);
         allFailedStatements.push(...singleResult.failedStatements);
 
-        await new Promise((r) => setTimeout(r, 250));
+        await new Promise((r) => setTimeout(r, 800));
       }
     } else {
       totalFailed += result.failed;

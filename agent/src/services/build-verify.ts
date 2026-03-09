@@ -252,12 +252,14 @@ export async function verifyBuild(
   const isFileMode = files && files.length > 0;
 
   try {
-    const cachedDir = !isFileMode && await dirExists(join(buildDir, 'node_modules'));
+    let hasNodeModules = !isFileMode && await dirExists(join(buildDir, 'node_modules'));
     const cachedEntry = buildDirCache.get(buildDir);
 
-    if (isFileMode || !cachedDir) {
+    if (isFileMode || !hasNodeModules) {
       await rm(buildDir, { recursive: true, force: true });
       await mkdir(buildDir, { recursive: true });
+      buildDirCache.delete(buildDir);
+      hasNodeModules = false;
 
       if (isFileMode) {
         for (const file of files) {
@@ -281,6 +283,8 @@ export async function verifyBuild(
       if (code !== 0) {
         await rm(buildDir, { recursive: true, force: true });
         await mkdir(buildDir, { recursive: true });
+        buildDirCache.delete(buildDir);
+        hasNodeModules = false;
         const token = await getSecretWithFallback('github');
         const cloneUrl = token
           ? `https://${token}@github.com/${repoFullName}.git`
@@ -298,7 +302,7 @@ export async function verifyBuild(
     }
 
     const currentPkgHash = await hashFile(join(buildDir, 'package.json'));
-    const needsInstall = !cachedEntry || cachedEntry.pkgHash !== currentPkgHash || !cachedDir;
+    const needsInstall = !cachedEntry || cachedEntry.pkgHash !== currentPkgHash || !hasNodeModules;
 
     if (needsInstall) {
       await logger.info('Installing dependencies...', 'development', projectId);
@@ -466,8 +470,8 @@ export function extractBuildErrors(output: string): string[] {
   const errors: string[] = [];
   const lines = output.split('\n');
 
-  for (const line of lines) {
-    const trimmed = line.trim();
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
     if (!trimmed || trimmed.length < 5) continue;
     if (isWarningLine(trimmed)) continue;
 
@@ -500,11 +504,18 @@ export function extractBuildErrors(output: string): string[] {
       continue;
     }
 
-    if (
-      (trimmed.includes('[vite]') || trimmed.includes('[rollup]')) &&
-      (/error/i.test(trimmed) || /fail/i.test(trimmed) || /cannot/i.test(trimmed) || /not found/i.test(trimmed))
-    ) {
-      errors.push(trimmed);
+    const isViteError =
+      (trimmed.includes('[vite]') || trimmed.includes('[rollup]') || trimmed.includes('[vite:')) &&
+      (/error/i.test(trimmed) || /fail/i.test(trimmed) || /cannot/i.test(trimmed) || /not found/i.test(trimmed));
+
+    if (isViteError) {
+      const contextLines = [trimmed];
+      for (let j = i + 1; j < Math.min(i + 4, lines.length); j++) {
+        const next = lines[j].trim();
+        if (!next || next.startsWith('at ') || next.startsWith('✓') || next.startsWith('x ')) break;
+        contextLines.push(next);
+      }
+      errors.push(contextLines.join(' | '));
       continue;
     }
   }
@@ -585,7 +596,8 @@ export async function validateScaffold(
 
   if (!files.some((f) => f.path.includes('src/App.tsx'))) {
     issues.push('Missing src/App.tsx -- auto-generated');
-    fixedFiles.push({ path: 'src/App.tsx', content: generateFallbackApp(architecture?.pages) });
+    const scaffoldFilePaths = files.map((f) => f.path);
+    fixedFiles.push({ path: 'src/App.tsx', content: generateFallbackApp(architecture?.pages, scaffoldFilePaths) });
   }
 
   if (!files.some((f) => f.path === 'tsconfig.json')) {
@@ -694,7 +706,7 @@ export function preFlightCheck(
   return { passed: issues.length === 0, issues, fixes };
 }
 
-function generateFallbackApp(pages?: { name: string; route: string }[]): string {
+function generateFallbackApp(pages?: { name: string; route: string }[], existingFiles?: string[]): string {
   if (!pages || pages.length === 0) {
     return `import { Routes, Route } from 'react-router-dom';
 
@@ -706,11 +718,31 @@ export default function App() {
   );
 }`;
   }
-  const imports = pages.map((p) => {
-    const componentName = p.name.replace(/[^a-zA-Z0-9]/g, '');
-    const fileName = componentName;
-    return { componentName, fileName, route: p.route };
-  });
+
+  const fileSet = new Set(existingFiles || []);
+  const imports = pages
+    .map((p) => {
+      const componentName = p.name.replace(/[^a-zA-Z0-9]/g, '');
+      const fileName = componentName;
+      return { componentName, fileName, route: p.route };
+    })
+    .filter((i) => {
+      if (fileSet.size === 0) return true;
+      return fileSet.has(`src/pages/${i.fileName}.tsx`) || fileSet.has(`src/pages/${i.fileName}/index.tsx`);
+    });
+
+  if (imports.length === 0) {
+    return `import { Routes, Route } from 'react-router-dom';
+
+export default function App() {
+  return (
+    <Routes>
+      <Route path="/" element={<div className="min-h-screen flex items-center justify-center"><h1 className="text-2xl font-bold">Loading...</h1></div>} />
+    </Routes>
+  );
+}`;
+  }
+
   const importLines = imports.map((i) => `import ${i.componentName} from './pages/${i.fileName}';`).join('\n');
   const routeLines = imports.map((i) => `      <Route path="${i.route}" element={<${i.componentName} />} />`).join('\n');
   return `import { Routes, Route } from 'react-router-dom';

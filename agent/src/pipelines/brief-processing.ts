@@ -5,6 +5,7 @@ import {
   analyzeBrief, generateProjectScaffold, generateModuleCode, groupPagesIntoModules,
   generateDatabaseSchema, generateBuildFix, verifyProjectCompleteness,
   analyzeScreenshotAllViewports, fixFailedSqlStatements, generateAutoQAFix,
+  CreditExhaustedError,
 } from '../services/claude.js';
 import { processAttachments } from '../services/file-processing.js';
 import { researchReferenceUrls } from '../services/web-research.js';
@@ -66,7 +67,7 @@ function sliceBuildOutput(output: string, budget: number): string {
 const PIPELINE_MAX_DURATION_MS = 4 * 60 * 60 * 1000;
 const SCAFFOLD_BUILD_GATE_ATTEMPTS = 4;
 const SCAFFOLD_RETRY_GATE_ATTEMPTS = 3;
-const MAX_COMPLETENESS_PASSES = 2;
+const MAX_COMPLETENESS_PASSES = 1;
 const COMPLETENESS_BATCH_SIZE = 5;
 const COMPLETENESS_INTER_BATCH_DELAY_MS = 5000;
 const LARGE_PROJECT_PAGE_THRESHOLD = 30;
@@ -171,7 +172,8 @@ function checkPipelineTimeout(startTime: number): void {
 function programmaticCompletenessCheck(
   architecture: FullArchitecture,
   repoFilePaths: string[],
-  appTsxContent: string | null
+  appTsxContent: string | null,
+  coveredPageNames?: Set<string>
 ): { missingPageFiles: string[]; brokenImports: string[]; missingRoutes: string[] } {
   const pageFiles = repoFilePaths.filter((f) => f.startsWith('src/pages/') && /\.(tsx?|jsx?)$/.test(f));
   const pageFileNormalized = new Set(
@@ -182,6 +184,9 @@ function programmaticCompletenessCheck(
   const pageFileKeys = Array.from(pageFileNormalized);
   for (const page of (architecture.pages || [])) {
     const normalized = page.name.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+    if (coveredPageNames?.has(normalized)) continue;
+
     if (pageFileNormalized.has(normalized)) continue;
 
     const substringMatch = pageFileKeys.some(
@@ -1041,6 +1046,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
               const durationSeconds = Math.round((Date.now() - taskStartTime) / 1000);
               return { task, files: codeResult.files, durationSeconds, error: null };
             } catch (err) {
+              if (err instanceof CreditExhaustedError) throw err;
               const errMsg = err instanceof Error ? err.message : String(err);
               return { task, files: [], durationSeconds: 0, error: errMsg };
             }
@@ -1264,6 +1270,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
           }).eq('id', failedTask.id);
           await logger.info(`Recovery: ${matchingModule.module.name} succeeded`, 'development', projectId);
         } catch (err) {
+          if (err instanceof CreditExhaustedError) throw err;
           const errMsg = err instanceof Error ? err.message : String(err);
           await supabase.from('project_tasks').update({
             status: 'failed',
@@ -1321,6 +1328,23 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
     checkPipelineTimeout(pipelineStart);
 
+    const coveredPageNames = new Set<string>();
+    {
+      const { data: completedTasks } = await supabase
+        .from('project_tasks')
+        .select('id, status')
+        .eq('project_id', projectId)
+        .eq('status', 'completed');
+      const completedTaskIds = new Set((completedTasks || []).map((t) => t.id));
+      for (const mt of moduleTasks) {
+        if (completedTaskIds.has(mt.id)) {
+          for (const page of mt.module.pages) {
+            coveredPageNames.add(page.name.toLowerCase().replace(/[^a-z0-9]/g, ''));
+          }
+        }
+      }
+    }
+
     // ============================================================
     // PHASE 3.5: PRE-COMPLETENESS App.tsx RECONCILIATION
     // ============================================================
@@ -1352,7 +1376,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
         const allRepoFilePaths = allRepoFiles.filter((f) => f.type === 'file').map((f) => f.path);
 
         const appTsxContent = await getFileContent(fullName, 'src/App.tsx');
-        const progCheck = programmaticCompletenessCheck(architecture, allRepoFilePaths, appTsxContent);
+        const progCheck = programmaticCompletenessCheck(architecture, allRepoFilePaths, appTsxContent, coveredPageNames);
         const progIssues = progCheck.missingPageFiles.length + progCheck.brokenImports.length + progCheck.missingRoutes.length;
 
         if (progIssues > 0) {
@@ -1370,6 +1394,20 @@ export async function processBrief(projectId: string, briefId: string): Promise<
         const allCode = await getMultipleFileContents(fullName, completenessPathsBudgeted);
 
         const completeness = await verifyProjectCompleteness(architecture, allCode, projectId);
+
+        const pageFileKeys = allRepoFilePaths
+          .filter((f) => f.startsWith('src/pages/') && /\.(tsx?|jsx?)$/.test(f))
+          .map((f) => f.replace(/^src\/pages\//, '').replace(/\.(tsx?|jsx?)$/, '').toLowerCase().replace(/[^a-z0-9]/g, ''));
+
+        completeness.missingFiles = completeness.missingFiles.filter((f) => {
+          const norm = f.replace(/^src\/pages\//, '').replace(/\.(tsx?|jsx?)$/, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+          if (coveredPageNames.has(norm)) return false;
+          if (pageFileKeys.some((k) => k.includes(norm) || norm.includes(k))) return false;
+          const fileParts = norm.split(/[^a-z0-9]+/).filter((p) => p.length >= 3);
+          if (fileParts.length > 1 && fileParts.some((p) => pageFileKeys.some((k) => k.includes(p)))) return false;
+          return true;
+        });
+
         const totalIssues = completeness.missingFiles.length + completeness.brokenImports.length + completeness.missingRoutes.length;
 
         if (totalIssues === 0 && progIssues === 0) {
@@ -1394,8 +1432,11 @@ export async function processBrief(projectId: string, briefId: string): Promise<
         await logger.info(`Completeness issues: ${combinedMissing.length} missing, ${completeness.brokenImports.length} broken imports, ${completeness.missingRoutes.length} missing routes`, 'development', projectId);
 
         if (completeness.fixFiles.length > 0) {
-          const compAllPaths = allRepoFiles.filter((f) => f.type === 'file').map((f) => f.path);
-          await validateAndPush(fullName, completeness.fixFiles, `fix: resolve completeness issues (pass ${completenessPass + 1})`, projectId, compAllPaths);
+          const safeFixFiles = completeness.fixFiles.filter((f) => f.path !== 'src/App.tsx');
+          if (safeFixFiles.length > 0) {
+            const compAllPaths = allRepoFiles.filter((f) => f.type === 'file').map((f) => f.path);
+            await validateAndPush(fullName, safeFixFiles, `fix: resolve completeness issues (pass ${completenessPass + 1})`, projectId, compAllPaths);
+          }
         }
 
         if (combinedMissing.length > 0) {
@@ -1448,6 +1489,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
                 allExportSignatures.push(...newSigs);
               }
             } catch (err) {
+              if (err instanceof CreditExhaustedError) throw err;
               await logger.warn(`Failed to generate missing pages batch: ${err instanceof Error ? err.message : String(err)}`, 'development', projectId);
             }
 
@@ -1457,6 +1499,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
           }
         }
       } catch (err) {
+        if (err instanceof CreditExhaustedError) throw err;
         await logger.warn(`Completeness check failed (non-critical): ${err instanceof Error ? err.message : String(err)}`, 'development', projectId);
         break;
       }
@@ -1836,22 +1879,37 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     await logger.success('Brief processing pipeline complete', 'development', projectId);
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
+    const isCreditExhausted = err instanceof CreditExhaustedError;
     try {
-      await supabase.from('briefs').update({ status: 'failed' }).eq('id', briefId);
-      await logger.error(`Brief processing failed: ${errMsg}`, 'development', projectId);
-      await updateProject(projectId, { agent_status: 'idle', current_phase: 'failed', last_error_message: errMsg });
-      await sendChatMessage(projectId, `An error occurred: ${errMsg}`);
-      await clearCheckpoint(projectId, 'failed');
-      const { data: proj } = await supabase.from('projects').select('name').eq('id', projectId).maybeSingle();
-      if (proj) await notifyError(proj.name, errMsg, projectId, {
-        phase: 'unknown',
-        durationMinutes: Math.round((Date.now() - pipelineStart) / 60000),
-      });
+      if (isCreditExhausted) {
+        await supabase.from('briefs').update({ status: 'paused' }).eq('id', briefId);
+        await logger.warn(`Pipeline paused: Anthropic credits exhausted. Add credits and retry.`, 'development', projectId);
+        await updateProject(projectId, { agent_status: 'idle', last_error_message: 'Paused: credits exhausted. Add credits to Anthropic and retry the brief.' });
+        await sendChatMessage(projectId, `Pipeline paused: your Anthropic API credits ran out. Progress has been saved -- add credits and retry to resume from where it left off.`);
+        const { data: proj } = await supabase.from('projects').select('name').eq('id', projectId).maybeSingle();
+        if (proj) await notifyError(proj.name, 'Credits exhausted -- pipeline paused', projectId, {
+          phase: 'paused',
+          durationMinutes: Math.round((Date.now() - pipelineStart) / 60000),
+        });
+      } else {
+        await supabase.from('briefs').update({ status: 'failed' }).eq('id', briefId);
+        await logger.error(`Brief processing failed: ${errMsg}`, 'development', projectId);
+        await updateProject(projectId, { agent_status: 'idle', current_phase: 'failed', last_error_message: errMsg });
+        await sendChatMessage(projectId, `An error occurred: ${errMsg}`);
+        await clearCheckpoint(projectId, 'failed');
+        const { data: proj } = await supabase.from('projects').select('name').eq('id', projectId).maybeSingle();
+        if (proj) await notifyError(proj.name, errMsg, projectId, {
+          phase: 'unknown',
+          durationMinutes: Math.round((Date.now() - pipelineStart) / 60000),
+        });
+      }
     } catch (innerErr) {
       console.error('Error in brief-processing catch block:', innerErr);
       try { await supabase.from('briefs').update({ status: 'failed' }).eq('id', briefId); } catch (e) { console.error('[cleanup] brief update failed:', e instanceof Error ? e.message : String(e)); }
       try { await supabase.from('projects').update({ agent_status: 'idle', last_error_message: errMsg }).eq('id', projectId); } catch (e) { console.error('[cleanup] project update failed:', e instanceof Error ? e.message : String(e)); }
-      try { await clearCheckpoint(projectId, 'failed'); } catch (e) { console.error('[cleanup] checkpoint clear failed:', e instanceof Error ? e.message : String(e)); }
+      if (!isCreditExhausted) {
+        try { await clearCheckpoint(projectId, 'failed'); } catch (e) { console.error('[cleanup] checkpoint clear failed:', e instanceof Error ? e.message : String(e)); }
+      }
     }
   }
 }

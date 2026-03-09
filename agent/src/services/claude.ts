@@ -93,6 +93,13 @@ interface ThinkingConfig {
 const RATE_LIMIT_WAIT_MS = 62_000;
 const RATE_LIMIT_MAX_RETRIES = 5;
 
+export class CreditExhaustedError extends Error {
+  constructor(message?: string) {
+    super(message || 'Anthropic API credit balance too low');
+    this.name = 'CreditExhaustedError';
+  }
+}
+
 async function callWithRetry(
   fn: () => PromiseLike<unknown>,
   maxRetries: number = 3,
@@ -111,6 +118,10 @@ async function callWithRetry(
       return result;
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
+
+      if (lastError.message.includes('credit balance is too low') || lastError.message.includes('credit balance too low')) {
+        throw new CreditExhaustedError(lastError.message);
+      }
 
       const is400 = lastError.message.includes('400') || lastError.message.includes('invalid_request');
       if (is400) throw lastError;
