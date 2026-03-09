@@ -253,7 +253,7 @@ export async function verifyBuild(
     }
 
     await logger.info('Installing dependencies...', 'development', projectId);
-    let install = await runCommand('npm install --no-audit --no-fund 2>&1', buildDir, NPM_INSTALL_TIMEOUT);
+    let install = await runCommand('npm install --no-audit --no-fund --include=dev 2>&1', buildDir, NPM_INSTALL_TIMEOUT);
 
     if (install.code !== 0) {
       const combinedOutput = `${install.stdout}\n${install.stderr}`;
@@ -263,12 +263,12 @@ export async function verifyBuild(
       } else if (detectRecursiveInstall(combinedOutput)) {
         await logger.warn('Detected recursive npm install loop, sanitizing package.json...', 'development', projectId);
         await autoFixPackageJson(buildDir, combinedOutput);
-        install = await runCommand('npm install --no-audit --no-fund 2>&1', buildDir, NPM_INSTALL_TIMEOUT);
+        install = await runCommand('npm install --no-audit --no-fund --include=dev 2>&1', buildDir, NPM_INSTALL_TIMEOUT);
       } else if (isNpmError(combinedOutput)) {
         const fixed = await autoFixPackageJson(buildDir, combinedOutput);
         if (fixed) {
           await logger.info('Auto-fixed package.json (removed bad packages), retrying install...', 'development', projectId);
-          install = await runCommand('npm install --no-audit --no-fund 2>&1', buildDir, NPM_INSTALL_TIMEOUT);
+          install = await runCommand('npm install --no-audit --no-fund --include=dev 2>&1', buildDir, NPM_INSTALL_TIMEOUT);
         }
       }
 
@@ -292,7 +292,7 @@ export async function verifyBuild(
     const viteCheck = await runCommand('test -f node_modules/vite/bin/vite.js && echo VITE_OK || echo VITE_MISSING', buildDir);
     if (!viteCheck.stdout.includes('VITE_OK')) {
       await logger.warn('vite not found after npm install, force-installing critical deps...', 'development', projectId);
-      await runCommand('npm install vite@^5.4.2 @vitejs/plugin-react@^4.3.1 --no-audit --no-fund --no-save 2>&1', buildDir, NPM_FORCE_INSTALL_TIMEOUT);
+      await runCommand('npm install vite@^5.4.2 @vitejs/plugin-react@^4.3.1 --no-audit --no-fund --no-save --include=dev 2>&1', buildDir, NPM_FORCE_INSTALL_TIMEOUT);
 
       const recheck = await runCommand('test -f node_modules/vite/bin/vite.js && echo VITE_OK || echo VITE_MISSING', buildDir);
       if (!recheck.stdout.includes('VITE_OK')) {
