@@ -111,9 +111,38 @@ EXTRACT EVERYTHING USEFUL FROM EVERY PAGE:
    - Note what the client likely wants to replicate
 
 Be extremely detailed and specific. Label each page you analyze with [Page N].
-This analysis will be used to build the actual website.`,
+This analysis will be used to build the actual website.
+
+CRITICAL: At the END of your analysis, you MUST include a structured design spec block in the following exact JSON format, wrapped in <design-spec> tags. Extract actual values from the PDF -- if a value is not found, use "auto" to indicate it should be inferred:
+
+<design-spec>
+{
+  "colors": {
+    "primary": "#hex or auto",
+    "secondary": "#hex or auto",
+    "accent": "#hex or auto",
+    "background": "#hex or auto",
+    "surface": "#hex or auto",
+    "text": "#hex or auto",
+    "textSecondary": "#hex or auto",
+    "success": "#hex or auto",
+    "warning": "#hex or auto",
+    "error": "#hex or auto",
+    "border": "#hex or auto"
+  },
+  "fonts": {
+    "heading": "FontName or auto",
+    "body": "FontName or auto",
+    "mono": "FontName or auto"
+  },
+  "borderRadius": "4px | 8px | 12px | 16px | rounded-full | auto",
+  "shadows": "none | sm | md | lg | auto",
+  "spacing": "compact | normal | relaxed | auto",
+  "style": "modern | minimal | corporate | playful | elegant | bold | auto"
+}
+</design-spec>`,
     projectId,
-    'sonnet'
+    'opus'
   );
 
   return { text, visualAnalysis };
@@ -160,6 +189,34 @@ async function extractSpreadsheetData(url: string): Promise<string> {
     return results.join('\n\n');
   } catch (err) {
     throw new Error(`Spreadsheet parsing failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+export interface ExtractedDesignSpec {
+  colors: Record<string, string>;
+  fonts: Record<string, string>;
+  borderRadius: string;
+  shadows: string;
+  spacing: string;
+  style: string;
+}
+
+export function extractDesignSpecFromContent(content: string): ExtractedDesignSpec | null {
+  const match = content.match(/<design-spec>\s*([\s\S]*?)\s*<\/design-spec>/);
+  if (!match) return null;
+
+  try {
+    const parsed = JSON.parse(match[1]);
+    return {
+      colors: parsed.colors || {},
+      fonts: parsed.fonts || {},
+      borderRadius: parsed.borderRadius || 'auto',
+      shadows: parsed.shadows || 'auto',
+      spacing: parsed.spacing || 'auto',
+      style: parsed.style || 'auto',
+    };
+  } catch {
+    return null;
   }
 }
 

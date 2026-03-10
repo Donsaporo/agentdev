@@ -37,6 +37,7 @@ export interface Project {
   current_phase: ProjectPhase;
   has_backend: boolean;
   supabase_project_ref: string | null;
+  supabase_project_name: string | null;
   supabase_url: string | null;
   supabase_anon_key: string | null;
   last_error_message: string | null;

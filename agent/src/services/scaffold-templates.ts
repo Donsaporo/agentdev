@@ -154,26 +154,64 @@ export function generatePostcssConfig(): string {
 }
 
 export function generateTailwindConfig(
-  designSystem?: FullArchitecture['designSystem']
+  designSystem?: FullArchitecture['designSystem'],
+  extractedSpec?: { colors?: Record<string, string>; fonts?: Record<string, string>; borderRadius?: string }
 ): string {
-  const colorExtension = designSystem
-    ? `
-      colors: {
-        primary: '${designSystem.primaryColor || '#0F172A'}',
-        secondary: '${designSystem.secondaryColor || '#475569'}',
-        accent: '${designSystem.accentColor || '#0EA5E9'}',
-      },
-      fontFamily: {
-        heading: ['${designSystem.fonts?.heading || 'Inter'}', 'sans-serif'],
-        body: ['${designSystem.fonts?.body || 'Inter'}', 'sans-serif'],
-      },`
-    : '';
+  const colors: Record<string, string> = {};
+  const fonts: Record<string, string[]> = {};
+
+  if (extractedSpec?.colors) {
+    for (const [key, val] of Object.entries(extractedSpec.colors)) {
+      if (val && val !== 'auto' && val.startsWith('#')) {
+        colors[key] = val;
+      }
+    }
+  }
+
+  if (designSystem) {
+    if (!colors.primary && designSystem.primaryColor) colors.primary = designSystem.primaryColor;
+    if (!colors.secondary && designSystem.secondaryColor) colors.secondary = designSystem.secondaryColor;
+    if (!colors.accent && designSystem.accentColor) colors.accent = designSystem.accentColor;
+  }
+
+  if (!colors.primary) colors.primary = '#0F172A';
+  if (!colors.secondary) colors.secondary = '#475569';
+  if (!colors.accent) colors.accent = '#0EA5E9';
+
+  const headingFont = extractedSpec?.fonts?.heading && extractedSpec.fonts.heading !== 'auto'
+    ? extractedSpec.fonts.heading
+    : designSystem?.fonts?.heading || 'Inter';
+  const bodyFont = extractedSpec?.fonts?.body && extractedSpec.fonts.body !== 'auto'
+    ? extractedSpec.fonts.body
+    : designSystem?.fonts?.body || 'Inter';
+
+  fonts.heading = [`'${headingFont}'`, 'sans-serif'];
+  fonts.body = [`'${bodyFont}'`, 'sans-serif'];
+
+  const colorLines = Object.entries(colors)
+    .map(([k, v]) => `        ${k}: '${v}',`)
+    .join('\n');
+
+  const fontLines = Object.entries(fonts)
+    .map(([k, v]) => `        ${k}: [${v.join(', ')}],`)
+    .join('\n');
+
+  let borderRadiusExt = '';
+  if (extractedSpec?.borderRadius && extractedSpec.borderRadius !== 'auto') {
+    borderRadiusExt = `\n      borderRadius: {\n        DEFAULT: '${extractedSpec.borderRadius}',\n      },`;
+  }
 
   return `/** @type {import('tailwindcss').Config} */
 export default {
   content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
   theme: {
-    extend: {${colorExtension}
+    extend: {
+      colors: {
+${colorLines}
+      },
+      fontFamily: {
+${fontLines}
+      },${borderRadiusExt}
     },
   },
   plugins: [],
@@ -224,6 +262,10 @@ export function generateIndexCss(fonts?: { heading?: string; body?: string }): s
 @tailwind components;
 @tailwind utilities;
 
+html {
+  scroll-behavior: smooth;
+}
+
 :root {
   font-family: '${bodyFont}', system-ui, -apple-system, sans-serif;
   line-height: 1.5;
@@ -242,6 +284,19 @@ body {
   min-height: 100vh;
 }
 
+::selection {
+  background-color: rgba(14, 165, 233, 0.2);
+}
+
+*:focus-visible {
+  outline: 2px solid rgba(14, 165, 233, 0.5);
+  outline-offset: 2px;
+}
+
+button, a, input, select, textarea {
+  transition: all 150ms ease;
+}
+
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: translateY(0); }
@@ -252,12 +307,43 @@ body {
   to { opacity: 1; transform: translateY(0); }
 }
 
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
 .animate-fade-in {
-  animation: fadeIn 0.5s ease-out forwards;
+  animation: fadeIn 0.4s ease-out forwards;
 }
 
 .animate-slide-up {
-  animation: slideUp 0.6s ease-out forwards;
+  animation: slideUp 0.5s ease-out forwards;
+}
+
+.animate-slide-down {
+  animation: slideDown 0.3s ease-out forwards;
+}
+
+.animate-scale-in {
+  animation: scaleIn 0.2s ease-out forwards;
+}
+
+.animate-pulse {
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.page-enter {
+  animation: fadeIn 0.3s ease-out forwards;
 }`;
 }
 
@@ -617,11 +703,20 @@ export function sanitizePackageJson(content: string): {
 
 export function getAllTemplateFiles(
   projectName: string,
-  architecture: FullArchitecture
+  architecture: FullArchitecture,
+  extractedSpec?: { colors?: Record<string, string>; fonts?: Record<string, string>; borderRadius?: string }
 ): { path: string; content: string }[] {
   const hasBackend = architecture.requiresBackend;
   const ds = architecture.designSystem;
-  const fonts = ds?.fonts;
+
+  const resolvedFonts = {
+    heading: extractedSpec?.fonts?.heading && extractedSpec.fonts.heading !== 'auto'
+      ? extractedSpec.fonts.heading
+      : ds?.fonts?.heading,
+    body: extractedSpec?.fonts?.body && extractedSpec.fonts.body !== 'auto'
+      ? extractedSpec.fonts.body
+      : ds?.fonts?.body,
+  };
 
   const files: { path: string; content: string }[] = [
     { path: 'package.json', content: generatePackageJson(projectName, hasBackend) },
@@ -630,13 +725,17 @@ export function getAllTemplateFiles(
     { path: 'tsconfig.app.json', content: generateTsConfigApp() },
     { path: 'tsconfig.node.json', content: generateTsConfigNode() },
     { path: 'postcss.config.js', content: generatePostcssConfig() },
-    { path: 'tailwind.config.js', content: generateTailwindConfig(ds) },
-    { path: 'index.html', content: generateIndexHtml(projectName, fonts) },
+    { path: 'tailwind.config.js', content: generateTailwindConfig(ds, extractedSpec) },
+    { path: 'index.html', content: generateIndexHtml(projectName, resolvedFonts) },
     { path: 'src/main.tsx', content: generateMainTsx(hasBackend) },
-    { path: 'src/index.css', content: generateIndexCss(fonts) },
+    { path: 'src/index.css', content: generateIndexCss(resolvedFonts) },
     { path: 'src/vite-env.d.ts', content: generateViteEnvDts() },
     { path: '.gitignore', content: generateGitignore() },
   ];
+
+  files.push(
+    { path: 'src/components/ScrollToTop.tsx', content: generateScrollToTop() },
+  );
 
   if (hasBackend) {
     files.push(
@@ -650,4 +749,19 @@ export function getAllTemplateFiles(
   }
 
   return files;
+}
+
+function generateScrollToTop(): string {
+  return `import { useEffect } from 'react';
+import { useLocation } from 'react-router-dom';
+
+export default function ScrollToTop() {
+  const { pathname } = useLocation();
+
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [pathname]);
+
+  return null;
+}`;
 }

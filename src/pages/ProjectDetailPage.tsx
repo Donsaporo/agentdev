@@ -296,9 +296,15 @@ export default function ProjectDetailPage() {
             <Database className="w-4 h-4 text-teal-400" />
             <h3 className="text-sm font-semibold text-white">Backend Database</h3>
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             {project.supabase_url ? (
               <>
+                {project.supabase_project_name && (
+                  <div>
+                    <p className="text-xs text-slate-500 mb-0.5">Database Name</p>
+                    <p className="text-xs text-slate-200 font-medium">{project.supabase_project_name}</p>
+                  </div>
+                )}
                 <div>
                   <p className="text-xs text-slate-500 mb-0.5">Supabase URL</p>
                   <a href={project.supabase_url} target="_blank" rel="noopener noreferrer" className="text-xs text-teal-400 hover:text-teal-300 transition-colors truncate block">{project.supabase_url}</a>

@@ -14,7 +14,6 @@ import { startListening, startHeartbeat, setEventHandler, markOffline, clearBrie
 import { processBrief } from './pipelines/brief-processing.js';
 import { handleChatMessage } from './pipelines/chat-response.js';
 import { handleQARejection } from './pipelines/qa-correction.js';
-import { closeBrowser } from './services/screenshots.js';
 import { cleanupStaleCheckpoints } from './core/pipeline-state.js';
 import type { QueueEvent } from './core/types.js';
 
@@ -126,7 +125,7 @@ async function main(): Promise<void> {
     console.log(`\n${signal} received. Shutting down gracefully...`);
     clearInterval(heartbeatInterval);
     await markOffline();
-    await closeBrowser();
+    // no-op: browserless is stateless
     await logger.info('Agent shutting down', 'system');
     process.exit(0);
   };
@@ -143,7 +142,7 @@ async function main(): Promise<void> {
 
   process.on('uncaughtException', async (err) => {
     await logger.error(`Uncaught exception: ${err.message}`, 'system');
-    await closeBrowser();
+    // no-op: browserless is stateless
     process.exit(1);
   });
 }

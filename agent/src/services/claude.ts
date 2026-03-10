@@ -220,6 +220,58 @@ function isResponseTruncated(response: Anthropic.Message): boolean {
   return response.stop_reason === 'max_tokens';
 }
 
+async function continueFromTruncation(
+  ai: Anthropic,
+  model: string,
+  systemPrompt: string,
+  originalUserContent: string,
+  partialText: string,
+  maxContinuations: number = 2,
+  operation: string = 'continuation',
+  projectId?: string
+): Promise<{ text: string; totalInput: number; totalOutput: number }> {
+  let combinedText = partialText;
+  let totalInput = 0;
+  let totalOutput = 0;
+
+  for (let i = 0; i < maxContinuations; i++) {
+    const lastChunk = combinedText.slice(-800);
+
+    const contResponse = await callWithRetry(
+      () => ai.messages.create({
+        model,
+        max_tokens: 32000,
+        system: systemPrompt,
+        messages: [
+          { role: 'user', content: originalUserContent },
+          { role: 'assistant', content: combinedText },
+          { role: 'user', content: `Your previous response was truncated. Continue generating from EXACTLY where you left off. Here is the end of your previous output for context:\n\n${lastChunk}\n\nContinue from this point. Do NOT repeat any files already generated. Generate ONLY the remaining files.` },
+        ],
+      }),
+      2,
+      `${operation}_continuation_${i + 1}`
+    );
+
+    const contText = extractText(contResponse);
+    totalInput += contResponse.usage.input_tokens;
+    totalOutput += contResponse.usage.output_tokens;
+
+    combinedText += '\n' + contText;
+
+    if (projectId) {
+      await trackUsage(model, contResponse.usage.input_tokens, contResponse.usage.output_tokens, `${operation}_continuation`, projectId);
+    }
+
+    if (!isResponseTruncated(contResponse)) {
+      break;
+    }
+
+    await logger.warn(`Continuation ${i + 1} also truncated, requesting more...`, 'ai', projectId);
+  }
+
+  return { text: combinedText, totalInput, totalOutput };
+}
+
 function safeParseJSON<T>(text: string, fallback: T): T {
   const cleaned = text
     .replace(/```json\n?/g, '')
@@ -743,14 +795,15 @@ Output valid JSON only:
 export async function generateProjectScaffold(
   project: Project,
   client: Client,
-  architecture: FullArchitecture
+  architecture: FullArchitecture,
+  extractedDesignSpec?: { colors?: Record<string, string>; fonts?: Record<string, string>; borderRadius?: string }
 ): Promise<ClaudeCodeResponse> {
   const ai = await getClient();
   const model = MODELS.sonnet;
 
   const hasBackend = architecture.requiresBackend;
 
-  const templateFiles = getAllTemplateFiles(project.name, architecture);
+  const templateFiles = getAllTemplateFiles(project.name, architecture, extractedDesignSpec);
 
   const backendAppFiles = hasBackend ? `
 NOTE: src/lib/supabase.ts, src/lib/types.ts, src/lib/api.ts, src/contexts/AuthContext.tsx, src/hooks/useAuth.ts are ALREADY generated as templates.
@@ -786,6 +839,7 @@ CRITICAL: DO NOT generate these files (they are pre-configured and immutable):
 - src/hooks/useAuth.ts (ALREADY GENERATED - DO NOT OUTPUT)
 - src/lib/types.ts (ALREADY GENERATED - DO NOT OUTPUT)
 - src/lib/api.ts (ALREADY GENERATED - DO NOT OUTPUT)
+- src/components/ScrollToTop.tsx (ALREADY GENERATED - DO NOT OUTPUT)
 
 You MUST ONLY generate files inside src/ that are NOT listed above.
 
@@ -821,11 +875,28 @@ ${authInstructions}
 DESIGN RULES:
 - Brand colors: ${JSON.stringify(client.brand_colors)} - use in Tailwind classes
 - Brand fonts: ${JSON.stringify(client.brand_fonts)}
+- Use the Tailwind theme colors: bg-primary, text-primary, bg-accent, etc.
 - Modern, beautiful, production-ready design
-- Responsive: mobile-first
+- Responsive: mobile-first with proper breakpoints (sm, md, lg, xl)
 - Use lucide-react for all icons
 - NEVER use purple/indigo unless brand colors include them
-- Consistent 8px spacing system`;
+- Consistent 8px spacing system (p-2, p-4, p-6, p-8, gap-2, gap-4, etc.)
+- Clear typography hierarchy: one h1 per page, h2 for sections, h3 for subsections
+- 150% line-height for body text, 120% for headings
+- Maximum 3 font weights (400, 500, 700)
+
+UX REQUIREMENTS (CRITICAL):
+- ScrollToTop component is ALREADY generated at src/components/ScrollToTop.tsx. Import and include <ScrollToTop /> inside Routes in App.tsx.
+- Every page wrapper div MUST have className="page-enter" for entrance animation
+- All buttons MUST have: hover:scale-[1.02] transition-transform duration-150 active:scale-[0.98]
+- All cards MUST have: hover:shadow-lg transition-shadow duration-200
+- All links MUST have visible hover state (color change or underline)
+- Navigation MUST highlight the current active route
+- All interactive elements MUST have cursor-pointer
+- Forms MUST have inline validation feedback, disabled submit while loading, and loading spinner on submit
+- Every list/table MUST handle empty state with a descriptive message and optional action button
+- Every async operation MUST show a loading state (spinner or skeleton)
+- Color contrast: ensure all text has WCAG AA contrast against its background`;
 
   const response = await callWithRetry(
     () => ai.messages.create({
@@ -838,13 +909,17 @@ DESIGN RULES:
     'scaffold'
   );
 
-  const text = extractText(response);
-  let aiFiles = parseCodeBlocks(text);
+  let text = extractText(response);
   await trackUsage(model, response.usage.input_tokens, response.usage.output_tokens, 'scaffold', project.id);
 
   if (isResponseTruncated(response)) {
-    await logger.warn(`Scaffold response was truncated (max_tokens reached). ${aiFiles.length} files parsed from partial output. Some pages may be missing.`, 'development', project.id);
+    await logger.warn(`Scaffold response truncated. Requesting continuation...`, 'development', project.id);
+    const userContent = `Generate the application code files for:\n\n${JSON.stringify(architecture, null, 2)}`;
+    const cont = await continueFromTruncation(ai, model, systemPrompt, userContent, text, 2, 'scaffold', project.id);
+    text = cont.text;
   }
+
+  let aiFiles = parseCodeBlocks(text);
 
   const configPaths = new Set(templateFiles.map((f) => f.path));
   aiFiles = aiFiles.filter((f) => !configPaths.has(f.path));
@@ -1093,6 +1168,13 @@ RULES:
 // PHASE 3: MODULE-BASED PAGE GENERATION (improved)
 // ============================================================
 
+const COMPLEX_PAGE_KEYWORDS = ['form', 'table', 'crud', 'dashboard', 'analytics', 'editor', 'settings', 'manage', 'admin', 'report', 'invoice', 'checkout', 'payment', 'calendar'];
+
+function isComplexPage(page: ArchitecturePage): boolean {
+  const text = `${page.name} ${page.description || ''}`.toLowerCase();
+  return COMPLEX_PAGE_KEYWORDS.some((kw) => text.includes(kw));
+}
+
 export function groupPagesIntoModules(architecture: FullArchitecture): FeatureModule[] {
   const pages = architecture.pages || [];
   const moduleMap = new Map<string, ArchitecturePage[]>();
@@ -1107,12 +1189,28 @@ export function groupPagesIntoModules(architecture: FullArchitecture): FeatureMo
   const modules: FeatureModule[] = [];
   for (const [name, modulePages] of moduleMap) {
     const role = modulePages[0]?.role || 'public';
-    modules.push({
-      name,
-      pages: modulePages,
-      role,
-      description: `${name} module (${modulePages.length} pages) for ${role} role`,
-    });
+    const complexCount = modulePages.filter(isComplexPage).length;
+    const maxPerModule = complexCount > modulePages.length / 2 ? 3 : 5;
+
+    if (modulePages.length <= maxPerModule) {
+      modules.push({
+        name,
+        pages: modulePages,
+        role,
+        description: `${name} module (${modulePages.length} pages) for ${role} role`,
+      });
+    } else {
+      for (let i = 0; i < modulePages.length; i += maxPerModule) {
+        const chunk = modulePages.slice(i, i + maxPerModule);
+        const suffix = Math.floor(i / maxPerModule) + 1;
+        modules.push({
+          name: modulePages.length > maxPerModule ? `${name}-${suffix}` : name,
+          pages: chunk,
+          role,
+          description: `${name} module part ${suffix} (${chunk.length} pages) for ${role} role`,
+        });
+      }
+    }
   }
 
   return modules;
@@ -1217,10 +1315,24 @@ QUALITY STANDARDS:
 - Production-ready code - this ships to real clients
 - Clean TypeScript types for all props and state
 - Accessible: aria labels, semantic HTML, keyboard navigation
-- Proper heading hierarchy
+- Proper heading hierarchy: one h1 per page (page title), h2 for sections, h3 for subsections
 - Each page component must be fully featured, minimum 150 lines
 - Create sub-components when sections get complex (put them in the same module directory or components/)
 - NEVER use purple/indigo unless brand colors include them
+
+UX REQUIREMENTS (CRITICAL - these affect client perception):
+- Every page wrapper div MUST have className="page-enter" for entrance animation
+- All buttons MUST have: hover:scale-[1.02] transition-transform duration-150 active:scale-[0.98]
+- All cards MUST have: hover:shadow-lg transition-shadow duration-200
+- All links and clickable elements MUST have cursor-pointer and visible hover state
+- All form inputs MUST have: focus:ring-2 focus:ring-primary/50 transition-all
+- Every list/table MUST handle THREE states: loading (skeleton/spinner), empty (icon + message + action), populated (actual data)
+- Every async operation (fetch, submit, delete) MUST show a loading spinner and disable the trigger button
+- Forms MUST: disable submit while submitting, show inline validation errors below each field, show success/error feedback after submit
+- Tables MUST have: hover:bg-gray-50 (or dark equivalent) on rows, responsive (scroll or stack on mobile)
+- Mobile layouts MUST: hide sidebar/use hamburger, stack cards vertically, use full-width forms
+- Use consistent spacing: p-4 for cards, gap-6 for page sections, gap-4 for form fields
+- Color contrast: all text MUST be readable against its background (WCAG AA minimum)
 ${recoveryMode === 'simplified' ? `
 SIMPLIFIED MODE (this is a retry - the previous attempt failed to compile):
 - Generate SIMPLER pages that are GUARANTEED to compile
@@ -1277,13 +1389,16 @@ Generate ALL ${module.pages.length} pages completely. Every page must be product
     'module_code'
   );
 
-  const text = extractText(response);
-  const files = parseCodeBlocks(text);
+  let text = extractText(response);
   await trackUsage(model, response.usage.input_tokens, response.usage.output_tokens, 'module_code', project.id);
 
   if (isResponseTruncated(response)) {
-    await logger.warn(`Module ${module.name} response was truncated (max_tokens). ${files.length}/${module.pages.length} pages may have been generated.`, 'development', project.id);
+    await logger.warn(`Module ${module.name} response truncated. Requesting continuation...`, 'development', project.id);
+    const cont = await continueFromTruncation(ai, model, systemPrompt, userPrompt, text, 2, 'module_code', project.id);
+    text = cont.text;
   }
+
+  const files = parseCodeBlocks(text);
 
   return {
     files,

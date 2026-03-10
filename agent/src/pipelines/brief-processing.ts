@@ -4,14 +4,15 @@ import { getConfig } from '../core/config.js';
 import {
   analyzeBrief, generateProjectScaffold, generateModuleCode, groupPagesIntoModules,
   generateDatabaseSchema, generateBuildFix, verifyProjectCompleteness,
-  analyzeScreenshotAllViewports, fixFailedSqlStatements, generateAutoQAFix,
+  fixFailedSqlStatements,
   CreditExhaustedError,
 } from '../services/claude.js';
-import { processAttachments } from '../services/file-processing.js';
+import { processAttachments, extractDesignSpecFromContent } from '../services/file-processing.js';
+import type { ExtractedDesignSpec } from '../services/file-processing.js';
 import { researchReferenceUrls } from '../services/web-research.js';
 import { createRepo, pushFiles, getMultipleFileContents, getRepoTree, getFileContent } from '../services/github.js';
 import { createProject as createVercelProject, triggerDeployment, waitForDeployment, addDomain, setEnvironmentVariables, VercelConfigError } from '../services/vercel.js';
-import { captureAllPages } from '../services/screenshots.js';
+// screenshots handled inside ai-qa-reviewer
 import { verifyBuild, extractBuildErrors, hashErrors, validateScaffold, areAllErrorsTypeOnly, generateTsNoCheckFiles, preFlightCheck, classifyBuildError, cleanupBuildDir } from '../services/build-verify.js';
 import { sanitizePackageJson } from '../services/scaffold-templates.js';
 import { notifyBuildComplete, notifyQAReady, notifyError, notifyDeploySuccess } from '../services/notifications.js';
@@ -525,6 +526,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     let architecture: FullArchitecture;
     let fullName: string;
     let repoUrl: string;
+    let extractedDesignSpec: ExtractedDesignSpec | undefined;
     const clientSlug = client.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+$/, '');
     const projectSlug = project.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+$/, '');
     const repoName = `${clientSlug}-${projectSlug}`;
@@ -550,6 +552,14 @@ export async function processBrief(projectId: string, briefId: string): Promise<
             .update({ processing_status: 'processed', extracted_content: p.content.slice(0, 10000) })
             .eq('brief_id', briefId)
             .eq('file_name', p.fileName);
+
+          if (!extractedDesignSpec && p.content) {
+            const spec = extractDesignSpecFromContent(p.content);
+            if (spec) {
+              extractedDesignSpec = spec;
+              await logger.info(`Extracted structured design spec from ${p.fileName}`, 'development', projectId);
+            }
+          }
         }
       }
 
@@ -621,7 +631,8 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       const scaffold = await generateProjectScaffold(
         project as unknown as Project,
         client,
-        architecture
+        architecture,
+        extractedDesignSpec
       );
 
       {
@@ -755,8 +766,10 @@ export async function processBrief(projectId: string, briefId: string): Promise<
           const keys = await getProjectApiKeys(sbRef, projectId);
           const sbUrl = getProjectUrl(sbRef);
 
+          const sbProjectName = `${sbNamePrefix}-${projectId.slice(0, 6)}`.slice(0, 40);
           const sbUpdate: Record<string, unknown> = {
             supabase_project_ref: sbRef,
+            supabase_project_name: sbProjectName,
             supabase_url: sbUrl,
             supabase_anon_key: keys.anonKey,
             supabase_service_role_key: keys.serviceRoleKey,
@@ -849,7 +862,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
         await sendChatMessage(projectId, `Scaffold failed to compile after 4 attempts (${scaffoldGate.errorsRemaining} errors). Regenerating scaffold from scratch...`);
         await logger.warn('Scaffold build gate failed. Regenerating scaffold...', 'development', projectId);
 
-        const newScaffold = await generateProjectScaffold(project as unknown as Project, client, architecture);
+        const newScaffold = await generateProjectScaffold(project as unknown as Project, client, architecture, extractedDesignSpec);
         const regenValidation = await validateScaffold(newScaffold.files, architecture);
         for (const fix of regenValidation.fixedFiles) {
           const idx = newScaffold.files.findIndex((f) => f.path === fix.path);
@@ -1803,141 +1816,62 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     }
 
     // ============================================================
-    // PHASE 6: QA
+    // PHASE 6: AUTONOMOUS AI QA
     // ============================================================
 
-    const pages = architecture.pages || [];
+    if (result.url) {
+      await updateProject(projectId, { current_phase: 'qa', progress: 92 });
+      await logger.info('Phase 6: Autonomous AI QA', 'qa', projectId);
+      await sendChatMessage(projectId, 'Starting AI-driven quality review (screenshots + visual analysis + UX checks)...');
 
-    if (config.auto_qa && result.url) {
-      await updateProject(projectId, { current_phase: 'qa' });
-      await logger.info('Phase 6: Multi-viewport QA', 'qa', projectId);
-      await sendChatMessage(projectId, 'Running multi-viewport QA (desktop, tablet, mobile)...');
+      try {
+        const { runAutonomousQA } = await import('../services/ai-qa-reviewer.js');
 
-      let qaVersion = 1;
-      let screenshotResults = await captureAllPages(
-        result.url,
-        pages.map((p) => ({ name: p.name, route: p.route })),
-        projectId,
-        qaVersion
-      );
+        const designSpecText = JSON.stringify(architecture.designSystem || {}, null, 2);
 
-      const QA_BATCH_SIZE = 5;
+        const qaReport = await runAutonomousQA(
+          result.url,
+          architecture,
+          designSpecText,
+          projectId,
+          fullName,
+          repoName
+        );
 
-      for (let qaAttempt = 0; qaAttempt < config.max_corrections; qaAttempt++) {
-        const failedPages: { pageName: string; issues: string[]; score: number }[] = [];
-
-        for (let ssIdx = 0; ssIdx < screenshotResults.length; ssIdx += QA_BATCH_SIZE) {
-          const ssBatch = screenshotResults.slice(ssIdx, ssIdx + QA_BATCH_SIZE);
-          const batchResults = await Promise.all(
-            ssBatch.map(async (ss) => {
-              const pageArch = pages.find((p) => p.name === ss.pageName);
-              return {
-                ss,
-                result: await analyzeScreenshotAllViewports(
-                  { desktop: ss.desktopUrl, tablet: ss.tabletUrl, mobile: ss.mobileUrl },
-                  ss.pageName,
-                  pageArch?.description || ss.pageName,
-                  projectId
-                ),
-              };
-            })
+        if (qaReport.status === 'all_passed') {
+          await updateProject(projectId, { status: 'deployed', progress: 100, agent_status: 'idle' });
+          await sendChatMessage(projectId,
+            `All ${qaReport.totalPages} pages passed AI QA review (score: ${qaReport.overallScore}/100).` +
+            (qaReport.iterations > 1 ? ` Required ${qaReport.iterations - 1} auto-correction round(s).` : '') +
+            `\n\nLive at: ${result.url}`
           );
-
-          for (const { ss, result: qaResult } of batchResults) {
-            if (!qaResult.overallPass) {
-              const allIssues = qaResult.viewports.flatMap(
-                (v) => v.issues.map((issue) => `[${v.viewport}] ${issue}`)
-              );
-              failedPages.push({ pageName: ss.pageName, issues: allIssues, score: qaResult.overallScore });
-            }
-          }
-
-          if (ssIdx + QA_BATCH_SIZE < screenshotResults.length) {
-            await new Promise((r) => setTimeout(r, 3000));
-          }
-        }
-
-        if (failedPages.length === 0) {
-          await sendChatMessage(projectId, qaAttempt === 0
-            ? 'All pages passed multi-viewport QA on first try.'
-            : `All pages passed multi-viewport QA after ${qaAttempt} correction(s).`);
-          break;
-        }
-
-        if (qaAttempt === config.max_corrections - 1) {
-          const summary = failedPages.map((fp) => `${fp.pageName} (${fp.score}/100)`).join(', ');
-          await sendChatMessage(projectId, `${failedPages.length} page(s) still have issues after ${config.max_corrections} attempts: ${summary}. Sending to human QA.`);
-          break;
-        }
-
-        await sendChatMessage(projectId, `${failedPages.length} page(s) failed QA. Auto-correcting (round ${qaAttempt + 1})...`);
-
-        const qaRepoFiles = await getRepoTree(fullName);
-        const qaCodeFiles = qaRepoFiles.filter(
-          (f) => f.type === 'file' && /\.(tsx?|jsx?|css|json)$/.test(f.path)
-        );
-        const qaPathsBudgeted = selectPathsWithinBudget(
-          qaCodeFiles,
-          CONTEXT_BUDGETS.qaFix,
-          CORE_FILE_PATTERNS
-        );
-        const qaCode = await getMultipleFileContents(fullName, qaPathsBudgeted);
-
-        const fixResult = await generateAutoQAFix(
-          failedPages,
-          qaCode,
-          project as unknown as Project,
-          client,
-          architecture as unknown as Record<string, unknown>,
-          qaAttempt + 1,
-          config.max_corrections
-        );
-
-        if (fixResult.files.length > 0) {
-          await pushFiles(fullName, fixResult.files, `fix: multi-viewport QA corrections (round ${qaAttempt + 1})`, projectId);
-          const redeploy = await triggerDeployment(repoName, projectId, fullName);
-          const redeployResult = await waitForDeployment(redeploy.deploymentId, projectId);
-
-          if (redeployResult.status === 'ready') {
-            await updateProject(projectId, { demo_url: redeployResult.url });
-            qaVersion++;
-            screenshotResults = await captureAllPages(
-              redeployResult.url,
-              pages.map((p) => ({ name: p.name, route: p.route })),
-              projectId,
-              qaVersion
-            );
-          } else {
-            await logger.warn('Redeploy failed during QA correction', 'qa', projectId);
-            await sendChatMessage(projectId, 'QA correction deployment failed. Sending current state to human QA.');
-            break;
-          }
         } else {
-          break;
+          await updateProject(projectId, { status: 'deployed', progress: 100, agent_status: 'idle' });
+          const failedList = qaReport.pageResults
+            .filter((p) => !p.pass && p.score < 80)
+            .map((p) => `${p.pageName} (${p.score}/100)`)
+            .join(', ');
+          await sendChatMessage(projectId,
+            `QA completed: ${qaReport.passedPages}/${qaReport.totalPages} pages passed (score: ${qaReport.overallScore}/100).` +
+            (failedList ? `\nPages with remaining issues: ${failedList}` : '') +
+            `\n\nLive at: ${result.url}` +
+            `\n\nYou can review the QA report in the QA Review tab and re-run if needed.`
+          );
         }
-      }
 
-      for (const ss of screenshotResults) {
-        await supabase.from('qa_screenshots').insert({
-          project_id: projectId,
-          page_name: ss.pageName,
-          page_url: ss.pageUrl,
-          desktop_url: ss.desktopUrl,
-          tablet_url: ss.tabletUrl,
-          mobile_url: ss.mobileUrl,
-          status: 'pending',
-          version_number: qaVersion,
-        });
+        await notifyBuildComplete(project.name, result.url || '', projectId);
+      } catch (qaErr) {
+        await logger.error(`AI QA failed (non-blocking): ${qaErr instanceof Error ? qaErr.message : String(qaErr)}`, 'qa', projectId);
+        await updateProject(projectId, { status: 'deployed', progress: 100, agent_status: 'idle' });
+        await sendChatMessage(projectId,
+          `Deployed successfully: ${result.url}\n\nAI QA review encountered an error. You can manually review the site or re-run QA from the QA Review tab.`
+        );
+        await notifyBuildComplete(project.name, result.url || '', projectId);
       }
-
-      await updateProject(projectId, { status: 'qa', progress: 100, agent_status: 'idle' });
-      await sendChatMessage(projectId, `QA screenshots ready for human review. ${screenshotResults.length} pages captured across 3 viewports.`);
-      await notifyBuildComplete(project.name, result.url || '', projectId);
-      await notifyQAReady(project.name, screenshotResults.length, projectId);
     } else {
       await updateProject(projectId, { status: 'review', progress: 100, agent_status: 'idle' });
-      await sendChatMessage(projectId, 'Build complete. Auto-QA is disabled, project is ready for manual review.');
-      await notifyBuildComplete(project.name, result.url || '', projectId);
+      await sendChatMessage(projectId, 'Build complete but no deployment URL available. Check Vercel for the live URL.');
+      await notifyBuildComplete(project.name, repoUrl, projectId);
     }
 
     await supabase.from('briefs').update({ status: 'completed' }).eq('id', briefId);
