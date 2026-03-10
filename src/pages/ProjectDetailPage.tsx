@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, ExternalLink, GitBranch, Globe, Pencil, Trash2, CheckCircle2, Circle, AlertCircle, Clock, Loader2, MessageSquare, Save, LayoutGrid as Layout, Palette, Type, Puzzle, Layers, Database, AlertTriangle } from 'lucide-react';
+import { ArrowLeft, ExternalLink, GitBranch, Globe, Pencil, Trash2, CheckCircle2, Circle, AlertCircle, Clock, Loader2, MessageSquare, Save, LayoutGrid as Layout, Palette, Type, Puzzle, Layers, Database, AlertTriangle, Camera, MonitorCheck } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useToast } from '../contexts/ToastContext';
 import type { Project, ProjectTask, Integration, Brief } from '../lib/types';
@@ -9,6 +9,7 @@ import AgentStatusIndicator from '../components/AgentStatusIndicator';
 import PhaseIndicator from '../components/PhaseIndicator';
 import Modal from '../components/Modal';
 import { useRealtimeSubscription } from '../hooks/useRealtimeSubscription';
+import { triggerScreenshots } from '../lib/screenshots';
 import { formatDistanceToNow } from 'date-fns';
 
 export default function ProjectDetailPage() {
@@ -23,6 +24,7 @@ export default function ProjectDetailPage() {
   const [showEdit, setShowEdit] = useState(false);
   const [editForm, setEditForm] = useState({ name: '', description: '', demo_url: '', production_url: '' });
   const [editSaving, setEditSaving] = useState(false);
+  const [capturingScreenshots, setCapturingScreenshots] = useState(false);
 
   useEffect(() => {
     if (id) loadProject(id);
@@ -111,6 +113,23 @@ export default function ProjectDetailPage() {
     toast.success(allAnswered ? 'All questions answered -- brief ready to send to agent' : 'Answer saved');
   }
 
+  async function handleCaptureScreenshots() {
+    if (!project?.demo_url) {
+      toast.error('Set a demo URL first');
+      return;
+    }
+    setCapturingScreenshots(true);
+    const { error } = await triggerScreenshots(project.id, [
+      { name: 'Home', url: project.demo_url },
+    ]);
+    setCapturingScreenshots(false);
+    if (error) {
+      toast.error('Screenshot capture failed: ' + error);
+      return;
+    }
+    toast.success('Screenshots are being captured. Check QA Review.');
+  }
+
   async function handleDelete() {
     if (!confirm('Delete this project and all its data?')) return;
     const { error } = await supabase.from('projects').delete().eq('id', id!);
@@ -182,6 +201,23 @@ export default function ProjectDetailPage() {
           >
             <MessageSquare className="w-4 h-4" />
           </Link>
+          <Link
+            to={`/qa/${project.id}`}
+            className="p-2 text-slate-400 hover:text-teal-400 hover:bg-white/[0.04] rounded-xl transition-all"
+            title="QA Review"
+          >
+            <MonitorCheck className="w-4 h-4" />
+          </Link>
+          {project.demo_url && (
+            <button
+              onClick={handleCaptureScreenshots}
+              disabled={capturingScreenshots}
+              className="p-2 text-slate-400 hover:text-sky-400 hover:bg-white/[0.04] rounded-xl transition-all disabled:opacity-50"
+              title="Capture Screenshots"
+            >
+              {capturingScreenshots ? <Loader2 className="w-4 h-4 animate-spin" /> : <Camera className="w-4 h-4" />}
+            </button>
+          )}
           <button onClick={openEdit} className="p-2 text-slate-400 hover:text-slate-200 hover:bg-white/[0.04] rounded-xl transition-all">
             <Pencil className="w-4 h-4" />
           </button>

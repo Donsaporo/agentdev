@@ -1,4 +1,5 @@
 import { getSupabase } from '../core/supabase.js';
+import { getSecretWithFallback } from '../core/secrets.js';
 import { logger } from '../core/logger.js';
 import type { ScreenshotResult } from '../core/types.js';
 
@@ -7,6 +8,45 @@ const VIEWPORTS = [
   { name: 'tablet', width: 768, height: 1024 },
   { name: 'mobile', width: 375, height: 812 },
 ] as const;
+
+const BROWSERLESS_BASE = 'https://chrome.browserless.io';
+
+async function getBrowserlessToken(): Promise<string> {
+  return getSecretWithFallback('browserless');
+}
+
+async function captureWithBrowserless(
+  url: string,
+  width: number,
+  height: number,
+  token: string
+): Promise<Buffer> {
+  const response = await fetch(`${BROWSERLESS_BASE}/screenshot?token=${token}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      url,
+      options: {
+        fullPage: true,
+        type: 'png',
+      },
+      gotoOptions: {
+        waitUntil: 'networkidle0',
+        timeout: 30000,
+      },
+      viewport: { width, height },
+      waitForTimeout: 2000,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => 'unknown');
+    throw new Error(`Browserless screenshot failed (${response.status}): ${errorText}`);
+  }
+
+  const arrayBuffer = await response.arrayBuffer();
+  return Buffer.from(arrayBuffer);
+}
 
 type Browser = { connected: boolean; close: () => Promise<void>; newPage: () => Promise<PuppeteerPage> };
 type PuppeteerPage = {
@@ -24,36 +64,34 @@ let puppeteerAvailable: boolean | null = null;
 async function getPuppeteer() {
   if (puppeteerAvailable === false) return null;
   if (puppeteerModule) return puppeteerModule;
-
   try {
     puppeteerModule = await import('puppeteer');
     puppeteerAvailable = true;
     return puppeteerModule;
-  } catch (err) {
-    await logger.warn(`Puppeteer import failed: ${err instanceof Error ? err.message : String(err)}. Screenshots will be skipped.`, 'qa');
+  } catch {
     puppeteerAvailable = false;
     return null;
   }
 }
 
-async function getBrowser(): Promise<Browser | null> {
+async function getBrowser(token?: string): Promise<Browser | null> {
   const pptr = await getPuppeteer();
   if (!pptr) return null;
 
   if (!browser || !browser.connected) {
     try {
-      browser = await pptr.default.launch({
-        headless: true,
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-gpu',
-        ],
-      });
+      if (token) {
+        browser = await pptr.default.connect({
+          browserWSEndpoint: `wss://chrome.browserless.io?token=${token}`,
+        });
+      } else {
+        browser = await pptr.default.launch({
+          headless: true,
+          args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+        });
+      }
     } catch (err) {
-      await logger.warn(`Puppeteer browser launch failed: ${err instanceof Error ? err.message : String(err)}`, 'qa');
-      puppeteerAvailable = false;
+      await logger.warn(`Browser launch failed: ${err instanceof Error ? err.message : String(err)}`, 'qa');
       return null;
     }
   }
@@ -67,26 +105,54 @@ export async function closeBrowser(): Promise<void> {
   }
 }
 
-async function captureViewport(
+async function captureWithPuppeteer(
   url: string,
   width: number,
-  height: number
+  height: number,
+  token?: string
 ): Promise<Buffer | null> {
-  const b = await getBrowser();
+  const b = await getBrowser(token);
   if (!b) return null;
-
   const page = await b.newPage();
-
   try {
     await page.setViewport({ width, height });
-    await page.goto(url, { waitUntil: 'networkidle0', timeout: 30_000 });
+    await page.goto(url, { waitUntil: 'networkidle0', timeout: 30000 });
     await new Promise((r) => setTimeout(r, 2000));
-
     const screenshot = await page.screenshot({ fullPage: true, type: 'png' });
     return Buffer.from(screenshot);
   } finally {
     await page.close();
   }
+}
+
+async function captureViewport(
+  url: string,
+  width: number,
+  height: number
+): Promise<Buffer | null> {
+  const token = await getBrowserlessToken();
+
+  if (token) {
+    try {
+      return await captureWithBrowserless(url, width, height, token);
+    } catch (err) {
+      await logger.warn(
+        `Browserless REST failed, trying Puppeteer WS: ${err instanceof Error ? err.message : String(err)}`,
+        'qa'
+      );
+      try {
+        return await captureWithPuppeteer(url, width, height, token);
+      } catch (wsErr) {
+        await logger.warn(
+          `Puppeteer WS also failed: ${wsErr instanceof Error ? wsErr.message : String(wsErr)}`,
+          'qa'
+        );
+        return null;
+      }
+    }
+  }
+
+  return captureWithPuppeteer(url, width, height);
 }
 
 async function uploadToStorage(
@@ -122,19 +188,15 @@ export async function capturePageScreenshots(
   projectId: string,
   version: number = 1
 ): Promise<ScreenshotResult> {
-  const pptr = await getPuppeteer();
-  if (!pptr) {
-    await logger.info(`Screenshots skipped for ${pageName} (Puppeteer not available)`, 'qa', projectId);
-    return {
-      pageName,
-      pageUrl: url,
-      desktopUrl: '',
-      tabletUrl: '',
-      mobileUrl: '',
-    };
+  const token = await getBrowserlessToken();
+  const hasPptr = await getPuppeteer();
+
+  if (!token && !hasPptr) {
+    await logger.info(`Screenshots skipped for ${pageName} (no Browserless token and Puppeteer not available)`, 'qa', projectId);
+    return { pageName, pageUrl: url, desktopUrl: '', tabletUrl: '', mobileUrl: '' };
   }
 
-  await logger.info(`Capturing screenshots for ${pageName}`, 'qa', projectId);
+  await logger.info(`Capturing screenshots for ${pageName}${token ? ' via Browserless.io' : ''}`, 'qa', projectId);
 
   const viewportResults = await Promise.all(
     VIEWPORTS.map(async (viewport) => {

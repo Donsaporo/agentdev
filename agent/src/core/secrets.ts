@@ -60,6 +60,7 @@ const ENV_FALLBACKS: Record<string, string> = {
   brave: 'BRAVE_API_KEY',
   supabase_management: 'SUPABASE_MANAGEMENT_TOKEN',
   supabase_org_id: 'SUPABASE_ORG_ID',
+  browserless: 'BROWSERLESS_API_KEY',
 };
 
 export async function getSecretWithFallback(serviceName: string): Promise<string> {

@@ -1,13 +1,20 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { MonitorCheck, Filter, Rocket, X, Loader2 } from 'lucide-react';
+import { MonitorCheck, Filter, Rocket, X, Loader2, Camera, Plus, Trash2 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useToast } from '../contexts/ToastContext';
 import type { Project, QAScreenshot, QAScreenshotStatus } from '../lib/types';
 import { useRealtimeSubscription } from '../hooks/useRealtimeSubscription';
+import { triggerScreenshots } from '../lib/screenshots';
 import QAScreenshotCard from './qa/QAScreenshotCard';
+import Modal from '../components/Modal';
 
 type FilterType = 'all' | QAScreenshotStatus;
+
+interface PageEntry {
+  name: string;
+  url: string;
+}
 
 export default function QAReviewPage() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -20,6 +27,9 @@ export default function QAReviewPage() {
   const [loading, setLoading] = useState(true);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [deploying, setDeploying] = useState(false);
+  const [showCaptureModal, setShowCaptureModal] = useState(false);
+  const [capturing, setCapturing] = useState(false);
+  const [capturePages, setCapturePages] = useState<PageEntry[]>([{ name: 'Home', url: '' }]);
 
   useEffect(() => {
     loadProjects();
@@ -28,8 +38,16 @@ export default function QAReviewPage() {
   useEffect(() => {
     if (selectedProjectId) {
       loadScreenshots(selectedProjectId);
+      prefillCaptureUrl(selectedProjectId);
     }
   }, [selectedProjectId]);
+
+  function prefillCaptureUrl(pid: string) {
+    const proj = projects.find(p => p.id === pid);
+    if (proj?.demo_url) {
+      setCapturePages([{ name: 'Home', url: proj.demo_url }]);
+    }
+  }
 
   async function loadProjects() {
     const { data, error } = await supabase.from('projects').select('*, clients(name)').order('updated_at', { ascending: false });
@@ -111,6 +129,41 @@ export default function QAReviewPage() {
     toast.success('All screenshots approved. Agent will deploy to production.');
   }
 
+  async function handleCaptureScreenshots() {
+    const validPages = capturePages.filter(p => p.name.trim() && p.url.trim());
+    if (validPages.length === 0) {
+      toast.error('Add at least one page with a name and URL');
+      return;
+    }
+
+    setCapturing(true);
+    const { error } = await triggerScreenshots(selectedProjectId, validPages);
+    setCapturing(false);
+
+    if (error) {
+      toast.error('Screenshot capture failed: ' + error);
+      return;
+    }
+
+    toast.success(`Capturing ${validPages.length} page(s). Screenshots will appear shortly.`);
+    setShowCaptureModal(false);
+    loadScreenshots(selectedProjectId);
+  }
+
+  function addPageRow() {
+    const proj = projects.find(p => p.id === selectedProjectId);
+    const baseUrl = proj?.demo_url || '';
+    setCapturePages(prev => [...prev, { name: '', url: baseUrl }]);
+  }
+
+  function removePageRow(index: number) {
+    setCapturePages(prev => prev.filter((_, i) => i !== index));
+  }
+
+  function updatePageRow(index: number, field: 'name' | 'url', value: string) {
+    setCapturePages(prev => prev.map((p, i) => i === index ? { ...p, [field]: value } : p));
+  }
+
   function handleSelectProject(id: string) {
     setSelectedProjectId(id);
     navigate(`/qa/${id}`, { replace: true });
@@ -152,12 +205,23 @@ export default function QAReviewPage() {
           <h1 className="text-2xl font-bold text-white tracking-tight">QA Review</h1>
           <p className="text-slate-400 mt-1 text-sm">Review screenshots and approve pages for deployment</p>
         </div>
-        {allApproved && (
-          <button onClick={handleApproveAllAndDeploy} disabled={deploying} className="btn-primary disabled:opacity-50">
-            {deploying ? <Loader2 className="w-4 h-4 animate-spin" /> : <Rocket className="w-4 h-4" />}
-            Approve All & Deploy
-          </button>
-        )}
+        <div className="flex items-center gap-3">
+          {selectedProjectId && (
+            <button
+              onClick={() => setShowCaptureModal(true)}
+              className="inline-flex items-center gap-2 px-4 py-2.5 bg-white/[0.04] hover:bg-white/[0.08] border border-white/[0.08] hover:border-white/[0.12] text-slate-200 text-sm font-semibold rounded-xl transition-all"
+            >
+              <Camera className="w-4 h-4" />
+              Capture Screenshots
+            </button>
+          )}
+          {allApproved && (
+            <button onClick={handleApproveAllAndDeploy} disabled={deploying} className="btn-primary disabled:opacity-50">
+              {deploying ? <Loader2 className="w-4 h-4 animate-spin" /> : <Rocket className="w-4 h-4" />}
+              Approve All & Deploy
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="flex flex-col sm:flex-row gap-4">
@@ -191,9 +255,18 @@ export default function QAReviewPage() {
           </div>
           <p className="text-slate-300 font-medium">
             {screenshots.length === 0
-              ? 'No screenshots yet. The agent will capture them during QA.'
+              ? 'No screenshots yet. Click "Capture Screenshots" to get started.'
               : 'No screenshots match this filter.'}
           </p>
+          {screenshots.length === 0 && selectedProjectId && (
+            <button
+              onClick={() => setShowCaptureModal(true)}
+              className="mt-4 inline-flex items-center gap-2 px-4 py-2 text-sm text-emerald-400 hover:text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/15 rounded-xl transition-all"
+            >
+              <Camera className="w-4 h-4" />
+              Capture Screenshots
+            </button>
+          )}
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -217,6 +290,69 @@ export default function QAReviewPage() {
           <img src={previewUrl} alt="Screenshot preview" className="max-w-full max-h-[90vh] rounded-2xl shadow-2xl" onClick={e => e.stopPropagation()} />
         </div>
       )}
+
+      <Modal open={showCaptureModal} onClose={() => setShowCaptureModal(false)} title="Capture QA Screenshots" maxWidth="max-w-2xl">
+        <div className="space-y-4">
+          <p className="text-sm text-slate-400">
+            Enter the pages you want to screenshot. Each page will be captured at desktop, tablet, and mobile viewports.
+          </p>
+
+          <div className="space-y-3">
+            {capturePages.map((page, index) => (
+              <div key={index} className="flex items-start gap-3">
+                <div className="w-40 flex-shrink-0">
+                  <input
+                    type="text"
+                    value={page.name}
+                    onChange={e => updatePageRow(index, 'name', e.target.value)}
+                    placeholder="Page name"
+                    className="w-full glass-input text-sm"
+                  />
+                </div>
+                <div className="flex-1">
+                  <input
+                    type="url"
+                    value={page.url}
+                    onChange={e => updatePageRow(index, 'url', e.target.value)}
+                    placeholder="https://..."
+                    className="w-full glass-input text-sm font-mono"
+                  />
+                </div>
+                {capturePages.length > 1 && (
+                  <button
+                    onClick={() => removePageRow(index)}
+                    className="p-2.5 text-slate-600 hover:text-red-400 hover:bg-white/[0.04] rounded-xl transition-all flex-shrink-0"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+
+          <button
+            onClick={addPageRow}
+            className="inline-flex items-center gap-1.5 text-sm text-slate-400 hover:text-emerald-400 transition-colors"
+          >
+            <Plus className="w-4 h-4" />
+            Add page
+          </button>
+
+          <div className="flex justify-end gap-3 pt-2 border-t border-white/[0.06]">
+            <button onClick={() => setShowCaptureModal(false)} className="btn-ghost">
+              Cancel
+            </button>
+            <button
+              onClick={handleCaptureScreenshots}
+              disabled={capturing}
+              className="btn-primary disabled:opacity-50"
+            >
+              {capturing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Camera className="w-4 h-4" />}
+              {capturing ? 'Capturing...' : 'Capture'}
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }
