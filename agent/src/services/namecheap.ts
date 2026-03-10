@@ -42,28 +42,40 @@ function parseDomainParts(domain: string): { sld: string; tld: string } {
   return { sld, tld };
 }
 
+function parseHostEntry(tag: string): DnsRecord | null {
+  const hostMatch = tag.match(/HostName="([^"]*)"/i);
+  const typeMatch = tag.match(/RecordType="([^"]*)"/i);
+  const addrMatch = tag.match(/Address="([^"]*)"/i);
+  const ttlMatch = tag.match(/TTL="([^"]*)"/i);
+
+  if (hostMatch && typeMatch && addrMatch) {
+    return {
+      hostName: hostMatch[1],
+      recordType: typeMatch[1],
+      address: addrMatch[1],
+      ttl: ttlMatch ? parseInt(ttlMatch[1], 10) : 1800,
+    };
+  }
+  return null;
+}
+
 export async function getExistingRecords(domain: string): Promise<DnsRecord[]> {
   const { sld, tld } = parseDomainParts(domain);
   const xml = await namecheapRequest('namecheap.domains.dns.getHosts', { SLD: sld, TLD: tld });
 
   const records: DnsRecord[] = [];
-  const attrPatterns = [
-    /HostName="([^"]*)"[^>]*RecordType="([^"]*)"[^>]*Address="([^"]*)"[^>]*TTL="([^"]*)"/g,
-    /RecordType="([^"]*)"[^>]*HostName="([^"]*)"[^>]*Address="([^"]*)"[^>]*TTL="([^"]*)"/g,
-  ];
+  const hostTagRegex = /<host\s[^>]*>/gi;
+  let tagMatch: RegExpExecArray | null;
+  while ((tagMatch = hostTagRegex.exec(xml)) !== null) {
+    const record = parseHostEntry(tagMatch[0]);
+    if (record) records.push(record);
+  }
 
-  for (const regex of attrPatterns) {
-    let match: RegExpExecArray | null;
-    while ((match = regex.exec(xml)) !== null) {
-      const isReversed = regex === attrPatterns[1];
-      records.push({
-        hostName: isReversed ? match[2] : match[1],
-        recordType: isReversed ? match[1] : match[2],
-        address: match[3],
-        ttl: parseInt(match[4], 10),
-      });
-    }
-    if (records.length > 0) break;
+  if (records.length === 0) {
+    await logger.warn(
+      `DNS XML parse found 0 <host> tags. Raw response (first 1000 chars): ${xml.slice(0, 1000)}`,
+      'dns'
+    );
   }
 
   return records;
@@ -77,7 +89,13 @@ export async function setCnameRecord(
 ): Promise<boolean> {
   try {
     const { sld, tld } = parseDomainParts(domain);
-    const existing = await getExistingRecords(domain);
+    let existing = await getExistingRecords(domain);
+
+    if (existing.length === 0) {
+      await logger.warn(`First DNS fetch returned 0 records for ${domain}. Retrying in 5s...`, 'dns', projectId);
+      await new Promise((r) => setTimeout(r, 5000));
+      existing = await getExistingRecords(domain);
+    }
 
     await logger.info(
       `DNS backup before CNAME write: ${existing.length} existing records for ${domain}`,
@@ -88,7 +106,7 @@ export async function setCnameRecord(
 
     if (existing.length === 0) {
       await logger.warn(
-        `getExistingRecords returned 0 records for ${domain}. Aborting CNAME write to prevent record loss.`,
+        `getExistingRecords returned 0 records for ${domain} after retry. Aborting CNAME write to prevent record loss.`,
         'dns',
         projectId
       );

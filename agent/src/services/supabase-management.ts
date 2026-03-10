@@ -180,7 +180,9 @@ export async function findExistingProject(
 const SQL_RATE_LIMIT_BASE_WAIT_MS = 5000;
 const SQL_MAX_RETRIES = 4;
 const SQL_MAX_TOTAL_TIME_MS = 8 * 60 * 1000;
-const SQL_INTER_BATCH_DELAY_MS = 1000;
+const SQL_INTER_BATCH_DELAY_MS = 1500;
+const SQL_INTER_STATEMENT_DELAY_MS = 1200;
+const SQL_MINI_BATCH_SIZE = 5;
 
 let lastRateLimitTimestamp = 0;
 const RATE_LIMIT_GLOBAL_COOLDOWN_MS = 15_000;
@@ -380,7 +382,7 @@ export async function executeSqlStatements(
 
   for (const category of categories) {
     if (Date.now() - startTime > SQL_MAX_TOTAL_TIME_MS) {
-      await logger.warn(`SQL execution timed out after 5 minutes`, 'supabase', projectId);
+      await logger.warn(`SQL execution timed out after 8 minutes`, 'supabase', projectId);
       for (const stmt of category.statements) {
         totalFailed++;
         allFailedStatements.push({ sql: stmt.slice(0, 200), error: 'Timed out' });
@@ -388,44 +390,51 @@ export async function executeSqlStatements(
       continue;
     }
 
-    const batchSql = category.statements.join(';\n') + ';';
+    await logger.info(`Executing ${category.name}: ${category.statements.length} statement(s)`, 'supabase', projectId);
 
-    const result = await executeBatchWithRetry(
-      projectRef, batchSql, projectId, category.name, category.statements.length,
-    );
-
-    const needsFallback = result.failed > 0 && category.statements.length > 1 &&
-      result.failedStatements.some((f) => f.error.startsWith('BATCH_FALLBACK:'));
-
-    if (result.failed === 0) {
-      totalSucceeded += result.succeeded;
-    } else if (needsFallback) {
-      await logger.info(`Batch ${category.name} failed, falling back to individual execution (${category.statements.length} statements)`, 'supabase', projectId);
-
-      for (const stmt of category.statements) {
-        if (Date.now() - startTime > SQL_MAX_TOTAL_TIME_MS) {
+    for (let i = 0; i < category.statements.length; i += SQL_MINI_BATCH_SIZE) {
+      if (Date.now() - startTime > SQL_MAX_TOTAL_TIME_MS) {
+        const remaining = category.statements.slice(i);
+        for (const stmt of remaining) {
           totalFailed++;
           allFailedStatements.push({ sql: stmt.slice(0, 200), error: 'Timed out' });
-          continue;
         }
-
-        const singleResult = await executeBatchWithRetry(projectRef, stmt, projectId, category.name, 1);
-        totalSucceeded += singleResult.succeeded;
-        totalFailed += singleResult.failed;
-        allErrors.push(...singleResult.errors);
-        allFailedStatements.push(...singleResult.failedStatements);
-
-        await new Promise((r) => setTimeout(r, 800));
+        break;
       }
-    } else {
-      totalFailed += result.failed;
-      allErrors.push(...result.errors);
-      allFailedStatements.push(...result.failedStatements);
+
+      const miniBatch = category.statements.slice(i, i + SQL_MINI_BATCH_SIZE);
+      const miniBatchSql = miniBatch.join(';\n') + ';';
+
+      const result = await executeBatchWithRetry(
+        projectRef, miniBatchSql, projectId, category.name, miniBatch.length,
+      );
+
+      const needsFallback = result.failed > 0 && miniBatch.length > 1 &&
+        result.failedStatements.some((f) => f.error.startsWith('BATCH_FALLBACK:'));
+
+      if (result.failed === 0) {
+        totalSucceeded += result.succeeded;
+      } else if (needsFallback) {
+        for (const stmt of miniBatch) {
+          const singleResult = await executeBatchWithRetry(projectRef, stmt, projectId, category.name, 1);
+          totalSucceeded += singleResult.succeeded;
+          totalFailed += singleResult.failed;
+          allErrors.push(...singleResult.errors);
+          allFailedStatements.push(...singleResult.failedStatements);
+          await new Promise((r) => setTimeout(r, SQL_INTER_STATEMENT_DELAY_MS));
+        }
+      } else {
+        totalFailed += result.failed;
+        allErrors.push(...result.errors);
+        allFailedStatements.push(...result.failedStatements);
+      }
+
+      if (i + SQL_MINI_BATCH_SIZE < category.statements.length) {
+        await new Promise((r) => setTimeout(r, SQL_INTER_STATEMENT_DELAY_MS));
+      }
     }
 
-    if (category.statements.length > 0) {
-      await new Promise((r) => setTimeout(r, SQL_INTER_BATCH_DELAY_MS));
-    }
+    await new Promise((r) => setTimeout(r, SQL_INTER_BATCH_DELAY_MS));
   }
 
   return { succeeded: totalSucceeded, failed: totalFailed, errors: allErrors, failedStatements: allFailedStatements };

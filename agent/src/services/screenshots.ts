@@ -10,8 +10,11 @@ const VIEWPORTS = [
 ] as const;
 
 const BROWSERLESS_BASE = 'https://production-sfo.browserless.io';
-const MAX_RETRIES = 3;
-const RETRY_DELAY_MS = 2000;
+const MAX_RETRIES = 4;
+const RETRY_DELAY_MS = 3000;
+const RATE_LIMIT_DELAY_MS = 12000;
+const VIEWPORT_DELAY_MS = 3000;
+const PAGE_DELAY_MS = 5000;
 
 async function getBrowserlessToken(): Promise<string> {
   return getSecretWithFallback('browserless');
@@ -54,8 +57,12 @@ async function captureWithBrowserless(
       return Buffer.from(arrayBuffer);
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
+      const is429 = lastError.message.includes('429');
+      const delay = is429
+        ? RATE_LIMIT_DELAY_MS * (attempt + 1)
+        : RETRY_DELAY_MS * (attempt + 1);
       if (attempt < MAX_RETRIES - 1) {
-        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS * (attempt + 1)));
+        await new Promise((r) => setTimeout(r, delay));
       }
     }
   }
@@ -185,22 +192,25 @@ export async function capturePageScreenshots(
 
   await logger.info(`Capturing screenshots for ${pageName} via Browserless.io`, 'qa', projectId);
 
-  const viewportResults = await Promise.all(
-    VIEWPORTS.map(async (viewport) => {
-      try {
-        const buffer = await captureWithBrowserless(url, viewport.width, viewport.height, token);
-        const publicUrl = await uploadToStorage(projectId, pageName, viewport.name, version, buffer);
-        return { name: viewport.name, url: publicUrl };
-      } catch (err) {
-        await logger.error(
-          `Screenshot failed for ${pageName} (${viewport.name}): ${err instanceof Error ? err.message : String(err)}`,
-          'qa',
-          projectId
-        );
-        return { name: viewport.name, url: '' };
-      }
-    })
-  );
+  const viewportResults: { name: string; url: string }[] = [];
+  for (let vi = 0; vi < VIEWPORTS.length; vi++) {
+    const viewport = VIEWPORTS[vi];
+    try {
+      const buffer = await captureWithBrowserless(url, viewport.width, viewport.height, token);
+      const publicUrl = await uploadToStorage(projectId, pageName, viewport.name, version, buffer);
+      viewportResults.push({ name: viewport.name, url: publicUrl });
+    } catch (err) {
+      await logger.error(
+        `Screenshot failed for ${pageName} (${viewport.name}): ${err instanceof Error ? err.message : String(err)}`,
+        'qa',
+        projectId
+      );
+      viewportResults.push({ name: viewport.name, url: '' });
+    }
+    if (vi < VIEWPORTS.length - 1) {
+      await new Promise((r) => setTimeout(r, VIEWPORT_DELAY_MS));
+    }
+  }
 
   const results: Record<string, string> = {};
   for (const vr of viewportResults) {
@@ -218,8 +228,6 @@ export async function capturePageScreenshots(
   };
 }
 
-const PAGE_CONCURRENCY = 3;
-
 export async function captureAllPages(
   baseUrl: string,
   pages: { name: string; route: string }[],
@@ -228,25 +236,21 @@ export async function captureAllPages(
 ): Promise<ScreenshotResult[]> {
   const results: ScreenshotResult[] = [];
 
-  for (let i = 0; i < pages.length; i += PAGE_CONCURRENCY) {
-    const batch = pages.slice(i, i + PAGE_CONCURRENCY);
-    const batchResults = await Promise.all(
-      batch.map(async (page) => {
-        const url = `${baseUrl.replace(/\/$/, '')}${page.route}`;
-        try {
-          return await capturePageScreenshots(url, page.name, projectId, version);
-        } catch (err) {
-          await logger.error(
-            `Failed to capture ${page.name}: ${err instanceof Error ? err.message : String(err)}`,
-            'qa',
-            projectId
-          );
-          return null;
-        }
-      })
-    );
-    for (const r of batchResults) {
-      if (r) results.push(r);
+  for (let i = 0; i < pages.length; i++) {
+    const page = pages[i];
+    const url = `${baseUrl.replace(/\/$/, '')}${page.route}`;
+    try {
+      const result = await capturePageScreenshots(url, page.name, projectId, version);
+      results.push(result);
+    } catch (err) {
+      await logger.error(
+        `Failed to capture ${page.name}: ${err instanceof Error ? err.message : String(err)}`,
+        'qa',
+        projectId
+      );
+    }
+    if (i < pages.length - 1) {
+      await new Promise((r) => setTimeout(r, PAGE_DELAY_MS));
     }
   }
 

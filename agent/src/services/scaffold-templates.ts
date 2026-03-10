@@ -185,8 +185,8 @@ export function generateTailwindConfig(
     ? extractedSpec.fonts.body
     : designSystem?.fonts?.body || 'Inter';
 
-  fonts.heading = [`'${headingFont}'`, 'sans-serif'];
-  fonts.body = [`'${bodyFont}'`, 'sans-serif'];
+  fonts.heading = [`'${headingFont}'`, `'sans-serif'`];
+  fonts.body = [`'${bodyFont}'`, `'sans-serif'`];
 
   const colorLines = Object.entries(colors)
     .map(([k, v]) => `        ${k}: '${v}',`)

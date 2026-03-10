@@ -124,8 +124,32 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     console.log(`\n${signal} received. Shutting down gracefully...`);
     clearInterval(heartbeatInterval);
+
+    try {
+      const { getSupabase } = await import('./core/supabase.js');
+      const supabase = getSupabase();
+
+      const { data: activeProjects } = await supabase
+        .from('projects')
+        .select('id')
+        .eq('agent_status', 'working');
+
+      if (activeProjects && activeProjects.length > 0) {
+        for (const project of activeProjects) {
+          await supabase.from('projects').update({ agent_status: 'idle' }).eq('id', project.id);
+          await supabase
+            .from('pipeline_state')
+            .update({ status: 'paused', updated_at: new Date().toISOString() })
+            .eq('project_id', project.id)
+            .eq('status', 'running');
+        }
+        await logger.info(`Reset ${activeProjects.length} project(s) from working to idle`, 'system');
+      }
+    } catch (err) {
+      console.error('Failed to reset project states:', err);
+    }
+
     await markOffline();
-    // no-op: browserless is stateless
     await logger.info('Agent shutting down', 'system');
     process.exit(0);
   };
