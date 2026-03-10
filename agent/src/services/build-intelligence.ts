@@ -246,11 +246,23 @@ export function filterRelevantFiles(
   ]);
 }
 
+interface MatchedRoute {
+  componentName: string;
+  importPath: string;
+  route: string;
+  hasDefaultExport: boolean;
+}
+
+function fileHasDefaultExport(content: string): boolean {
+  return /export\s+default\s+/.test(content) || /export\s*\{\s*[^}]*\bdefault\b/.test(content);
+}
+
 function matchPagesToFiles(
   pages: ArchitecturePage[],
-  fileMap: Map<string, string>
-): { componentName: string; importPath: string; route: string }[] {
-  const results: { componentName: string; importPath: string; route: string }[] = [];
+  fileMap: Map<string, string>,
+  fileContents?: Map<string, string>
+): MatchedRoute[] {
+  const results: MatchedRoute[] = [];
   const usedComponents = new Set<string>();
 
   for (const page of pages) {
@@ -278,18 +290,22 @@ function matchPagesToFiles(
     usedComponents.add(componentName);
 
     const importPath = './' + matchedFile.replace('src/', '').replace(/\.tsx$/, '');
-    results.push({ componentName, importPath, route: page.route });
+    const content = fileContents?.get(matchedFile);
+    const hasDefaultExport = content ? fileHasDefaultExport(content) : true;
+    results.push({ componentName, importPath, route: page.route, hasDefaultExport });
   }
 
   return results;
 }
 
-function buildFreshApp(
-  matched: { componentName: string; importPath: string; route: string }[]
-): GeneratedFile {
-  const imports = matched.map(
-    (r) => `import ${r.componentName} from '${r.importPath}';`
-  ).join('\n');
+function buildImportStatement(r: MatchedRoute): string {
+  return r.hasDefaultExport
+    ? `import ${r.componentName} from '${r.importPath}';`
+    : `import { ${r.componentName} } from '${r.importPath}';`;
+}
+
+function buildFreshApp(matched: MatchedRoute[]): GeneratedFile {
+  const imports = matched.map((r) => buildImportStatement(r)).join('\n');
   const routes = matched.map(
     (r) => `      <Route path="${r.route}" element={<${r.componentName} />} />`
   ).join('\n');
@@ -312,7 +328,8 @@ ${routes}
 export function reconcileAppRoutes(
   allFilePaths: string[],
   pages: ArchitecturePage[],
-  existingAppContent?: string
+  existingAppContent?: string,
+  fileContents?: Map<string, string>
 ): GeneratedFile | null {
   const pageFiles = allFilePaths.filter(
     (f) => f.startsWith('src/pages/') && f.endsWith('.tsx')
@@ -329,7 +346,7 @@ export function reconcileAppRoutes(
     fileMap.set(name.toLowerCase(), fp);
   }
 
-  const matched = matchPagesToFiles(pages, fileMap);
+  const matched = matchPagesToFiles(pages, fileMap, fileContents);
   if (matched.length === 0) return null;
 
   if (!existingAppContent || !existingAppContent.includes('<Routes')) {
@@ -338,7 +355,7 @@ export function reconcileAppRoutes(
 
   const lines = existingAppContent.split('\n');
   const outputLines: string[] = [];
-  const pageImportRegex = /^import\s+(\w+)\s+from\s+['"]\.\/pages\//;
+  const pageImportRegex = /^import\s+(?:\{?\s*)?(\w+)(?:\s*\}?)?\s+from\s+['"]\.\/pages\//;
   const routesCloseRegex = /^(\s*)<\/Routes>/;
   const correctedImportMap = new Map<string, string>();
   const importedComponents = new Set<string>();
@@ -346,7 +363,7 @@ export function reconcileAppRoutes(
   for (const r of matched) {
     correctedImportMap.set(
       r.componentName.toLowerCase(),
-      `import ${r.componentName} from '${r.importPath}';`
+      buildImportStatement(r)
     );
   }
 
@@ -408,9 +425,7 @@ export function reconcileAppRoutes(
   );
 
   if (missingImports.length > 0 && lastImportLineIdx >= 0) {
-    const newImportLines = missingImports.map(
-      (r) => `import ${r.componentName} from '${r.importPath}';`
-    );
+    const newImportLines = missingImports.map((r) => buildImportStatement(r));
     outputLines.splice(lastImportLineIdx + 1, 0, ...newImportLines);
   }
 
@@ -625,94 +640,241 @@ export { ${ctxName}Ctx as ${ctxName} };`;
 }`;
 }
 
+// lucide-react v0.344.0 complete icon set
 const VALID_LUCIDE_ICONS = new Set([
-  'Activity', 'Airplay', 'AlertCircle', 'AlertOctagon', 'AlertTriangle', 'AlignCenter',
-  'AlignJustify', 'AlignLeft', 'AlignRight', 'Anchor', 'Archive', 'ArrowBigDown',
-  'ArrowBigLeft', 'ArrowBigRight', 'ArrowBigUp', 'ArrowDown', 'ArrowDownCircle',
-  'ArrowDownLeft', 'ArrowDownRight', 'ArrowLeft', 'ArrowLeftCircle', 'ArrowLeftRight',
-  'ArrowRight', 'ArrowRightCircle', 'ArrowUp', 'ArrowUpCircle', 'ArrowUpDown',
-  'ArrowUpLeft', 'ArrowUpRight', 'Award', 'Axe', 'BadgeCheck', 'BadgeDollarSign',
-  'BadgePercent', 'BarChart', 'BarChart2', 'BarChart3', 'BarChartHorizontal',
-  'Battery', 'BatteryCharging', 'BatteryFull', 'BatteryLow', 'BatteryMedium',
-  'Beaker', 'Bell', 'BellDot', 'BellOff', 'BellRing', 'Bike', 'Binary', 'Bitcoin',
-  'Bluetooth', 'Bold', 'Bomb', 'Bone', 'Book', 'BookOpen', 'BookMarked', 'Bookmark',
-  'Bot', 'Box', 'Boxes', 'Brain', 'Briefcase', 'Brush', 'Bug', 'Building',
-  'Building2', 'Bus', 'Calculator', 'Calendar', 'CalendarCheck', 'CalendarClock',
-  'CalendarDays', 'CalendarHeart', 'CalendarPlus', 'CalendarRange', 'CalendarSearch',
-  'Camera', 'CameraOff', 'Car', 'Check', 'CheckCheck', 'CheckCircle', 'CheckCircle2',
-  'CheckSquare', 'ChevronDown', 'ChevronFirst', 'ChevronLast', 'ChevronLeft',
-  'ChevronRight', 'ChevronUp', 'ChevronsDown', 'ChevronsLeft', 'ChevronsRight',
-  'ChevronsUp', 'ChevronsUpDown', 'Chrome', 'Circle', 'CircleDot', 'CircleOff',
-  'CircleSlash', 'Clipboard', 'ClipboardCheck', 'ClipboardCopy', 'ClipboardList',
-  'Clock', 'Clock1', 'Clock2', 'Clock3', 'Clock4', 'Cloud', 'CloudDownload',
-  'CloudOff', 'CloudUpload', 'Code', 'Code2', 'Cog', 'Coins', 'Columns',
-  'Command', 'Compass', 'Component', 'Contact', 'Copy', 'Copyright', 'CreditCard',
-  'Crop', 'Cross', 'Crosshair', 'Crown', 'Cup', 'Database', 'Delete', 'Diamond',
-  'Disc', 'DollarSign', 'Download', 'DownloadCloud', 'Droplet', 'Droplets',
-  'Edit', 'Edit2', 'Edit3', 'Eraser', 'Euro', 'Expand', 'ExternalLink',
-  'Eye', 'EyeOff', 'Facebook', 'FastForward', 'Feather', 'File', 'FileCheck',
-  'FileCode', 'FileDown', 'FileEdit', 'FileImage', 'FileMinus', 'FilePlus',
-  'FileQuestion', 'FileSearch', 'FileSpreadsheet', 'FileText', 'FileUp', 'FileVideo',
-  'Files', 'Film', 'Filter', 'Fingerprint', 'Flag', 'FlagTriangleLeft',
-  'FlagTriangleRight', 'Flame', 'FlameKindling', 'Flashlight', 'FlaskConical',
-  'FlipHorizontal', 'FlipVertical', 'Flower', 'Focus', 'Folder', 'FolderCheck',
-  'FolderClosed', 'FolderDown', 'FolderEdit', 'FolderMinus', 'FolderOpen',
-  'FolderPlus', 'FolderUp', 'Footprints', 'Frame', 'Frown', 'Fuel', 'Gamepad',
-  'Gauge', 'Gem', 'Ghost', 'Gift', 'GitBranch', 'GitCommit', 'GitMerge',
-  'GitPullRequest', 'Github', 'Globe', 'Globe2', 'GraduationCap', 'Grape',
-  'Grid', 'GripHorizontal', 'GripVertical', 'Group', 'Hammer', 'Hand',
-  'HandMetal', 'HardDrive', 'Hash', 'Headphones', 'Heart', 'HeartHandshake',
-  'HeartPulse', 'HelpCircle', 'Hexagon', 'History', 'Home', 'Hourglass', 'Image',
-  'ImagePlus', 'Import', 'Inbox', 'Indent', 'IndianRupee', 'Infinity', 'Info',
-  'Instagram', 'Italic', 'JapaneseYen', 'Key', 'Keyboard', 'Lamp', 'Landmark',
-  'Languages', 'Laptop', 'Laptop2', 'Lasso', 'Layers', 'Layout', 'LayoutDashboard',
-  'LayoutGrid', 'LayoutList', 'LayoutTemplate', 'Leaf', 'Library', 'LifeBuoy',
-  'Lightbulb', 'LineChart', 'Link', 'Link2', 'Linkedin', 'List', 'ListChecks',
-  'ListFilter', 'ListMinus', 'ListMusic', 'ListOrdered', 'ListPlus', 'ListTodo',
-  'ListTree', 'Loader', 'Loader2', 'Locate', 'Lock', 'LogIn', 'LogOut',
-  'Luggage', 'Mail', 'MailCheck', 'MailMinus', 'MailOpen', 'MailPlus',
-  'MailQuestion', 'MailSearch', 'MailWarning', 'Mailbox', 'Map', 'MapPin',
-  'MapPinOff', 'Maximize', 'Maximize2', 'Medal', 'Megaphone', 'Meh', 'Menu',
-  'MessageCircle', 'MessageSquare', 'Mic', 'MicOff', 'Microscope', 'Milestone',
-  'Minimize', 'Minimize2', 'Minus', 'MinusCircle', 'MinusSquare', 'Monitor',
-  'MonitorOff', 'Moon', 'MoreHorizontal', 'MoreVertical', 'Mountain', 'Mouse',
-  'Move', 'Music', 'Navigation', 'Network', 'Newspaper', 'Octagon', 'Option',
-  'Orbit', 'Outdent', 'Package', 'PackageCheck', 'PackageMinus', 'PackageOpen',
-  'PackagePlus', 'PackageSearch', 'Paintbrush', 'Palette', 'Palmtree', 'Paperclip',
-  'Pause', 'PauseCircle', 'Pencil', 'PenLine', 'PenTool', 'Percent', 'PersonStanding',
-  'Phone', 'PhoneCall', 'PhoneForwarded', 'PhoneIncoming', 'PhoneMissed', 'PhoneOff',
-  'PhoneOutgoing', 'PieChart', 'Pin', 'PinOff', 'Pipette', 'Plane', 'Play',
-  'PlayCircle', 'Plug', 'Plus', 'PlusCircle', 'PlusSquare', 'Pocket', 'Podcast',
-  'Pointer', 'PoundSterling', 'Power', 'PowerOff', 'Printer', 'Projector', 'Puzzle',
-  'QrCode', 'Quote', 'Radio', 'RadioReceiver', 'Receipt', 'Redo', 'RefreshCcw',
-  'RefreshCw', 'Repeat', 'Repeat1', 'Reply', 'ReplyAll', 'Rewind', 'Rocket',
-  'RotateCcw', 'RotateCw', 'Router', 'Rss', 'Ruler', 'Save', 'Scale', 'Scan',
-  'ScanLine', 'Scissors', 'ScreenShare', 'ScreenShareOff', 'Search', 'Send',
-  'SendHorizonal', 'Server', 'ServerCog', 'ServerCrash', 'ServerOff', 'Settings',
-  'Settings2', 'Share', 'Share2', 'Sheet', 'Shield', 'ShieldAlert', 'ShieldCheck',
-  'ShieldOff', 'Shirt', 'ShoppingBag', 'ShoppingCart', 'Shovel', 'ShrinkIcon',
-  'Shuffle', 'Sidebar', 'SidebarClose', 'SidebarOpen', 'Sigma', 'Signal',
-  'SignalHigh', 'SignalLow', 'SignalMedium', 'SignalZero', 'Siren', 'SkipBack',
-  'SkipForward', 'Skull', 'Slack', 'Slash', 'Slice', 'Sliders', 'SlidersHorizontal',
-  'Smartphone', 'SmartphoneCharging', 'Smile', 'SmilePlus', 'Snowflake', 'SortAsc',
-  'SortDesc', 'Sparkle', 'Sparkles', 'Speaker', 'Spline', 'Split', 'SprayCan',
-  'Square', 'Star', 'StarHalf', 'StarOff', 'Stethoscope', 'Sticker', 'StickyNote',
-  'Store', 'StretchHorizontal', 'StretchVertical', 'Strikethrough', 'Subscript',
-  'Sun', 'SunDim', 'SunMedium', 'SunMoon', 'Sunrise', 'Sunset', 'Superscript',
-  'SwissFranc', 'SwitchCamera', 'Sword', 'Swords', 'Table', 'Table2', 'Tablet',
-  'Tag', 'Tags', 'Target', 'Tent', 'Terminal', 'TerminalSquare', 'TestTube',
-  'TestTubes', 'Text', 'TextCursor', 'TextCursorInput', 'Thermometer', 'ThumbsDown',
-  'ThumbsUp', 'Ticket', 'Timer', 'TimerOff', 'TimerReset', 'ToggleLeft',
-  'ToggleRight', 'Tornado', 'Trash', 'Trash2', 'TreeDeciduous', 'TreePine',
-  'Trees', 'Trending', 'TrendingDown', 'TrendingUp', 'Triangle', 'Trophy', 'Truck',
-  'Tv', 'Tv2', 'Twitch', 'Twitter', 'Type', 'Umbrella', 'Underline', 'Undo',
-  'Undo2', 'Unlink', 'Unlock', 'Upload', 'UploadCloud', 'Usb', 'User', 'UserCheck',
-  'UserCog', 'UserMinus', 'UserPlus', 'UserSquare', 'UserX', 'Users', 'Utensils',
-  'UtensilsCrossed', 'Verified', 'Video', 'VideoOff', 'View', 'Voicemail',
-  'Volume', 'Volume1', 'Volume2', 'VolumeX', 'Wallet', 'Wand', 'Wand2', 'Warehouse',
-  'Watch', 'Waves', 'Webcam', 'Webhook', 'Wifi', 'WifiOff', 'Wind', 'Wine',
-  'Wrench', 'X', 'XCircle', 'XOctagon', 'XSquare', 'Youtube', 'Zap', 'ZapOff',
-  'ZoomIn', 'ZoomOut',
+  'AArrowDown', 'AArrowUp', 'ALargeSmall', 'Accessibility', 'Activity', 'ActivitySquare',
+  'AirVent', 'Airplay', 'AlarmClock', 'AlarmClockCheck', 'AlarmClockMinus', 'AlarmClockOff',
+  'AlarmClockPlus', 'AlarmSmoke', 'Album', 'AlertCircle', 'AlertOctagon', 'AlertTriangle',
+  'AlignCenter', 'AlignCenterHorizontal', 'AlignCenterVertical', 'AlignEndHorizontal',
+  'AlignEndVertical', 'AlignHorizontalDistributeCenter', 'AlignHorizontalDistributeEnd',
+  'AlignHorizontalDistributeStart', 'AlignHorizontalJustifyCenter', 'AlignHorizontalJustifyEnd',
+  'AlignHorizontalJustifyStart', 'AlignHorizontalSpaceAround', 'AlignHorizontalSpaceBetween',
+  'AlignJustify', 'AlignLeft', 'AlignRight', 'AlignStartHorizontal', 'AlignStartVertical',
+  'AlignVerticalDistributeCenter', 'AlignVerticalDistributeEnd', 'AlignVerticalDistributeStart',
+  'AlignVerticalJustifyCenter', 'AlignVerticalJustifyEnd', 'AlignVerticalJustifyStart',
+  'AlignVerticalSpaceAround', 'AlignVerticalSpaceBetween', 'Ambulance', 'Ampersand',
+  'Ampersands', 'Anchor', 'Angry', 'Annoyed', 'Antenna', 'Anvil', 'Aperture', 'AppWindow',
+  'Apple', 'Archive', 'ArchiveRestore', 'ArchiveX', 'AreaChart', 'Armchair',
+  'ArrowBigDown', 'ArrowBigDownDash', 'ArrowBigLeft', 'ArrowBigLeftDash', 'ArrowBigRight',
+  'ArrowBigRightDash', 'ArrowBigUp', 'ArrowBigUpDash', 'ArrowDown', 'ArrowDown01',
+  'ArrowDown10', 'ArrowDownAZ', 'ArrowDownCircle', 'ArrowDownFromLine', 'ArrowDownLeft',
+  'ArrowDownLeftFromCircle', 'ArrowDownLeftFromSquare', 'ArrowDownLeftSquare',
+  'ArrowDownNarrowWide', 'ArrowDownRight', 'ArrowDownRightFromCircle',
+  'ArrowDownRightFromSquare', 'ArrowDownRightSquare', 'ArrowDownSquare', 'ArrowDownToDot',
+  'ArrowDownToLine', 'ArrowDownUp', 'ArrowDownWideNarrow', 'ArrowDownZA', 'ArrowLeft',
+  'ArrowLeftCircle', 'ArrowLeftFromLine', 'ArrowLeftRight', 'ArrowLeftSquare',
+  'ArrowLeftToLine', 'ArrowRight', 'ArrowRightCircle', 'ArrowRightFromLine',
+  'ArrowRightLeft', 'ArrowRightSquare', 'ArrowRightToLine', 'ArrowUp', 'ArrowUp01',
+  'ArrowUp10', 'ArrowUpAZ', 'ArrowUpCircle', 'ArrowUpDown', 'ArrowUpFromDot',
+  'ArrowUpFromLine', 'ArrowUpLeft', 'ArrowUpLeftFromCircle', 'ArrowUpLeftFromSquare',
+  'ArrowUpLeftSquare', 'ArrowUpNarrowWide', 'ArrowUpRight', 'ArrowUpRightFromCircle',
+  'ArrowUpRightFromSquare', 'ArrowUpRightSquare', 'ArrowUpSquare', 'ArrowUpToLine',
+  'ArrowUpWideNarrow', 'ArrowUpZA', 'ArrowsUpFromLine', 'Asterisk', 'AsteriskSquare',
+  'AtSign', 'Atom', 'AudioLines', 'AudioWaveform', 'Award', 'Axe', 'Axis3d',
+  'Baby', 'Backpack', 'Badge', 'BadgeAlert', 'BadgeCent', 'BadgeCheck', 'BadgeDollarSign',
+  'BadgeEuro', 'BadgeHelp', 'BadgeIndianRupee', 'BadgeInfo', 'BadgeJapaneseYen',
+  'BadgeMinus', 'BadgePercent', 'BadgePlus', 'BadgePoundSterling', 'BadgeRussianRuble',
+  'BadgeSwissFranc', 'BadgeX', 'BaggageClaim', 'Ban', 'Banana', 'Banknote',
+  'BarChart', 'BarChart2', 'BarChart3', 'BarChart4', 'BarChartBig', 'BarChartHorizontal',
+  'BarChartHorizontalBig', 'Barcode', 'Baseline', 'Bath', 'Battery', 'BatteryCharging',
+  'BatteryFull', 'BatteryLow', 'BatteryMedium', 'BatteryWarning', 'Beaker', 'Bean',
+  'BeanOff', 'Bed', 'BedDouble', 'BedSingle', 'Beef', 'Beer', 'Bell', 'BellDot',
+  'BellElectric', 'BellMinus', 'BellOff', 'BellPlus', 'BellRing', 'BetweenHorizontalEnd',
+  'BetweenHorizontalStart', 'BetweenVerticalEnd', 'BetweenVerticalStart', 'Bike', 'Binary',
+  'Biohazard', 'Bird', 'Bitcoin', 'Blend', 'Blinds', 'Blocks', 'Bluetooth',
+  'BluetoothConnected', 'BluetoothOff', 'BluetoothSearching', 'Bold', 'Bolt', 'Bomb',
+  'Bone', 'Book', 'BookA', 'BookAudio', 'BookCheck', 'BookCopy', 'BookDashed', 'BookDown',
+  'BookHeadphones', 'BookHeart', 'BookImage', 'BookKey', 'BookLock', 'BookMarked',
+  'BookMinus', 'BookOpen', 'BookOpenCheck', 'BookOpenText', 'BookPlus', 'BookText',
+  'BookType', 'BookUp', 'BookUp2', 'BookUser', 'BookX', 'Bookmark', 'BookmarkCheck',
+  'BookmarkMinus', 'BookmarkPlus', 'BookmarkX', 'BoomBox', 'Bot', 'BotMessageSquare',
+  'Box', 'BoxSelect', 'Boxes', 'Braces', 'Brackets', 'Brain', 'BrainCircuit', 'BrainCog',
+  'BrickWall', 'Briefcase', 'BringToFront', 'Brush', 'Bug', 'BugOff', 'BugPlay',
+  'Building', 'Building2', 'Bus', 'BusFront', 'Cable', 'CableCar', 'Cake', 'CakeSlice',
+  'Calculator', 'Calendar', 'CalendarCheck', 'CalendarCheck2', 'CalendarClock',
+  'CalendarDays', 'CalendarFold', 'CalendarHeart', 'CalendarMinus', 'CalendarMinus2',
+  'CalendarOff', 'CalendarPlus', 'CalendarPlus2', 'CalendarRange', 'CalendarSearch',
+  'CalendarX', 'CalendarX2', 'Camera', 'CameraOff', 'CandlestickChart', 'Candy',
+  'CandyCane', 'CandyOff', 'Captions', 'CaptionsOff', 'Car', 'CarFront', 'CarTaxiFront',
+  'Caravan', 'Carrot', 'CaseLower', 'CaseSensitive', 'CaseUpper', 'CassetteTape', 'Cast',
+  'Castle', 'Cat', 'Cctv', 'Check', 'CheckCheck', 'CheckCircle', 'CheckCircle2',
+  'CheckSquare', 'CheckSquare2', 'ChefHat', 'Cherry', 'ChevronDown', 'ChevronDownCircle',
+  'ChevronDownSquare', 'ChevronFirst', 'ChevronLast', 'ChevronLeft', 'ChevronLeftCircle',
+  'ChevronLeftSquare', 'ChevronRight', 'ChevronRightCircle', 'ChevronRightSquare',
+  'ChevronUp', 'ChevronUpCircle', 'ChevronUpSquare', 'ChevronsDown', 'ChevronsDownUp',
+  'ChevronsLeft', 'ChevronsLeftRight', 'ChevronsRight', 'ChevronsRightLeft', 'ChevronsUp',
+  'ChevronsUpDown', 'Chrome', 'Church', 'Cigarette', 'CigaretteOff', 'Circle',
+  'CircleDashed', 'CircleDollarSign', 'CircleDot', 'CircleDotDashed', 'CircleEllipsis',
+  'CircleEqual', 'CircleFadingPlus', 'CircleOff', 'CircleSlash', 'CircleSlash2',
+  'CircleUser', 'CircleUserRound', 'CircuitBoard', 'Citrus', 'Clapperboard', 'Clipboard',
+  'ClipboardCheck', 'ClipboardCopy', 'ClipboardList', 'ClipboardMinus', 'ClipboardPaste',
+  'ClipboardPen', 'ClipboardPenLine', 'ClipboardPlus', 'ClipboardType', 'ClipboardX',
+  'Clock', 'Clock1', 'Clock10', 'Clock11', 'Clock12', 'Clock2', 'Clock3', 'Clock4',
+  'Clock5', 'Clock6', 'Clock7', 'Clock8', 'Clock9', 'Cloud', 'CloudCog', 'CloudDrizzle',
+  'CloudFog', 'CloudHail', 'CloudLightning', 'CloudMoon', 'CloudMoonRain', 'CloudOff',
+  'CloudRain', 'CloudRainWind', 'CloudSnow', 'CloudSun', 'CloudSunRain', 'Cloudy',
+  'Clover', 'Club', 'Code', 'Code2', 'CodeSquare', 'Codepen', 'Codesandbox', 'Coffee',
+  'Cog', 'Coins', 'Columns2', 'Columns3', 'Columns4', 'Combine', 'Command', 'Compass',
+  'Component', 'Computer', 'ConciergeBell', 'Cone', 'Construction', 'Contact', 'Contact2',
+  'Container', 'Contrast', 'Cookie', 'CookingPot', 'Copy', 'CopyCheck', 'CopyMinus',
+  'CopyPlus', 'CopySlash', 'CopyX', 'Copyleft', 'Copyright', 'CornerDownLeft',
+  'CornerDownRight', 'CornerLeftDown', 'CornerLeftUp', 'CornerRightDown', 'CornerRightUp',
+  'CornerUpLeft', 'CornerUpRight', 'Cpu', 'CreativeCommons', 'CreditCard', 'Croissant',
+  'Crop', 'Cross', 'Crosshair', 'Crown', 'Cuboid', 'CupSoda', 'Currency', 'Cylinder',
+  'Database', 'DatabaseBackup', 'DatabaseZap', 'Delete', 'Dessert', 'Diameter', 'Diamond',
+  'Dice1', 'Dice2', 'Dice3', 'Dice4', 'Dice5', 'Dice6', 'Dices', 'Diff', 'Disc',
+  'Disc2', 'Disc3', 'DiscAlbum', 'Divide', 'DivideCircle', 'DivideSquare', 'Dna',
+  'DnaOff', 'Dog', 'DollarSign', 'Donut', 'DoorClosed', 'DoorOpen', 'Dot', 'DotSquare',
+  'Download', 'DownloadCloud', 'DraftingCompass', 'Drama', 'Dribbble', 'Drill', 'Droplet',
+  'Droplets', 'Drum', 'Drumstick', 'Dumbbell', 'Ear', 'EarOff', 'Earth', 'EarthLock',
+  'Eclipse', 'Egg', 'EggFried', 'EggOff', 'Equal', 'EqualNot', 'EqualSquare', 'Eraser',
+  'Euro', 'Expand', 'ExternalLink', 'Eye', 'EyeOff', 'Facebook', 'Factory', 'Fan',
+  'FastForward', 'Feather', 'Fence', 'FerrisWheel', 'Figma', 'File', 'FileArchive',
+  'FileAudio', 'FileAudio2', 'FileAxis3d', 'FileBadge', 'FileBadge2', 'FileBarChart',
+  'FileBarChart2', 'FileBox', 'FileCheck', 'FileCheck2', 'FileClock', 'FileCode',
+  'FileCode2', 'FileCog', 'FileDiff', 'FileDigit', 'FileDown', 'FileHeart', 'FileImage',
+  'FileInput', 'FileJson', 'FileJson2', 'FileKey', 'FileKey2', 'FileLineChart', 'FileLock',
+  'FileLock2', 'FileMinus', 'FileMinus2', 'FileMusic', 'FileOutput', 'FilePen',
+  'FilePenLine', 'FilePieChart', 'FilePlus', 'FilePlus2', 'FileQuestion', 'FileScan',
+  'FileSearch', 'FileSearch2', 'FileSliders', 'FileSpreadsheet', 'FileStack', 'FileSymlink',
+  'FileTerminal', 'FileText', 'FileType', 'FileType2', 'FileUp', 'FileVideo', 'FileVideo2',
+  'FileVolume', 'FileVolume2', 'FileWarning', 'FileX', 'FileX2', 'Files', 'Film',
+  'Filter', 'FilterX', 'Fingerprint', 'FireExtinguisher', 'Fish', 'FishOff', 'FishSymbol',
+  'Flag', 'FlagOff', 'FlagTriangleLeft', 'FlagTriangleRight', 'Flame', 'FlameKindling',
+  'Flashlight', 'FlashlightOff', 'FlaskConical', 'FlaskConicalOff', 'FlaskRound',
+  'FlipHorizontal', 'FlipHorizontal2', 'FlipVertical', 'FlipVertical2', 'Flower', 'Flower2',
+  'Focus', 'FoldHorizontal', 'FoldVertical', 'Folder', 'FolderArchive', 'FolderCheck',
+  'FolderClock', 'FolderClosed', 'FolderCog', 'FolderDot', 'FolderDown', 'FolderGit',
+  'FolderGit2', 'FolderHeart', 'FolderInput', 'FolderKanban', 'FolderKey', 'FolderLock',
+  'FolderMinus', 'FolderOpen', 'FolderOpenDot', 'FolderOutput', 'FolderPen', 'FolderPlus',
+  'FolderRoot', 'FolderSearch', 'FolderSearch2', 'FolderSymlink', 'FolderSync', 'FolderTree',
+  'FolderUp', 'FolderX', 'Folders', 'Footprints', 'Forklift', 'FormInput', 'Forward',
+  'Frame', 'Framer', 'Frown', 'Fuel', 'Fullscreen', 'FunctionSquare',
+  'GalleryHorizontal', 'GalleryHorizontalEnd', 'GalleryThumbnails', 'GalleryVertical',
+  'GalleryVerticalEnd', 'Gamepad', 'Gamepad2', 'GanttChart', 'GanttChartSquare', 'Gauge',
+  'GaugeCircle', 'Gavel', 'Gem', 'Ghost', 'Gift', 'GitBranch', 'GitBranchPlus',
+  'GitCommitHorizontal', 'GitCommitVertical', 'GitCompare', 'GitCompareArrows', 'GitFork',
+  'GitGraph', 'GitMerge', 'GitPullRequest', 'GitPullRequestArrow', 'GitPullRequestClosed',
+  'GitPullRequestCreate', 'GitPullRequestCreateArrow', 'GitPullRequestDraft', 'Github',
+  'Gitlab', 'GlassWater', 'Glasses', 'Globe', 'GlobeLock', 'Goal', 'Grab', 'GraduationCap',
+  'Grape', 'Grid2x2', 'Grid3x3', 'Grip', 'GripHorizontal', 'GripVertical', 'Group',
+  'Guitar', 'Hammer', 'Hand', 'HandCoins', 'HandHeart', 'HandHelping', 'HandMetal',
+  'HandPlatter', 'Handshake', 'HardDrive', 'HardDriveDownload', 'HardDriveUpload', 'HardHat',
+  'Hash', 'Haze', 'HdmiPort', 'Heading', 'Heading1', 'Heading2', 'Heading3', 'Heading4',
+  'Heading5', 'Heading6', 'Headphones', 'Headset', 'Heart', 'HeartCrack', 'HeartHandshake',
+  'HeartOff', 'HeartPulse', 'Heater', 'HelpCircle', 'Hexagon', 'Highlighter', 'History',
+  'Home', 'Hop', 'HopOff', 'Hotel', 'Hourglass', 'IceCream', 'IceCream2', 'Image',
+  'ImageDown', 'ImageMinus', 'ImageOff', 'ImagePlus', 'ImageUp', 'Images', 'Import',
+  'Inbox', 'Indent', 'IndianRupee', 'Infinity', 'Info', 'InspectionPanel', 'Instagram',
+  'Italic', 'IterationCcw', 'IterationCw', 'JapaneseYen', 'Joystick', 'Kanban',
+  'KanbanSquare', 'KanbanSquareDashed', 'Key', 'KeyRound', 'KeySquare', 'Keyboard',
+  'KeyboardMusic', 'Lamp', 'LampCeiling', 'LampDesk', 'LampFloor', 'LampWallDown',
+  'LampWallUp', 'LandPlot', 'Landmark', 'Languages', 'Laptop', 'Laptop2', 'Lasso',
+  'LassoSelect', 'Laugh', 'Layers2', 'Layers3', 'LayoutDashboard', 'LayoutGrid',
+  'LayoutList', 'LayoutPanelLeft', 'LayoutPanelTop', 'LayoutTemplate', 'Leaf', 'LeafyGreen',
+  'Library', 'LibraryBig', 'LibrarySquare', 'LifeBuoy', 'Ligature', 'Lightbulb',
+  'LightbulbOff', 'LineChart', 'Link', 'Link2', 'Link2Off', 'Linkedin', 'List',
+  'ListChecks', 'ListCollapse', 'ListEnd', 'ListFilter', 'ListMinus', 'ListMusic',
+  'ListOrdered', 'ListPlus', 'ListRestart', 'ListStart', 'ListTodo', 'ListTree', 'ListVideo',
+  'ListX', 'Loader', 'Loader2', 'Locate', 'LocateFixed', 'LocateOff', 'Lock',
+  'LockKeyhole', 'LogIn', 'LogOut', 'Lollipop', 'Luggage', 'MSquare', 'Magnet', 'Mail',
+  'MailCheck', 'MailMinus', 'MailOpen', 'MailPlus', 'MailQuestion', 'MailSearch',
+  'MailWarning', 'MailX', 'Mailbox', 'Mails', 'Map', 'MapPin', 'MapPinOff', 'MapPinned',
+  'Martini', 'Maximize', 'Maximize2', 'Medal', 'Megaphone', 'MegaphoneOff', 'Meh',
+  'MemoryStick', 'Menu', 'MenuSquare', 'Merge', 'MessageCircle', 'MessageCircleCode',
+  'MessageCircleDashed', 'MessageCircleHeart', 'MessageCircleMore', 'MessageCircleOff',
+  'MessageCirclePlus', 'MessageCircleQuestion', 'MessageCircleReply',
+  'MessageCircleWarning', 'MessageCircleX', 'MessageSquare', 'MessageSquareCode',
+  'MessageSquareDashed', 'MessageSquareDiff', 'MessageSquareDot', 'MessageSquareHeart',
+  'MessageSquareMore', 'MessageSquareOff', 'MessageSquarePlus', 'MessageSquareQuote',
+  'MessageSquareReply', 'MessageSquareShare', 'MessageSquareText', 'MessageSquareWarning',
+  'MessageSquareX', 'MessagesSquare', 'Mic', 'Mic2', 'MicOff', 'Microscope', 'Microwave',
+  'Milestone', 'Milk', 'MilkOff', 'Minimize', 'Minimize2', 'Minus', 'MinusCircle',
+  'MinusSquare', 'Monitor', 'MonitorCheck', 'MonitorDot', 'MonitorDown', 'MonitorOff',
+  'MonitorPause', 'MonitorPlay', 'MonitorSmartphone', 'MonitorSpeaker', 'MonitorStop',
+  'MonitorUp', 'MonitorX', 'Moon', 'MoonStar', 'MoreHorizontal', 'MoreVertical', 'Mountain',
+  'MountainSnow', 'Mouse', 'MousePointer', 'MousePointer2', 'MousePointerClick',
+  'MousePointerSquare', 'MousePointerSquareDashed', 'Move', 'Move3d', 'MoveDiagonal',
+  'MoveDiagonal2', 'MoveDown', 'MoveDownLeft', 'MoveDownRight', 'MoveHorizontal', 'MoveLeft',
+  'MoveRight', 'MoveUp', 'MoveUpLeft', 'MoveUpRight', 'MoveVertical', 'Music', 'Music2',
+  'Music3', 'Music4', 'Navigation', 'Navigation2', 'Navigation2Off', 'NavigationOff',
+  'Network', 'Newspaper', 'Nfc', 'Notebook', 'NotebookPen', 'NotebookTabs', 'NotebookText',
+  'NotepadText', 'NotepadTextDashed', 'Nut', 'NutOff', 'Octagon', 'Option', 'Orbit',
+  'Outdent', 'Package', 'Package2', 'PackageCheck', 'PackageMinus', 'PackageOpen',
+  'PackagePlus', 'PackageSearch', 'PackageX', 'PaintBucket', 'PaintRoller', 'Paintbrush',
+  'Paintbrush2', 'Palette', 'Palmtree', 'PanelBottom', 'PanelBottomClose',
+  'PanelBottomDashed', 'PanelBottomOpen', 'PanelLeft', 'PanelLeftClose', 'PanelLeftDashed',
+  'PanelLeftOpen', 'PanelRight', 'PanelRightClose', 'PanelRightDashed', 'PanelRightOpen',
+  'PanelTop', 'PanelTopClose', 'PanelTopDashed', 'PanelTopOpen', 'PanelsLeftBottom',
+  'PanelsRightBottom', 'PanelsTopLeft', 'Paperclip', 'Parentheses', 'ParkingCircle',
+  'ParkingCircleOff', 'ParkingMeter', 'ParkingSquare', 'ParkingSquareOff', 'PartyPopper',
+  'Pause', 'PauseCircle', 'PauseOctagon', 'PawPrint', 'PcCase', 'Pen', 'PenLine', 'PenTool',
+  'Pencil', 'PencilLine', 'PencilRuler', 'Pentagon', 'Percent', 'PercentCircle',
+  'PercentDiamond', 'PercentSquare', 'PersonStanding', 'Phone', 'PhoneCall',
+  'PhoneForwarded', 'PhoneIncoming', 'PhoneMissed', 'PhoneOff', 'PhoneOutgoing', 'Pi',
+  'PiSquare', 'Piano', 'Pickaxe', 'PictureInPicture', 'PictureInPicture2', 'PieChart',
+  'PiggyBank', 'Pilcrow', 'PilcrowSquare', 'Pill', 'Pin', 'PinOff', 'Pipette', 'Pizza',
+  'Plane', 'PlaneLanding', 'PlaneTakeoff', 'Play', 'PlayCircle', 'PlaySquare', 'Plug',
+  'Plug2', 'PlugZap', 'PlugZap2', 'Plus', 'PlusCircle', 'PlusSquare', 'Pocket',
+  'PocketKnife', 'Podcast', 'Pointer', 'PointerOff', 'Popcorn', 'Popsicle', 'PoundSterling',
+  'Power', 'PowerCircle', 'PowerOff', 'PowerSquare', 'Presentation', 'Printer', 'Projector',
+  'Puzzle', 'Pyramid', 'QrCode', 'Quote', 'Rabbit', 'Radar', 'Radiation', 'Radical',
+  'Radio', 'RadioReceiver', 'RadioTower', 'Radius', 'RailSymbol', 'Rainbow', 'Rat', 'Ratio',
+  'Receipt', 'ReceiptCent', 'ReceiptEuro', 'ReceiptIndianRupee', 'ReceiptJapaneseYen',
+  'ReceiptPoundSterling', 'ReceiptRussianRuble', 'ReceiptSwissFranc', 'ReceiptText',
+  'RectangleHorizontal', 'RectangleVertical', 'Recycle', 'Redo', 'Redo2', 'RedoDot',
+  'RefreshCcw', 'RefreshCcwDot', 'RefreshCw', 'RefreshCwOff', 'Refrigerator', 'Regex',
+  'RemoveFormatting', 'Repeat', 'Repeat1', 'Repeat2', 'Replace', 'ReplaceAll', 'Reply',
+  'ReplyAll', 'Rewind', 'Ribbon', 'Rocket', 'RockingChair', 'RollerCoaster', 'Rotate3d',
+  'RotateCcw', 'RotateCw', 'Route', 'RouteOff', 'Router', 'Rows2', 'Rows3', 'Rows4', 'Rss',
+  'Ruler', 'RussianRuble', 'Sailboat', 'Salad', 'Sandwich', 'Satellite', 'SatelliteDish',
+  'Save', 'SaveAll', 'Scale', 'Scale3d', 'Scaling', 'Scan', 'ScanBarcode', 'ScanEye',
+  'ScanFace', 'ScanLine', 'ScanSearch', 'ScanText', 'ScatterChart', 'School', 'School2',
+  'Scissors', 'ScissorsLineDashed', 'ScissorsSquare', 'ScissorsSquareDashedBottom',
+  'ScreenShare', 'ScreenShareOff', 'Scroll', 'ScrollText', 'Search', 'SearchCheck',
+  'SearchCode', 'SearchSlash', 'SearchX', 'Send', 'SendHorizontal', 'SendToBack',
+  'SeparatorHorizontal', 'SeparatorVertical', 'Server', 'ServerCog', 'ServerCrash',
+  'ServerOff', 'Settings', 'Settings2', 'Shapes', 'Share', 'Share2', 'Sheet', 'Shell',
+  'Shield', 'ShieldAlert', 'ShieldBan', 'ShieldCheck', 'ShieldEllipsis', 'ShieldHalf',
+  'ShieldMinus', 'ShieldOff', 'ShieldPlus', 'ShieldQuestion', 'ShieldX', 'Ship', 'ShipWheel',
+  'Shirt', 'ShoppingBag', 'ShoppingBasket', 'ShoppingCart', 'Shovel', 'ShowerHead', 'Shrink',
+  'Shrub', 'Shuffle', 'Sigma', 'SigmaSquare', 'Signal', 'SignalHigh', 'SignalLow',
+  'SignalMedium', 'SignalZero', 'Signpost', 'SignpostBig', 'Siren', 'SkipBack', 'SkipForward',
+  'Skull', 'Slack', 'Slash', 'SlashSquare', 'Slice', 'Sliders', 'SlidersHorizontal',
+  'Smartphone', 'SmartphoneCharging', 'SmartphoneNfc', 'Smile', 'SmilePlus', 'Snail',
+  'Snowflake', 'Sofa', 'Soup', 'Space', 'Spade', 'Sparkle', 'Sparkles', 'Speaker', 'Speech',
+  'SpellCheck', 'SpellCheck2', 'Spline', 'Split', 'SplitSquareHorizontal',
+  'SplitSquareVertical', 'SprayCan', 'Sprout', 'Square', 'SquareDashedBottom',
+  'SquareDashedBottomCode', 'SquarePen', 'SquareRadical', 'SquareStack', 'SquareUser',
+  'SquareUserRound', 'Squircle', 'Squirrel', 'Stamp', 'Star', 'StarHalf', 'StarOff',
+  'StepBack', 'StepForward', 'Stethoscope', 'Sticker', 'StickyNote', 'StopCircle', 'Store',
+  'StretchHorizontal', 'StretchVertical', 'Strikethrough', 'Subscript', 'Sun', 'SunDim',
+  'SunMedium', 'SunMoon', 'SunSnow', 'Sunrise', 'Sunset', 'Superscript', 'SwatchBook',
+  'SwissFranc', 'SwitchCamera', 'Sword', 'Swords', 'Syringe', 'Table', 'Table2',
+  'TableCellsMerge', 'TableCellsSplit', 'TableColumnsSplit', 'TableProperties',
+  'TableRowsSplit', 'Tablet', 'TabletSmartphone', 'Tablets', 'Tag', 'Tags', 'Tally1',
+  'Tally2', 'Tally3', 'Tally4', 'Tally5', 'Tangent', 'Target', 'Telescope', 'Tent',
+  'TentTree', 'Terminal', 'TerminalSquare', 'TestTube', 'TestTube2', 'TestTubes', 'Text',
+  'TextCursor', 'TextCursorInput', 'TextQuote', 'TextSearch', 'TextSelect', 'Theater',
+  'Thermometer', 'ThermometerSnowflake', 'ThermometerSun', 'ThumbsDown', 'ThumbsUp', 'Ticket',
+  'TicketCheck', 'TicketMinus', 'TicketPercent', 'TicketPlus', 'TicketSlash', 'TicketX',
+  'Timer', 'TimerOff', 'TimerReset', 'ToggleLeft', 'ToggleRight', 'Tornado', 'Torus',
+  'Touchpad', 'TouchpadOff', 'TowerControl', 'ToyBrick', 'Tractor', 'TrafficCone',
+  'TrainFront', 'TrainFrontTunnel', 'TrainTrack', 'TramFront', 'Trash', 'Trash2',
+  'TreeDeciduous', 'TreePine', 'Trees', 'Trello', 'TrendingDown', 'TrendingUp', 'Triangle',
+  'TriangleRight', 'Trophy', 'Truck', 'Turtle', 'Tv', 'Tv2', 'Twitch', 'Twitter', 'Type',
+  'Umbrella', 'UmbrellaOff', 'Underline', 'Undo', 'Undo2', 'UndoDot', 'UnfoldHorizontal',
+  'UnfoldVertical', 'Ungroup', 'Unlink', 'Unlink2', 'Unlock', 'UnlockKeyhole', 'Unplug',
+  'Upload', 'UploadCloud', 'Usb', 'User', 'UserCheck', 'UserCog', 'UserMinus', 'UserPlus',
+  'UserRound', 'UserRoundCheck', 'UserRoundCog', 'UserRoundMinus', 'UserRoundPlus',
+  'UserRoundSearch', 'UserRoundX', 'UserSearch', 'UserX', 'Users', 'UsersRound', 'Utensils',
+  'UtensilsCrossed', 'UtilityPole', 'Variable', 'Vault', 'Vegan', 'VenetianMask', 'Vibrate',
+  'VibrateOff', 'Video', 'VideoOff', 'Videotape', 'View', 'Voicemail', 'Volume', 'Volume1',
+  'Volume2', 'VolumeX', 'Vote', 'Wallet', 'Wallet2', 'WalletCards', 'Wallpaper', 'Wand',
+  'Wand2', 'Warehouse', 'WashingMachine', 'Watch', 'Waves', 'Waypoints', 'Webcam', 'Webhook',
+  'WebhookOff', 'Weight', 'Wheat', 'WheatOff', 'WholeWord', 'Wifi', 'WifiOff', 'Wind',
+  'Wine', 'WineOff', 'Workflow', 'WrapText', 'Wrench', 'X', 'XCircle', 'XOctagon', 'XSquare',
+  'Youtube', 'Zap', 'ZapOff', 'ZoomIn', 'ZoomOut',
 ]);
 
 const LUCIDE_FALLBACK_ICON = 'Circle';
@@ -793,4 +955,107 @@ export function generateStubForMissingImport(
   if (allFilePaths.includes(modulePath)) return null;
 
   return { path: modulePath, content: generateSmartStubContent(modulePath) };
+}
+
+export function ensurePageDefaultExports(files: GeneratedFile[]): GeneratedFile[] {
+  return files.map((file) => {
+    if (!file.path.startsWith('src/pages/') || !file.path.endsWith('.tsx')) return file;
+
+    const hasDefaultExport =
+      /export\s+default\s+/.test(file.content) ||
+      /export\s*\{\s*[^}]*\bdefault\b/.test(file.content);
+    if (hasDefaultExport) return file;
+
+    const namedFnMatch = file.content.match(
+      /export\s+(function\s+(\w+))/
+    );
+    if (namedFnMatch) {
+      const fnName = namedFnMatch[2];
+      return {
+        ...file,
+        content: file.content.replace(
+          `export function ${fnName}`,
+          `export default function ${fnName}`
+        ),
+      };
+    }
+
+    const namedConstMatch = file.content.match(
+      /export\s+const\s+(\w+)\s*[=:]/
+    );
+    if (namedConstMatch) {
+      const constName = namedConstMatch[1];
+      return {
+        ...file,
+        content: file.content + `\nexport default ${constName};\n`,
+      };
+    }
+
+    const baseName = file.path
+      .replace('src/pages/', '')
+      .replace(/\.tsx$/, '')
+      .replace(/[^a-zA-Z0-9]/g, '');
+    const componentName = (baseName.charAt(0).toUpperCase() + baseName.slice(1)) || 'Page';
+
+    return {
+      ...file,
+      content: file.content + `\nexport default function ${componentName}() {\n  return <div>${componentName}</div>;\n}\n`,
+    };
+  });
+}
+
+export function batchFixKnownPatterns(
+  errors: string[],
+  repoFiles: { path: string; content: string }[]
+): GeneratedFile[] {
+  const fixedMap = new Map<string, GeneratedFile>();
+
+  const hasLucideErrors = errors.some((e) =>
+    /is not exported by.*lucide-react|has no exported member.*from ['"]lucide-react/.test(e)
+  );
+  if (hasLucideErrors) {
+    for (const file of repoFiles) {
+      if (!/\.(tsx?|jsx?)$/.test(file.path)) continue;
+      if (!file.content.includes('lucide-react')) continue;
+      const sanitized = sanitizeLucideImports([{ path: file.path, content: file.content }]);
+      if (sanitized[0].content !== file.content) {
+        fixedMap.set(file.path, sanitized[0]);
+      }
+    }
+  }
+
+  const hasDefaultExportErrors = errors.some((e) =>
+    /does not provide an export named 'default'|has no default export/.test(e)
+  );
+  if (hasDefaultExportErrors) {
+    const pageFiles = repoFiles.filter(
+      (f) => f.path.startsWith('src/pages/') && f.path.endsWith('.tsx')
+    );
+    const ensured = ensurePageDefaultExports(
+      pageFiles.map((f) => fixedMap.get(f.path) || { path: f.path, content: f.content })
+    );
+    for (let i = 0; i < ensured.length; i++) {
+      const original = fixedMap.get(pageFiles[i].path) || pageFiles[i];
+      if (ensured[i].content !== original.content) {
+        fixedMap.set(ensured[i].path, ensured[i]);
+      }
+    }
+  }
+
+  const hasAliasErrors = errors.some((e) =>
+    /@\//.test(e) || /Failed to resolve.*@\//.test(e)
+  );
+  if (hasAliasErrors) {
+    for (const file of repoFiles) {
+      if (!/\.(tsx?|jsx?)$/.test(file.path)) continue;
+      if (!file.content.includes('@/')) continue;
+      const current = fixedMap.get(file.path) || { path: file.path, content: file.content };
+      const rewritten = rewriteAliasImports([current]);
+      if (rewritten[0].content !== current.content) {
+        fixedMap.set(file.path, rewritten[0]);
+      }
+    }
+  }
+
+  return Array.from(fixedMap.values());
 }

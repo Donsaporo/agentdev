@@ -1162,13 +1162,14 @@ FORBIDDEN IMPORTS (NEVER use these):
 - Hypothetical files or files that "might be created later" by another module
 
 IMPLEMENTATION RULES:
+- Every page component in src/pages/ MUST use \`export default function ComponentName\`. App.tsx imports pages as default imports -- named-only exports will break the build.
 - Follow existing code patterns, component structure, and styling conventions exactly
 - Use the shared Layout, Navbar, Footer components already in the project
 - Use brand colors defined in tailwind.config.js as Tailwind classes
 - Every page must be fully responsive (mobile, tablet, desktop)
 - Include meaningful, realistic content (NOT lorem ipsum)
 - Add hover states, focus states, transitions, and micro-interactions
-- Use lucide-react for all icons
+- Use lucide-react for all icons (only valid icon names from the lucide-react package)
 - Use react-router-dom Link/useNavigate for navigation
 - Brand colors: ${JSON.stringify(client.brand_colors)}
 - Brand fonts: ${JSON.stringify(client.brand_fonts)}

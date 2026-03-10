@@ -27,7 +27,7 @@ import {
   extractExportSignatures, buildExportContext, deduplicateErrors,
   filterRelevantFiles, reconcileAppRoutes, resolveStubPaths,
   generateStubForMissingImport, validateModuleImports, rewriteAliasImports,
-  sanitizeLucideImports,
+  sanitizeLucideImports, ensurePageDefaultExports, batchFixKnownPatterns,
 } from '../services/build-intelligence.js';
 import type { ExportSignature } from '../services/build-intelligence.js';
 import {
@@ -144,6 +144,7 @@ async function validateAndPush(
 ): Promise<string> {
   let processed = rewriteAliasImports(files);
   processed = sanitizeLucideImports(processed);
+  processed = ensurePageDefaultExports(processed);
 
   const pkgFile = processed.find((f) => f.path === 'package.json');
   if (pkgFile) {
@@ -262,6 +263,7 @@ async function buildGate(
   ];
   let duplicateCount = 0;
   let lastUsedStrategy = 'standard';
+  let batchFixApplied = false;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const buildResult = await verifyBuild(fullName, projectId);
@@ -276,6 +278,25 @@ async function buildGate(
         projectId,
       );
       return { passed: false, errorsRemaining: 1, attemptsUsed: attempt, lastStrategy: 'environment_skip', attempts: previousAttempts };
+    }
+
+    if (!batchFixApplied) {
+      batchFixApplied = true;
+      const batchErrors = extractBuildErrors(buildResult.errors || buildResult.output);
+      const batchRepoFiles = await getRepoTree(fullName);
+      const batchCodePaths = batchRepoFiles
+        .filter((f) => f.type === 'file' && /\.(tsx?|jsx?)$/.test(f.path))
+        .map((f) => f.path);
+      const batchContents = await getMultipleFileContents(fullName, batchCodePaths);
+      const batchFixes = batchFixKnownPatterns(batchErrors, batchContents);
+      if (batchFixes.length > 0) {
+        await logger.info(
+          `[${phaseName}] Auto-fixing ${batchFixes.length} file(s) with known patterns before using Claude`,
+          'development', projectId
+        );
+        await pushFiles(fullName, batchFixes, `fix: batch auto-fix known patterns (${phaseName})`, projectId);
+        continue;
+      }
     }
 
     const rawBuildErrorsCheck = extractBuildErrors(buildResult.errors || buildResult.output);
@@ -1044,8 +1065,12 @@ export async function processBrief(projectId: string, briefId: string): Promise<
                 stubPaths
               );
 
+              const sanitizedFiles = ensurePageDefaultExports(
+                sanitizeLucideImports(codeResult.files)
+              );
+
               const durationSeconds = Math.round((Date.now() - taskStartTime) / 1000);
-              return { task, files: codeResult.files, durationSeconds, error: null };
+              return { task, files: sanitizedFiles, durationSeconds, error: null };
             } catch (err) {
               if (err instanceof CreditExhaustedError) throw err;
               const errMsg = err instanceof Error ? err.message : String(err);
@@ -1056,21 +1081,16 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
         const allFiles = batchResults.flatMap((r) => r.files);
         if (allFiles.length > 0) {
-          const { stubs, warnings } = validateModuleImports(allFiles, allPaths);
-          if (warnings.length > 0) {
-            await logger.warn(`Module ${batchNames}: ${warnings.length} unresolved import(s)`, 'development', projectId);
-          }
+          await validateAndPush(fullName, allFiles, `feat: implement ${batchNames}`, projectId, allPaths);
 
-          const filesToPush = [...allFiles, ...stubs];
-          await pushFiles(fullName, filesToPush, `feat: implement ${batchNames}`, projectId);
-
-          for (const f of filesToPush) {
+          const processed = sanitizeLucideImports(rewriteAliasImports(allFiles));
+          for (const f of processed) {
             if (f.path.endsWith('.tsx') || f.path.endsWith('.ts')) {
               completedModuleExports.push(f.path);
             }
           }
 
-          const newSignatures = extractExportSignatures(filesToPush);
+          const newSignatures = extractExportSignatures(processed);
           allExportSignatures.push(...newSignatures);
         }
 
@@ -1353,8 +1373,11 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     try {
       const preReconRepoFiles = await getRepoTree(fullName);
       const preReconPaths = preReconRepoFiles.filter((f) => f.type === 'file').map((f) => f.path);
+      const preReconPagePaths = preReconPaths.filter((p) => p.startsWith('src/pages/') && p.endsWith('.tsx'));
+      const preReconPageContents = await getMultipleFileContents(fullName, preReconPagePaths);
+      const preReconFileMap = new Map(preReconPageContents.map((f) => [f.path, f.content]));
       const preReconAppContent = await getFileContent(fullName, 'src/App.tsx');
-      const preReconciledApp = reconcileAppRoutes(preReconPaths, architecture.pages || [], preReconAppContent || undefined);
+      const preReconciledApp = reconcileAppRoutes(preReconPaths, architecture.pages || [], preReconAppContent || undefined, preReconFileMap);
       if (preReconciledApp) {
         await pushFiles(fullName, [preReconciledApp], 'fix: reconcile App.tsx routes before completeness check', projectId);
         await logger.info('Reconciled App.tsx routes before completeness check', 'development', projectId);
@@ -1513,8 +1536,11 @@ export async function processBrief(projectId: string, briefId: string): Promise<
     try {
       const reconRepoFiles = await getRepoTree(fullName);
       const reconPaths = reconRepoFiles.filter((f) => f.type === 'file').map((f) => f.path);
+      const reconPagePaths = reconPaths.filter((p) => p.startsWith('src/pages/') && p.endsWith('.tsx'));
+      const reconPageContents = await getMultipleFileContents(fullName, reconPagePaths);
+      const reconFileMap = new Map(reconPageContents.map((f) => [f.path, f.content]));
       const existingAppContent = await getFileContent(fullName, 'src/App.tsx');
-      const reconciledApp = reconcileAppRoutes(reconPaths, architecture.pages || [], existingAppContent || undefined);
+      const reconciledApp = reconcileAppRoutes(reconPaths, architecture.pages || [], existingAppContent || undefined, reconFileMap);
       if (reconciledApp) {
         await pushFiles(fullName, [reconciledApp], 'fix: final App.tsx route reconciliation', projectId);
         await logger.info('Final App.tsx route reconciliation complete', 'development', projectId);
