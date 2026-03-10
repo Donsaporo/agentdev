@@ -56,6 +56,13 @@ export async function createRepo(
   return { repoUrl: data.html_url, fullName: data.full_name };
 }
 
+export async function getRepoNumericId(repoFullName: string): Promise<number> {
+  const gh = await getClient();
+  const [owner, repo] = repoFullName.split('/');
+  const { data } = await gh.rest.repos.get({ owner, repo });
+  return data.id;
+}
+
 async function cleanRepoContents(repoFullName: string, projectId: string): Promise<void> {
   const gh = await getClient();
   const [owner, repo] = repoFullName.split('/');

@@ -1674,10 +1674,35 @@ export async function processBrief(projectId: string, briefId: string): Promise<
       }
     }
 
-    const deployStartTime = Date.now();
-    const deployment = await triggerDeployment(repoName, projectId);
-    const result = await waitForDeployment(deployment.deploymentId, projectId);
-    const deployDuration = Math.round((Date.now() - deployStartTime) / 1000);
+    let deployment: { deploymentId: string; url?: string; status: string };
+    let result: { deploymentId?: string; url?: string; status: string; buildLogs?: string };
+    let deployDuration: number;
+
+    try {
+      const deployStartTime = Date.now();
+      deployment = await triggerDeployment(repoName, projectId, fullName);
+      result = await waitForDeployment(deployment.deploymentId, projectId);
+      deployDuration = Math.round((Date.now() - deployStartTime) / 1000);
+    } catch (deployErr) {
+      const deployMsg = deployErr instanceof Error ? deployErr.message : String(deployErr);
+      await logger.error(`Deployment trigger/wait failed: ${deployMsg}`, 'deployment', projectId);
+      await supabase.from('briefs').update({ status: 'completed' }).eq('id', briefId);
+      await updateProject(projectId, {
+        status: 'review',
+        progress: 100,
+        agent_status: 'idle',
+        current_phase: 'build_complete',
+        last_error_message: `Deployment failed: ${deployMsg}`,
+      });
+      await sendChatMessage(projectId,
+        `Build completed successfully! Repo: ${repoUrl}\n\n` +
+        `Deployment could not complete: ${deployMsg}\n\n` +
+        `You can retry the brief to attempt deployment again.`
+      );
+      await notifyBuildComplete(project.name, repoUrl, projectId);
+      await saveCheckpoint(projectId, briefId, 'build_verified', {}, checkpoint?.modules_completed || [], fullName);
+      return;
+    }
 
     await recordDeployment(
       projectId,
@@ -1829,7 +1854,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
         if (fixResult.files.length > 0) {
           await pushFiles(fullName, fixResult.files, `fix: multi-viewport QA corrections (round ${qaAttempt + 1})`, projectId);
-          const redeploy = await triggerDeployment(repoName, projectId);
+          const redeploy = await triggerDeployment(repoName, projectId, fullName);
           const redeployResult = await waitForDeployment(redeploy.deploymentId, projectId);
 
           if (redeployResult.status === 'ready') {

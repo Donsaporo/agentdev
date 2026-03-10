@@ -130,7 +130,8 @@ export async function handleChatMessage(
           await sendReply(conversationId, 'Redeploying with changes...');
           const deployment = await triggerDeployment(
             project.git_repo_url.split('/').pop()?.replace('.git', '') || project.name,
-            projectId
+            projectId,
+            repoFullName
           );
           const deployResult = await waitForDeployment(deployment.deploymentId, projectId);
 

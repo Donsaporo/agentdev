@@ -106,9 +106,16 @@ export class VercelConfigError extends Error {
 
 export async function triggerDeployment(
   projectName: string,
-  projectId: string
+  projectId: string,
+  repoFullName?: string
 ): Promise<DeploymentResult> {
   return withRetry(async () => {
+  let repoId: number | undefined;
+  if (repoFullName) {
+    const { getRepoNumericId } = await import('../services/github.js');
+    repoId = await getRepoNumericId(repoFullName);
+  }
+
   const res = await vercelFetch('/v13/deployments', {
     method: 'POST',
     body: JSON.stringify({
@@ -117,6 +124,7 @@ export async function triggerDeployment(
       gitSource: {
         type: 'github',
         ref: 'main',
+        ...(repoId ? { repoId: String(repoId) } : {}),
       },
     }),
   });

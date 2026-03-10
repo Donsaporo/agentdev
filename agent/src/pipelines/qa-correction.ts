@@ -132,7 +132,7 @@ export async function handleQARejection(
 
     if (project.vercel_project_id) {
       const repoName = repoFullName.split('/').pop() || project.name;
-      const deployment = await triggerDeployment(repoName, projectId);
+      const deployment = await triggerDeployment(repoName, projectId, repoFullName);
       const deployResult = await waitForDeployment(deployment.deploymentId, projectId);
 
       if (deployResult.status === 'ready') {
