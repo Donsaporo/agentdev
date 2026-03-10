@@ -10,7 +10,6 @@ import PhaseIndicator from '../components/PhaseIndicator';
 import Modal from '../components/Modal';
 import { useRealtimeSubscription } from '../hooks/useRealtimeSubscription';
 import { triggerScreenshots } from '../lib/screenshots';
-import { deleteProjectFull } from '../lib/project-actions';
 import { formatDistanceToNow } from 'date-fns';
 
 export default function ProjectDetailPage() {
@@ -133,20 +132,15 @@ export default function ProjectDetailPage() {
   }
 
   async function handleDelete() {
-    if (!confirm('This will permanently delete the project from Vercel, GitHub, Supabase, and all stored files. Continue?')) return;
+    if (!confirm('Delete this project from the dashboard? You will need to manually remove it from Vercel, GitHub, and Supabase.')) return;
     setDeleting(true);
-    const { data, error } = await deleteProjectFull(id!);
+    const { error } = await supabase.from('projects').delete().eq('id', id!);
     setDeleting(false);
     if (error) {
-      toast.error('Delete failed: ' + error);
+      toast.error('Delete failed: ' + error.message);
       return;
     }
-    const failed = data?.results.filter(r => !r.success) || [];
-    if (failed.length > 0) {
-      toast.error(`Partial cleanup: ${failed.map(f => f.service).join(', ')} failed`);
-    } else {
-      toast.success('Project deleted from all services');
-    }
+    toast.success('Project deleted');
     navigate('/projects');
   }
 

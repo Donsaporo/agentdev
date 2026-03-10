@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Plus, Search, FolderKanban, ExternalLink, GitBranch, Loader2 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
@@ -36,6 +36,7 @@ const projectStatuses: { value: ProjectStatus; label: string }[] = [
 ];
 
 export default function ProjectsPage() {
+  const navigate = useNavigate();
   const { user } = useAuth();
   const toast = useToast();
   const [projects, setProjects] = useState<Project[]>([]);
@@ -146,10 +147,10 @@ export default function ProjectsPage() {
       ) : (
         <div className="space-y-3">
           {filtered.map((project, i) => (
-            <Link
+            <div
               key={project.id}
-              to={`/projects/${project.id}`}
-              className={`block glass-card-hover p-5 animate-fade-in-up stagger-${Math.min(i % 4 + 1, 5)}`}
+              onClick={() => navigate(`/projects/${project.id}`)}
+              className={`block glass-card-hover p-5 animate-fade-in-up cursor-pointer stagger-${Math.min(i % 4 + 1, 5)}`}
             >
               <div className="flex flex-col sm:flex-row sm:items-center gap-4">
                 <div className="flex-1 min-w-0">
@@ -186,7 +187,7 @@ export default function ProjectsPage() {
                   </div>
                 </div>
               </div>
-            </Link>
+            </div>
           ))}
         </div>
       )}
