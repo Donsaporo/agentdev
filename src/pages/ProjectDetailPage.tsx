@@ -10,6 +10,7 @@ import PhaseIndicator from '../components/PhaseIndicator';
 import Modal from '../components/Modal';
 import { useRealtimeSubscription } from '../hooks/useRealtimeSubscription';
 import { triggerScreenshots } from '../lib/screenshots';
+import { deleteProjectFull } from '../lib/project-actions';
 import { formatDistanceToNow } from 'date-fns';
 
 export default function ProjectDetailPage() {
@@ -25,6 +26,7 @@ export default function ProjectDetailPage() {
   const [editForm, setEditForm] = useState({ name: '', description: '', demo_url: '', production_url: '' });
   const [editSaving, setEditSaving] = useState(false);
   const [capturingScreenshots, setCapturingScreenshots] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     if (id) loadProject(id);
@@ -131,13 +133,20 @@ export default function ProjectDetailPage() {
   }
 
   async function handleDelete() {
-    if (!confirm('Delete this project and all its data?')) return;
-    const { error } = await supabase.from('projects').delete().eq('id', id!);
+    if (!confirm('This will permanently delete the project from Vercel, GitHub, Supabase, and all stored files. Continue?')) return;
+    setDeleting(true);
+    const { data, error } = await deleteProjectFull(id!);
+    setDeleting(false);
     if (error) {
-      toast.error('Failed to delete project: ' + error.message);
+      toast.error('Delete failed: ' + error);
       return;
     }
-    toast.success('Project deleted');
+    const failed = data?.results.filter(r => !r.success) || [];
+    if (failed.length > 0) {
+      toast.error(`Partial cleanup: ${failed.map(f => f.service).join(', ')} failed`);
+    } else {
+      toast.success('Project deleted from all services');
+    }
     navigate('/projects');
   }
 
@@ -221,8 +230,8 @@ export default function ProjectDetailPage() {
           <button onClick={openEdit} className="p-2 text-slate-400 hover:text-slate-200 hover:bg-white/[0.04] rounded-xl transition-all">
             <Pencil className="w-4 h-4" />
           </button>
-          <button onClick={handleDelete} className="p-2 text-slate-400 hover:text-red-400 hover:bg-white/[0.04] rounded-xl transition-all">
-            <Trash2 className="w-4 h-4" />
+          <button onClick={handleDelete} disabled={deleting} className="p-2 text-slate-400 hover:text-red-400 hover:bg-white/[0.04] rounded-xl transition-all disabled:opacity-50">
+            {deleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
           </button>
         </div>
       </div>
