@@ -1730,7 +1730,7 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
     await updateProject(projectId, { demo_url: result.url, progress: 90 });
     await sendChatMessage(projectId, `Deployed successfully: ${result.url}`);
-    await notifyDeploySuccess(project.name, result.url, projectId);
+    await notifyDeploySuccess(project.name, result.url || '', projectId);
 
     const demoSubdomain = clientSlug;
     const demoDomain = `${demoSubdomain}.obzide.com`;
@@ -1891,12 +1891,12 @@ export async function processBrief(projectId: string, briefId: string): Promise<
 
       await updateProject(projectId, { status: 'qa', progress: 100, agent_status: 'idle' });
       await sendChatMessage(projectId, `QA screenshots ready for human review. ${screenshotResults.length} pages captured across 3 viewports.`);
-      await notifyBuildComplete(project.name, result.url, projectId);
+      await notifyBuildComplete(project.name, result.url || '', projectId);
       await notifyQAReady(project.name, screenshotResults.length, projectId);
     } else {
       await updateProject(projectId, { status: 'review', progress: 100, agent_status: 'idle' });
       await sendChatMessage(projectId, 'Build complete. Auto-QA is disabled, project is ready for manual review.');
-      await notifyBuildComplete(project.name, result.url, projectId);
+      await notifyBuildComplete(project.name, result.url || '', projectId);
     }
 
     await supabase.from('briefs').update({ status: 'completed' }).eq('id', briefId);
