@@ -11,13 +11,14 @@ const VIEWPORTS = [
 type Browser = { connected: boolean; close: () => Promise<void>; newPage: () => Promise<PuppeteerPage> };
 type PuppeteerPage = {
   setViewport: (v: { width: number; height: number }) => Promise<void>;
-  goto: (url: string, opts: Record<string, unknown>) => Promise<void>;
+  goto: (url: string, opts: Record<string, unknown>) => Promise<unknown>;
   screenshot: (opts: Record<string, unknown>) => Promise<Uint8Array>;
   close: () => Promise<void>;
 };
 
 let browser: Browser | null = null;
-let puppeteerModule: { default: { launch: (opts: Record<string, unknown>) => Promise<Browser> } } | null = null;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let puppeteerModule: any = null;
 let puppeteerAvailable: boolean | null = null;
 
 async function getPuppeteer() {
