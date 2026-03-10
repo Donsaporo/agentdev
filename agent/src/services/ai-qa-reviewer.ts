@@ -278,7 +278,7 @@ export async function runAutonomousQA(
       const { generateAutoQAFix } = await import('./claude.js');
       const { getRepoTree, getMultipleFileContents, pushFiles } = await import('./github.js');
       const { triggerDeployment, waitForDeployment } = await import('./vercel.js');
-      const { selectPathsWithinBudget } = await import('./build-intelligence.js');
+      const { selectPathsWithinBudget } = await import('../core/token-counter.js');
 
       const CORE_FILE_PATTERNS = ['src/App.tsx', 'src/main.tsx', 'src/index.css', 'src/lib/', 'src/components/', 'src/contexts/', 'src/hooks/', 'tailwind.config'];
 
