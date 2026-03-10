@@ -14,7 +14,7 @@ import { stripBrowserRouter } from './build-intelligence.js';
 const MODELS = {
   opus: 'claude-opus-4-20250514',
   sonnet: 'claude-sonnet-4-20250514',
-  haiku: 'claude-haiku-3-20250515',
+  haiku: 'claude-3-5-haiku-20241022',
 } as const;
 
 type ModelTier = keyof typeof MODELS;
