@@ -6,6 +6,7 @@ import { triggerDeployment, waitForDeployment } from '../services/vercel.js';
 import { captureAllPages } from '../services/screenshots.js';
 import { getConfig } from '../core/config.js';
 import { selectPathsWithinBudget } from '../core/token-counter.js';
+import type { FullArchitecture } from '../core/types.js';
 
 async function sendReply(conversationId: string, content: string): Promise<void> {
   const supabase = getSupabase();
@@ -43,6 +44,8 @@ export async function handleChatMessage(
       await supabase.from('projects').update({ agent_status: 'working' }).eq('id', projectId);
     }
 
+    const isQARerun = isQARerunRequest(messageContent);
+
     const { data: project } = await supabase
       .from('projects')
       .select('*, clients(*)')
@@ -57,6 +60,14 @@ export async function handleChatMessage(
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle();
+
+    if (isQARerun) {
+      await handleQARerun(project, brief, conversationId, projectId);
+      if (previousStatus !== 'working') {
+        await supabase.from('projects').update({ agent_status: 'idle' }).eq('id', projectId);
+      }
+      return;
+    }
 
     const { data: recentTasks } = await supabase
       .from('project_tasks')
@@ -196,4 +207,80 @@ async function getCurrentQAVersion(projectId: string): Promise<number> {
     .maybeSingle();
 
   return data?.version_number || 0;
+}
+
+const QA_RERUN_PATTERNS = [
+  /re-?run.*qa/i,
+  /run.*qa.*review/i,
+  /qa.*re-?run/i,
+  /re-?run.*quality/i,
+  /run.*quality.*review/i,
+];
+
+function isQARerunRequest(message: string): boolean {
+  return QA_RERUN_PATTERNS.some((p) => p.test(message));
+}
+
+async function handleQARerun(
+  project: Record<string, unknown>,
+  brief: Record<string, unknown> | null,
+  conversationId: string,
+  projectId: string
+): Promise<void> {
+  const deployedUrl = project.demo_url as string | undefined;
+  const gitRepoUrl = project.git_repo_url as string | undefined;
+
+  if (!deployedUrl) {
+    await sendReply(conversationId, 'Cannot re-run QA: no deployed URL found for this project.');
+    return;
+  }
+
+  const repoFullName = gitRepoUrl ? extractRepoFullName(gitRepoUrl) : null;
+  if (!repoFullName) {
+    await sendReply(conversationId, 'Cannot re-run QA: no GitHub repository linked to this project.');
+    return;
+  }
+
+  await sendReply(conversationId, 'Starting full AI QA review on the current deployed version...');
+  await logger.info('QA re-run requested via chat', 'qa', projectId);
+
+  const architecture = (brief?.architecture_plan || { pages: [{ name: 'Home', route: '/', description: 'Home page' }] }) as FullArchitecture;
+  if (!architecture.pages || architecture.pages.length === 0) {
+    architecture.pages = [{ name: 'Home', route: '/', description: 'Home page' }];
+  }
+
+  const designSpecText = JSON.stringify(architecture.designSystem || {}, null, 2);
+  const repoName = repoFullName.split('/').pop() || (project.name as string);
+
+  const { runAutonomousQA } = await import('../services/ai-qa-reviewer.js');
+
+  const qaReport = await runAutonomousQA(
+    deployedUrl,
+    architecture,
+    designSpecText,
+    projectId,
+    repoFullName,
+    repoName
+  );
+
+  if (qaReport.status === 'all_passed') {
+    await sendReply(
+      conversationId,
+      `QA re-run complete: all ${qaReport.totalPages} pages passed (score: ${qaReport.overallScore}/100).` +
+      (qaReport.iterations > 1 ? ` Required ${qaReport.iterations - 1} auto-correction round(s).` : '')
+    );
+  } else {
+    const failedList = qaReport.pageResults
+      .filter((p) => !p.pass && p.score < 80)
+      .map((p) => `${p.pageName} (${p.score}/100)`)
+      .join(', ');
+    await sendReply(
+      conversationId,
+      `QA re-run complete: ${qaReport.passedPages}/${qaReport.totalPages} pages passed (score: ${qaReport.overallScore}/100).` +
+      (failedList ? `\nPages with remaining issues: ${failedList}` : '') +
+      `\n\nCheck the QA Review tab for full details.`
+    );
+  }
+
+  await logger.success('QA re-run completed', 'qa', projectId);
 }
