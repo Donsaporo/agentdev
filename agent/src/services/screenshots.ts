@@ -25,11 +25,11 @@ async function getPuppeteer() {
   if (puppeteerModule) return puppeteerModule;
 
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    puppeteerModule = await import(/* webpackIgnore: true */ 'puppeteer' as string);
+    puppeteerModule = await import('puppeteer');
     puppeteerAvailable = true;
     return puppeteerModule;
-  } catch {
+  } catch (err) {
+    await logger.warn(`Puppeteer import failed: ${err instanceof Error ? err.message : String(err)}. Screenshots will be skipped.`, 'qa');
     puppeteerAvailable = false;
     return null;
   }
@@ -50,7 +50,8 @@ async function getBrowser(): Promise<Browser | null> {
           '--disable-gpu',
         ],
       });
-    } catch {
+    } catch (err) {
+      await logger.warn(`Puppeteer browser launch failed: ${err instanceof Error ? err.message : String(err)}`, 'qa');
       puppeteerAvailable = false;
       return null;
     }

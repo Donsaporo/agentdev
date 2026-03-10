@@ -28,6 +28,7 @@ import {
   filterRelevantFiles, reconcileAppRoutes, resolveStubPaths,
   generateStubForMissingImport, validateModuleImports, rewriteAliasImports,
   sanitizeLucideImports, ensurePageDefaultExports, batchFixKnownPatterns,
+  stripBrowserRouter,
 } from '../services/build-intelligence.js';
 import type { ExportSignature } from '../services/build-intelligence.js';
 import {
@@ -145,6 +146,11 @@ async function validateAndPush(
   let processed = rewriteAliasImports(files);
   processed = sanitizeLucideImports(processed);
   processed = ensurePageDefaultExports(processed);
+
+  const appTsx = processed.find((f) => f.path === 'src/App.tsx');
+  if (appTsx) {
+    appTsx.content = stripBrowserRouter(appTsx.content);
+  }
 
   const pkgFile = processed.find((f) => f.path === 'package.json');
   if (pkgFile) {
@@ -408,8 +414,11 @@ async function buildGate(
       if (fixTouchesApp && !errorInAppTsx) {
         const gateReconFiles = await getRepoTree(fullName);
         const gateReconPaths = gateReconFiles.filter((f) => f.type === 'file').map((f) => f.path);
+        const gateReconPagePaths = gateReconPaths.filter((p) => p.startsWith('src/pages/') && p.endsWith('.tsx'));
+        const gateReconPageContents = await getMultipleFileContents(fullName, gateReconPagePaths);
+        const gateReconFileMap = new Map(gateReconPageContents.map((f) => [f.path, f.content]));
         const gateReconApp = await getFileContent(fullName, 'src/App.tsx');
-        const gateReconciled = reconcileAppRoutes(gateReconPaths, architecture.pages || [], gateReconApp || undefined);
+        const gateReconciled = reconcileAppRoutes(gateReconPaths, architecture.pages || [], gateReconApp || undefined, gateReconFileMap);
         if (gateReconciled) {
           await pushFiles(fullName, [gateReconciled], `fix: re-reconcile App.tsx after build fix (${phaseName})`, projectId);
         }
@@ -441,8 +450,11 @@ async function buildGate(
       }
 
       const reconPaths = allRepoFiles.filter((f) => f.type === 'file').map((f) => f.path);
+      const reconPagePaths = reconPaths.filter((p) => p.startsWith('src/pages/') && p.endsWith('.tsx'));
+      const reconPageContents = await getMultipleFileContents(fullName, reconPagePaths);
+      const reconFileMap = new Map(reconPageContents.map((f) => [f.path, f.content]));
       const fallbackAppContent = await getFileContent(fullName, 'src/App.tsx');
-      const reconciledApp = reconcileAppRoutes(reconPaths, architecture.pages || [], fallbackAppContent || undefined);
+      const reconciledApp = reconcileAppRoutes(reconPaths, architecture.pages || [], fallbackAppContent || undefined, reconFileMap);
       if (reconciledApp) {
         await pushFiles(fullName, [reconciledApp], `fix: re-reconcile App.tsx routes (${phaseName}, attempt ${attempt})`, projectId);
         continue;
@@ -1142,8 +1154,11 @@ export async function processBrief(projectId: string, briefId: string): Promise<
                   if (midFixTouchesApp) {
                     const reconFiles = await getRepoTree(fullName);
                     const reconPaths = reconFiles.filter((f) => f.type === 'file').map((f) => f.path);
+                    const midReconPagePaths = reconPaths.filter((p) => p.startsWith('src/pages/') && p.endsWith('.tsx'));
+                    const midReconPageContents = await getMultipleFileContents(fullName, midReconPagePaths);
+                    const midReconFileMap = new Map(midReconPageContents.map((f) => [f.path, f.content]));
                     const reconApp = await getFileContent(fullName, 'src/App.tsx');
-                    const reconciled = reconcileAppRoutes(reconPaths, architecture.pages || [], reconApp || undefined);
+                    const reconciled = reconcileAppRoutes(reconPaths, architecture.pages || [], reconApp || undefined, midReconFileMap);
                     if (reconciled) {
                       await pushFiles(fullName, [reconciled], 'fix: re-reconcile App.tsx after intermediate build fix', projectId);
                     }

@@ -353,7 +353,8 @@ export function reconcileAppRoutes(
     return buildFreshApp(matched);
   }
 
-  const lines = existingAppContent.split('\n');
+  const sanitizedContent = stripBrowserRouter(existingAppContent);
+  const lines = sanitizedContent.split('\n');
   const outputLines: string[] = [];
   const pageImportRegex = /^import\s+(?:\{?\s*)?(\w+)(?:\s*\}?)?\s+from\s+['"]\.\/pages\//;
   const routesCloseRegex = /^(\s*)<\/Routes>/;
@@ -1057,5 +1058,44 @@ export function batchFixKnownPatterns(
     }
   }
 
+  const appFile = repoFiles.find((f) => f.path === 'src/App.tsx');
+  if (appFile) {
+    const current = fixedMap.get('src/App.tsx') || { path: 'src/App.tsx', content: appFile.content };
+    const stripped = stripBrowserRouter(current.content);
+    if (stripped !== current.content) {
+      fixedMap.set('src/App.tsx', { path: 'src/App.tsx', content: stripped });
+    }
+  }
+
   return Array.from(fixedMap.values());
+}
+
+export function stripBrowserRouter(content: string): string {
+  const routerImportPattern = /import\s*\{([^}]*)\}\s*from\s*['"]react-router-dom['"];?\n?/;
+  const match = content.match(routerImportPattern);
+  if (!match) return content;
+
+  const importedNames = match[1].split(',').map((n) => n.trim()).filter(Boolean);
+  const routerProviders = ['BrowserRouter', 'HashRouter', 'MemoryRouter', 'Router', 'StaticRouter'];
+  const hasRouterProvider = importedNames.some((n) => routerProviders.includes(n));
+  if (!hasRouterProvider) return content;
+
+  const cleanedImports = importedNames.filter((n) => !routerProviders.includes(n));
+  let result = content;
+
+  if (cleanedImports.length > 0) {
+    result = result.replace(routerImportPattern, `import { ${cleanedImports.join(', ')} } from 'react-router-dom';\n`);
+  } else {
+    result = result.replace(routerImportPattern, '');
+  }
+
+  for (const provider of routerProviders) {
+    const openTag = new RegExp(`\\s*<${provider}[^>]*>\\s*\\n?`, 'g');
+    const closeTag = new RegExp(`\\s*</${provider}>\\s*\\n?`, 'g');
+    result = result.replace(openTag, '\n');
+    result = result.replace(closeTag, '\n');
+  }
+
+  result = result.replace(/\n{3,}/g, '\n\n');
+  return result;
 }

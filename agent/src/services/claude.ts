@@ -9,6 +9,7 @@ import type {
 } from '../core/types.js';
 import { getProjectTemplate, findMissingPages, findMissingModels } from './project-templates.js';
 import { getAllTemplateFiles, sanitizePackageJson, PROHIBITED_PACKAGES } from './scaffold-templates.js';
+import { stripBrowserRouter } from './build-intelligence.js';
 
 const MODELS = {
   opus: 'claude-opus-4-20250514',
@@ -213,6 +214,10 @@ function extractText(response: Anthropic.Message): string {
     if (block.type === 'text') return block.text;
   }
   return '';
+}
+
+function isResponseTruncated(response: Anthropic.Message): boolean {
+  return response.stop_reason === 'max_tokens';
 }
 
 function safeParseJSON<T>(text: string, fallback: T): T {
@@ -799,8 +804,13 @@ FILE OUTPUT FORMAT:
 - Wrap each file in a fenced code block
 - Use the exact path relative to project root (e.g., src/App.tsx)
 
+ROUTER RULE (CRITICAL - violating this causes a white screen crash in production):
+- BrowserRouter is ALREADY in src/main.tsx. NEVER use BrowserRouter, HashRouter, MemoryRouter, or any Router provider in App.tsx or any other file.
+- App.tsx must ONLY use <Routes> and <Route> from react-router-dom. NO Router wrapper.
+- If you import BrowserRouter anywhere, the app will crash with "You cannot render a <Router> inside another <Router>".
+
 GENERATE THESE APPLICATION FILES:
-- src/App.tsx (ALL routes defined here, imports ALL page components)
+- src/App.tsx (ALL routes defined here using <Routes> and <Route> ONLY - NO BrowserRouter)
 - src/components/Layout.tsx (shared layout with nav + footer, responsive hamburger)
 - src/components/Navbar.tsx (sticky, responsive, brand-colored${hasBackend ? ', auth-aware' : ''})
 - src/components/Footer.tsx (professional with links, social, copyright)
@@ -832,6 +842,10 @@ DESIGN RULES:
   let aiFiles = parseCodeBlocks(text);
   await trackUsage(model, response.usage.input_tokens, response.usage.output_tokens, 'scaffold', project.id);
 
+  if (isResponseTruncated(response)) {
+    await logger.warn(`Scaffold response was truncated (max_tokens reached). ${aiFiles.length} files parsed from partial output. Some pages may be missing.`, 'development', project.id);
+  }
+
   const configPaths = new Set(templateFiles.map((f) => f.path));
   aiFiles = aiFiles.filter((f) => !configPaths.has(f.path));
 
@@ -844,6 +858,14 @@ DESIGN RULES:
     f.path !== 'index.html' &&
     f.path !== '.gitignore'
   );
+
+  const appTsxIdx = aiFiles.findIndex((f) => f.path === 'src/App.tsx');
+  if (appTsxIdx >= 0) {
+    aiFiles[appTsxIdx] = {
+      ...aiFiles[appTsxIdx],
+      content: stripBrowserRouter(aiFiles[appTsxIdx].content),
+    };
+  }
 
   const allFiles = [...templateFiles, ...aiFiles];
 
@@ -1159,6 +1181,7 @@ FORBIDDEN IMPORTS (NEVER use these):
 - Any path not listed in "OTHER FILES IN PROJECT" or created in this response
 - @/ path aliases (use relative paths: ./ or ../)
 - react-native, expo, @mui/*, styled-components, axios, lodash, moment, @headlessui/*, @radix-ui/*
+- BrowserRouter, HashRouter, MemoryRouter from react-router-dom (Router is ALREADY in main.tsx -- using it again crashes the app)
 - Hypothetical files or files that "might be created later" by another module
 
 IMPLEMENTATION RULES:
@@ -1258,6 +1281,10 @@ Generate ALL ${module.pages.length} pages completely. Every page must be product
   const files = parseCodeBlocks(text);
   await trackUsage(model, response.usage.input_tokens, response.usage.output_tokens, 'module_code', project.id);
 
+  if (isResponseTruncated(response)) {
+    await logger.warn(`Module ${module.name} response was truncated (max_tokens). ${files.length}/${module.pages.length} pages may have been generated.`, 'development', project.id);
+  }
+
   return {
     files,
     explanation: text.replace(/```[\s\S]*?```/g, '').trim().slice(0, 500),
@@ -1290,6 +1317,8 @@ Analyze the project and identify:
 4. Any import statements referencing files that don't exist in the project
 
 Also generate fix files for any critical issues (missing App.tsx routes, broken imports).
+
+CRITICAL: If generating a fix for App.tsx, NEVER include BrowserRouter/HashRouter/MemoryRouter. BrowserRouter is already in main.tsx. App.tsx must ONLY use <Routes> and <Route>.
 
 Output JSON only:
 {
@@ -1431,6 +1460,7 @@ RULES:
 - NEVER introduce React Native or Expo dependencies
 - Every import MUST reference a file that actually exists in the project file list below
 - If an import references a file that does not exist, REMOVE the import and the code using it
+- CRITICAL: BrowserRouter is in main.tsx. NEVER add BrowserRouter/HashRouter/MemoryRouter to App.tsx or any other file. App.tsx must ONLY use <Routes> and <Route>.
 ${previousAttempts.length > 0 ? '- Previous fix attempts failed. You MUST take a COMPLETELY different approach.' : ''}${allFilePathsSection}`;
 
   const userPrompt = `BUILD ERRORS (attempt ${attempt}/${maxAttempts}, strategy: ${strategy}):
@@ -1467,6 +1497,11 @@ Fix all errors. Output complete corrected files.`;
   if (pkgFix) {
     const { sanitized } = sanitizePackageJson(pkgFix.content);
     pkgFix.content = sanitized;
+  }
+
+  const appFix = files.find((f) => f.path === 'src/App.tsx');
+  if (appFix) {
+    appFix.content = stripBrowserRouter(appFix.content);
   }
 
   return {
