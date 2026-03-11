@@ -14,7 +14,6 @@ import DomainsPage from './pages/DomainsPage';
 import ActivityPage from './pages/ActivityPage';
 import InfrastructurePage from './pages/InfrastructurePage';
 import SettingsPage from './pages/SettingsPage';
-import WhatsAppPage from './pages/WhatsAppPage';
 import InboxPage from './pages/InboxPage';
 import DirectorPage from './pages/DirectorPage';
 import type { ReactNode } from 'react';
@@ -63,7 +62,6 @@ function AppRoutes() {
         <Route path="chat/:projectId" element={<AgentChatPage />} />
         <Route path="qa" element={<QAReviewPage />} />
         <Route path="qa/:projectId" element={<QAReviewPage />} />
-        <Route path="whatsapp" element={<WhatsAppPage />} />
         <Route path="inbox" element={<InboxPage />} />
         <Route path="director" element={<DirectorPage />} />
         <Route path="domains" element={<DomainsPage />} />

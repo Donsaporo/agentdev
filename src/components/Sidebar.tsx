@@ -14,7 +14,6 @@ import {
   LogOut,
   Menu,
   X,
-  MessageCircle,
   Inbox,
   Shield,
 } from 'lucide-react';
@@ -31,7 +30,6 @@ const navItems = [
   { to: '/qa', icon: MonitorCheck, label: 'QA Review', badgeKey: 'qa' as const },
   { to: '/inbox', icon: Inbox, label: 'Inbox WA', badgeKey: 'inbox' as const },
   { to: '/director', icon: Shield, label: 'Director' },
-  { to: '/whatsapp', icon: MessageCircle, label: 'WA Config' },
   { to: '/domains', icon: Globe, label: 'Domains' },
   { to: '/infrastructure', icon: Server, label: 'Infrastructure' },
   { to: '/activity', icon: Activity, label: 'Activity' },
