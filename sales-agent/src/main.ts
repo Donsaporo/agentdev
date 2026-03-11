@@ -10,11 +10,11 @@ let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let realtimeChannel: ReturnType<ReturnType<typeof getSupabase>['channel']> | null = null;
 
 async function updateHeartbeat(supabase: ReturnType<typeof getSupabase>) {
-  await supabase.from('agent_heartbeat').upsert(
+  await supabase.from('sales_agent_heartbeat').upsert(
     {
       id: 'sales-agent',
       status: 'online',
-      last_heartbeat: new Date().toISOString(),
+      last_seen: new Date().toISOString(),
       version: '1.0.0',
     },
     { onConflict: 'id' }
@@ -23,8 +23,8 @@ async function updateHeartbeat(supabase: ReturnType<typeof getSupabase>) {
 
 async function setOffline(supabase: ReturnType<typeof getSupabase>) {
   await supabase
-    .from('agent_heartbeat')
-    .update({ status: 'offline', last_heartbeat: new Date().toISOString() })
+    .from('sales_agent_heartbeat')
+    .update({ status: 'offline', last_seen: new Date().toISOString() })
     .eq('id', 'sales-agent');
 }
 

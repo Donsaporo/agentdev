@@ -13,7 +13,9 @@ export interface Persona {
   communication_style: string;
   greeting_template: string;
   farewell_template: string;
-  response_length: string;
+  response_length_preference: string;
+  emoji_usage: string;
+  formality_level: string;
 }
 
 let cachedPersonas: Persona[] = [];

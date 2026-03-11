@@ -5,18 +5,18 @@ const log = createLogger('human-simulator');
 
 export function calculateDelay(responseText: string): number {
   const wordCount = responseText.split(/\s+/).length;
-  const baseReadTime = Math.min(wordCount * 200, 8000);
-  const typingTime = Math.min(wordCount * 120, 6000);
-  const thinkingTime = 1000 + Math.random() * 2000;
+  const readTime = Math.min(wordCount * 300, 10_000);
+  const typingTime = Math.min(wordCount * 150, 8_000);
+  const thinkingTime = 2_000 + Math.random() * 5_000;
 
-  const total = thinkingTime + baseReadTime * 0.3 + typingTime * 0.5;
+  const total = thinkingTime + readTime * 0.4 + typingTime * 0.5;
 
   const clamped = Math.max(
     config.agent.minResponseDelay,
     Math.min(total, config.agent.maxResponseDelay)
   );
 
-  const jitter = clamped * (0.8 + Math.random() * 0.4);
+  const jitter = clamped * (0.85 + Math.random() * 0.3);
 
   log.debug('Delay calculated', {
     words: wordCount,
@@ -31,9 +31,9 @@ export function sleep(ms: number): Promise<void> {
 }
 
 export function shouldSplitMessage(text: string): string[] {
-  if (text.length < 200) return [text];
+  if (text.length < 160) return [text];
 
-  const sentences = text.match(/[^.!?]+[.!?]+/g) || [text];
+  const sentences = text.match(/[^.!?\n]+[.!?\n]+/g) || [text];
 
   if (sentences.length <= 2) return [text];
 
@@ -41,7 +41,7 @@ export function shouldSplitMessage(text: string): string[] {
   let current = '';
 
   for (const sentence of sentences) {
-    if ((current + sentence).length > 300 && current.length > 50) {
+    if ((current + sentence).length > 250 && current.length > 30) {
       chunks.push(current.trim());
       current = sentence;
     } else {

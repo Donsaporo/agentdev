@@ -40,8 +40,10 @@ export const config = {
   agent: {
     heartbeatInterval: 60_000,
     maxRetries: 3,
-    minResponseDelay: 3_000,
-    maxResponseDelay: 15_000,
+    minResponseDelay: 20_000,
+    maxResponseDelay: 60_000,
     typingIndicatorLead: 2_000,
+    messageBatchWindow: 10_000,
+    messageBatchExtraDelay: 5_000,
   },
 } as const;

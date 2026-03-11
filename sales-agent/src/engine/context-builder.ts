@@ -39,7 +39,7 @@ export async function buildContext(
     contactPhone: contact?.phone_number || '',
     contactEmail: contact?.email || '',
     contactCompany: contact?.company || '',
-    leadStage: contact?.lead_stage || 'new',
+    leadStage: contact?.lead_stage || 'vacio',
     conversationCategory: 'new_lead',
     messageHistory: messages.map((m) => ({
       role: m.direction === 'inbound' ? 'user' : 'assistant',

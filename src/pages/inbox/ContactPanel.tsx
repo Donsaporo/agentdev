@@ -17,13 +17,10 @@ import { useToast } from '../../contexts/ToastContext';
 import type { WhatsAppConversation, WhatsAppContact, SalesAgentPersona, ConversationCategory } from '../../lib/types';
 
 const LEAD_STAGES = [
-  { value: 'new', label: 'Nuevo', color: 'bg-blue-500/20 text-blue-400' },
-  { value: 'contacted', label: 'Contactado', color: 'bg-cyan-500/20 text-cyan-400' },
-  { value: 'qualified', label: 'Calificado', color: 'bg-amber-500/20 text-amber-400' },
-  { value: 'proposal', label: 'Propuesta', color: 'bg-orange-500/20 text-orange-400' },
-  { value: 'negotiation', label: 'Negociacion', color: 'bg-rose-500/20 text-rose-400' },
-  { value: 'won', label: 'Ganado', color: 'bg-emerald-500/20 text-emerald-400' },
-  { value: 'lost', label: 'Perdido', color: 'bg-red-500/20 text-red-400' },
+  { value: 'vacio', label: 'Vacio', color: 'bg-slate-500/20 text-slate-400' },
+  { value: 'lead', label: 'Lead', color: 'bg-blue-500/20 text-blue-400' },
+  { value: 'cliente_nuevo', label: 'Cliente Nuevo', color: 'bg-emerald-500/20 text-emerald-400' },
+  { value: 'cliente_terminado', label: 'Cliente Terminado', color: 'bg-cyan-500/20 text-cyan-400' },
 ];
 
 const CATEGORIES: { value: ConversationCategory; label: string }[] = [
@@ -50,7 +47,7 @@ export default function ContactPanel({ conversation, contact, personas, onClose 
     email: contact?.email || '',
     company: contact?.company || '',
     notes: contact?.notes || '',
-    lead_stage: contact?.lead_stage || 'new',
+    lead_stage: contact?.lead_stage || 'vacio',
   });
   const [saving, setSaving] = useState(false);
 
@@ -93,7 +90,7 @@ export default function ContactPanel({ conversation, contact, personas, onClose 
   }
 
   const name = contact?.display_name || contact?.profile_name || 'Desconocido';
-  const currentStage = LEAD_STAGES.find((s) => s.value === (contact?.lead_stage || 'new'));
+  const currentStage = LEAD_STAGES.find((s) => s.value === (contact?.lead_stage || 'vacio'));
 
   return (
     <div className="flex flex-col h-full">

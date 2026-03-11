@@ -1,14 +1,16 @@
 import { useState, useEffect } from 'react';
 import {
   MessageCircle,
-  Users,
-  Calendar,
   AlertTriangle,
   TrendingUp,
   Clock,
   Bot,
+  Wifi,
+  WifiOff,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
+import { formatDistanceToNow } from 'date-fns';
+import { es } from 'date-fns/locale';
 
 interface MetricCard {
   label: string;
@@ -18,8 +20,15 @@ interface MetricCard {
   bgColor: string;
 }
 
+interface HeartbeatInfo {
+  status: string;
+  last_seen: string;
+  version: string;
+}
+
 export default function DirectorMetrics() {
   const [metrics, setMetrics] = useState<MetricCard[]>([]);
+  const [heartbeat, setHeartbeat] = useState<HeartbeatInfo | null>(null);
   const [recentActions, setRecentActions] = useState<Array<{
     id: string;
     action_type: string;
@@ -45,6 +54,7 @@ export default function DirectorMetrics() {
       { count: escalationsOpen },
       { count: feedbackPending },
       { data: actions },
+      { data: hb },
     ] = await Promise.all([
       supabase.from('whatsapp_conversations').select('id', { count: 'exact', head: true }),
       supabase.from('whatsapp_conversations').select('id', { count: 'exact', head: true }).eq('status', 'active'),
@@ -56,7 +66,14 @@ export default function DirectorMetrics() {
         .select('id, action_type, output_summary, model_used, tokens_input, tokens_output, created_at')
         .order('created_at', { ascending: false })
         .limit(10),
+      supabase
+        .from('sales_agent_heartbeat')
+        .select('status, last_seen, version')
+        .eq('id', 'sales-agent')
+        .maybeSingle(),
     ]);
+
+    setHeartbeat(hb);
 
     setMetrics([
       {
@@ -100,6 +117,12 @@ export default function DirectorMetrics() {
     setLoading(false);
   }
 
+  function isAgentOnline(): boolean {
+    if (!heartbeat || heartbeat.status !== 'online') return false;
+    const lastSeen = new Date(heartbeat.last_seen).getTime();
+    return Date.now() - lastSeen < 120_000;
+  }
+
   if (loading) {
     return (
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
@@ -114,8 +137,34 @@ export default function DirectorMetrics() {
     );
   }
 
+  const online = isAgentOnline();
+
   return (
     <div className="space-y-6">
+      <div className="glass-card p-4 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${online ? 'bg-emerald-500/10' : 'bg-red-500/10'}`}>
+            {online ? (
+              <Wifi className="w-5 h-5 text-emerald-400" />
+            ) : (
+              <WifiOff className="w-5 h-5 text-red-400" />
+            )}
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-white">
+              Sales Agent {online ? 'En Linea' : 'Desconectado'}
+            </p>
+            <p className="text-xs text-slate-500">
+              {heartbeat?.last_seen
+                ? `Visto ${formatDistanceToNow(new Date(heartbeat.last_seen), { addSuffix: true, locale: es })}`
+                : 'Sin datos de heartbeat'}
+              {heartbeat?.version && ` - v${heartbeat.version}`}
+            </p>
+          </div>
+        </div>
+        <div className={`w-3 h-3 rounded-full ${online ? 'bg-emerald-500 animate-pulse' : 'bg-red-500'}`} />
+      </div>
+
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
         {metrics.map((m, i) => (
           <div key={i} className="glass-card p-5">

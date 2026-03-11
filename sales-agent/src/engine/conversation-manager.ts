@@ -1,4 +1,5 @@
 import { SupabaseClient } from '@supabase/supabase-js';
+import { config } from '../core/config.js';
 import { createLogger } from '../core/logger.js';
 import { getOrAssignPersona } from './persona-engine.js';
 import { buildContext } from './context-builder.js';
@@ -9,6 +10,7 @@ import { sendTextMessage, setTypingIndicator } from '../services/whatsapp.js';
 const log = createLogger('conversation-manager');
 
 const processingLock = new Set<string>();
+const pendingMessages = new Map<string, { messages: IncomingMessage[]; timer: ReturnType<typeof setTimeout> }>();
 
 interface IncomingMessage {
   id: string;
@@ -19,6 +21,59 @@ interface IncomingMessage {
 }
 
 export async function handleIncomingMessage(
+  supabase: SupabaseClient,
+  msg: IncomingMessage
+): Promise<void> {
+  const existing = pendingMessages.get(msg.conversationId);
+
+  if (existing) {
+    clearTimeout(existing.timer);
+    existing.messages.push(msg);
+    log.debug('Batching message', {
+      conversationId: msg.conversationId,
+      batchSize: existing.messages.length,
+    });
+
+    const extraDelay = config.agent.messageBatchExtraDelay * existing.messages.length;
+    existing.timer = setTimeout(() => {
+      processBatch(supabase, msg.conversationId);
+    }, Math.min(extraDelay, 30_000));
+    return;
+  }
+
+  pendingMessages.set(msg.conversationId, {
+    messages: [msg],
+    timer: setTimeout(() => {
+      processBatch(supabase, msg.conversationId);
+    }, config.agent.messageBatchWindow),
+  });
+}
+
+async function processBatch(supabase: SupabaseClient, conversationId: string): Promise<void> {
+  const batch = pendingMessages.get(conversationId);
+  pendingMessages.delete(conversationId);
+
+  if (!batch || batch.messages.length === 0) return;
+
+  const combined: IncomingMessage = {
+    id: batch.messages[batch.messages.length - 1].id,
+    conversationId,
+    contactId: batch.messages[0].contactId,
+    content: batch.messages.map((m) => m.content).filter(Boolean).join('\n'),
+    messageType: batch.messages[0].messageType,
+  };
+
+  if (batch.messages.length > 1) {
+    log.info('Processing batched messages', {
+      conversationId,
+      count: batch.messages.length,
+    });
+  }
+
+  await processMessage(supabase, combined);
+}
+
+async function processMessage(
   supabase: SupabaseClient,
   msg: IncomingMessage
 ): Promise<void> {
@@ -95,7 +150,7 @@ export async function handleIncomingMessage(
         await recordOutbound(supabase, msg.conversationId, msg.contactId, result.messageId, chunks[i]);
 
         if (i < chunks.length - 1) {
-          await sleep(800 + Math.random() * 1200);
+          await sleep(1_500 + Math.random() * 3_000);
         }
       }
     }
@@ -239,10 +294,11 @@ async function logAction(
     contact_id: contactId,
     persona_id: personaId,
     action_type: details.type,
-    input_data: { message: details.input },
-    output_data: { response: details.output, reasoning: details.reasoning },
+    input_summary: details.input.slice(0, 500),
+    output_summary: details.output.slice(0, 500),
     model_used: details.model,
-    input_tokens: details.inputTokens,
-    output_tokens: details.outputTokens,
+    tokens_input: details.inputTokens,
+    tokens_output: details.outputTokens,
+    metadata: { reasoning: details.reasoning },
   });
 }
