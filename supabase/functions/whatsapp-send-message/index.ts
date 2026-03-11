@@ -202,8 +202,7 @@ Deno.serve(async (req: Request) => {
       const appSecret = Deno.env.get("META_APP_SECRET");
       if (!appSecret) throw new Error("META_APP_SECRET not configured");
 
-      const appId = acct.meta_app_id;
-      if (!appId) throw new Error("No meta_app_id stored for this account");
+      const appId = acct.meta_app_id || "1393977296081412";
 
       const longLivedResp = await fetch(
         `${GRAPH_API}/oauth/access_token?grant_type=fb_exchange_token&client_id=${appId}&client_secret=${appSecret}&fb_exchange_token=${acct.access_token}`
