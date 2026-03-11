@@ -158,7 +158,10 @@ async function recordOutboundMessage(
 
   await supabase
     .from("whatsapp_conversations")
-    .update({ last_message_at: new Date().toISOString() })
+    .update({
+      last_message_at: new Date().toISOString(),
+      last_message_preview: content.slice(0, 100),
+    })
     .eq("id", conversationId);
 }
 

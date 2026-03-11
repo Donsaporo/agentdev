@@ -139,7 +139,7 @@ function extractMessageContent(message: Record<string, unknown>) {
 
 function detectProvider(req: Request, body: Record<string, unknown>): string {
   if (req.headers.get("D360-API-KEY")) return "360dialog";
-  if (req.headers.get("x-]360dialog-channel")) return "360dialog";
+  if (req.headers.get("x-360dialog-channel")) return "360dialog";
 
   const entries = (body.entry as Array<Record<string, unknown>>) || [];
   if (entries.length > 0) return "cloud_api";

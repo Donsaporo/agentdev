@@ -1,0 +1,58 @@
+import { config } from '../core/config.js';
+import { createLogger } from '../core/logger.js';
+
+const log = createLogger('whatsapp');
+
+interface SendResult {
+  messageId: string;
+  success: boolean;
+}
+
+export async function sendTextMessage(to: string, text: string): Promise<SendResult> {
+  const recipient = to.replace(/[\s\-\+\(\)]/g, '');
+
+  const payload = {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to: recipient,
+    type: 'text',
+    text: { body: text },
+  };
+
+  const res = await fetch(`${config.d360.baseUrl}/messages`, {
+    method: 'POST',
+    headers: {
+      'D360-API-KEY': config.d360.apiKey,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await res.json();
+
+  if (!res.ok) {
+    const errMsg =
+      data.errors?.[0]?.details ||
+      data.error?.message ||
+      data.meta?.developer_message ||
+      JSON.stringify(data);
+    log.error('Failed to send message', { to: recipient, error: errMsg });
+    throw new Error(errMsg);
+  }
+
+  const messageId = data.messages?.[0]?.id || '';
+  log.info('Message sent', { to: recipient, messageId });
+
+  return { messageId, success: true };
+}
+
+export async function setTypingIndicator(
+  supabase: ReturnType<typeof import('../core/supabase.js').getSupabase>,
+  conversationId: string,
+  typing: boolean
+): Promise<void> {
+  await supabase
+    .from('whatsapp_conversations')
+    .update({ is_agent_typing: typing })
+    .eq('id', conversationId);
+}

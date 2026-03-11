@@ -1,0 +1,16 @@
+[Unit]
+Description=Obzide Sales Agent
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/obzide-sales
+ExecStart=/usr/bin/node dist/main.js
+Restart=always
+RestartSec=10
+Environment=NODE_ENV=production
+EnvironmentFile=/opt/obzide-sales/.env
+
+[Install]
+WantedBy=multi-user.target
