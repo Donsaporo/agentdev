@@ -178,11 +178,11 @@ Deno.serve(async (req: Request) => {
 
     const supabase = getSupabase();
     const body = await req.json();
-    const { account_id, to, message, type = "text", template_name, language_code = "en_US" } = body;
+    const { action, account_id, to, message, type = "text", template_name, language_code = "en_US", pin } = body;
 
-    if (!account_id || !to) {
+    if (!account_id) {
       return new Response(
-        JSON.stringify({ error: "account_id and to are required" }),
+        JSON.stringify({ error: "account_id is required" }),
         {
           status: 400,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -191,6 +191,45 @@ Deno.serve(async (req: Request) => {
     }
 
     const account = await getAccount(supabase, account_id);
+
+    if (action === "register") {
+      const regPin = pin || "147258";
+      const regRes = await fetch(`${GRAPH_API}/${account.phone_number_id}/register`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${account.access_token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          messaging_product: "whatsapp",
+          pin: regPin,
+        }),
+      });
+
+      const regData = await regRes.json();
+      if (!regRes.ok) {
+        throw new Error(regData.error?.message || `Registration failed: ${regRes.status}`);
+      }
+
+      return new Response(
+        JSON.stringify({ success: true, message: "Phone number registered successfully" }),
+        {
+          status: 200,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    if (!to) {
+      return new Response(
+        JSON.stringify({ error: "to is required" }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
+    }
+
     const recipient = to.replace(/[\s\-\+\(\)]/g, "");
 
     let result;

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Phone, Trash2, CheckCircle2, AlertCircle, Clock, Loader2, Signal, Send, MessageSquare } from 'lucide-react';
+import { Phone, Trash2, CheckCircle2, AlertCircle, Clock, Loader2, Signal, Send, MessageSquare, PhoneCall } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import type { WhatsAppBusinessAccount } from '../../lib/types';
 
@@ -33,6 +33,35 @@ export default function WhatsAppAccountCard({ account, onDelete, deleting }: Wha
   const [sendMsg, setSendMsg] = useState('');
   const [sending, setSending] = useState(false);
   const [sendResult, setSendResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const [registering, setRegistering] = useState(false);
+  const [registered, setRegistered] = useState(false);
+
+  async function handleRegister() {
+    setRegistering(true);
+    setSendResult(null);
+    try {
+      const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/whatsapp-send-message`;
+      const res = await fetch(apiUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ action: 'register', account_id: account.id }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        setSendResult({ ok: false, text: data.error || 'Registration failed' });
+      } else {
+        setSendResult({ ok: true, text: 'Phone number registered with Cloud API' });
+        setRegistered(true);
+      }
+    } catch (err) {
+      setSendResult({ ok: false, text: err instanceof Error ? err.message : 'Network error' });
+    } finally {
+      setRegistering(false);
+    }
+  }
 
   async function handleSend(type: 'text' | 'template') {
     if (!sendTo.trim()) return;
@@ -138,6 +167,21 @@ export default function WhatsAppAccountCard({ account, onDelete, deleting }: Wha
 
       {showSend && (
         <div className="mt-4 p-4 rounded-xl bg-white/[0.03] border border-white/[0.06] space-y-3 animate-fade-in">
+          {!registered && (
+            <div className="flex items-center justify-between gap-3 p-3 rounded-lg bg-amber-500/5 border border-amber-500/10">
+              <div className="text-xs text-amber-300/80">
+                Si recibes error "Account not registered", registra el numero primero:
+              </div>
+              <button
+                onClick={handleRegister}
+                disabled={registering}
+                className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 transition-colors disabled:opacity-50 flex-shrink-0"
+              >
+                {registering ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PhoneCall className="w-3.5 h-3.5" />}
+                Registrar
+              </button>
+            </div>
+          )}
           <div className="flex items-center gap-2 text-sm font-medium text-slate-300">
             <Send className="w-3.5 h-3.5 text-emerald-400" />
             Enviar mensaje de prueba
