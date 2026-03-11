@@ -1,4 +1,5 @@
-import { Phone, Trash2, RefreshCw, CheckCircle2, AlertCircle, Clock, Loader2, Signal } from 'lucide-react';
+import { useState } from 'react';
+import { Phone, Trash2, CheckCircle2, AlertCircle, Clock, Loader2, Signal, Send, MessageSquare } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import type { WhatsAppBusinessAccount } from '../../lib/types';
 
@@ -26,6 +27,55 @@ export default function WhatsAppAccountCard({ account, onDelete, deleting }: Wha
   const status = statusConfig[account.status] || statusConfig.pending;
   const StatusIcon = status.icon;
   const quality = qualityColors[account.quality_rating] || qualityColors.unknown;
+
+  const [showSend, setShowSend] = useState(false);
+  const [sendTo, setSendTo] = useState('');
+  const [sendMsg, setSendMsg] = useState('');
+  const [sending, setSending] = useState(false);
+  const [sendResult, setSendResult] = useState<{ ok: boolean; text: string } | null>(null);
+
+  async function handleSend(type: 'text' | 'template') {
+    if (!sendTo.trim()) return;
+    if (type === 'text' && !sendMsg.trim()) return;
+
+    setSending(true);
+    setSendResult(null);
+
+    try {
+      const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/whatsapp-send-message`;
+      const payload: Record<string, string> = {
+        account_id: account.id,
+        to: sendTo.trim(),
+        type,
+      };
+      if (type === 'text') payload.message = sendMsg.trim();
+      if (type === 'template') {
+        payload.template_name = 'hello_world';
+        payload.language_code = 'en_US';
+      }
+
+      const res = await fetch(apiUrl, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        setSendResult({ ok: false, text: data.error || 'Error sending message' });
+      } else {
+        setSendResult({ ok: true, text: `Sent! ID: ${data.message_id}` });
+        setSendMsg('');
+      }
+    } catch (err) {
+      setSendResult({ ok: false, text: err instanceof Error ? err.message : 'Network error' });
+    } finally {
+      setSending(false);
+    }
+  }
 
   return (
     <div className="glass-card-hover p-5">
@@ -62,6 +112,19 @@ export default function WhatsAppAccountCard({ account, onDelete, deleting }: Wha
         </div>
 
         <div className="flex items-center gap-2 flex-shrink-0">
+          {account.status === 'connected' && (
+            <button
+              onClick={() => { setShowSend(!showSend); setSendResult(null); }}
+              className={`p-2 rounded-lg transition-all ${
+                showSend
+                  ? 'text-emerald-400 bg-emerald-500/10'
+                  : 'text-slate-500 hover:text-emerald-400 hover:bg-emerald-500/10'
+              }`}
+              title="Send test message"
+            >
+              <MessageSquare className="w-4 h-4" />
+            </button>
+          )}
           <button
             onClick={() => onDelete(account.id)}
             disabled={deleting}
@@ -72,6 +135,55 @@ export default function WhatsAppAccountCard({ account, onDelete, deleting }: Wha
           </button>
         </div>
       </div>
+
+      {showSend && (
+        <div className="mt-4 p-4 rounded-xl bg-white/[0.03] border border-white/[0.06] space-y-3 animate-fade-in">
+          <div className="flex items-center gap-2 text-sm font-medium text-slate-300">
+            <Send className="w-3.5 h-3.5 text-emerald-400" />
+            Enviar mensaje de prueba
+          </div>
+          <input
+            type="text"
+            placeholder="Numero destino (ej: 50766270927)"
+            value={sendTo}
+            onChange={e => setSendTo(e.target.value)}
+            className="w-full px-3 py-2 rounded-lg bg-white/[0.04] border border-white/[0.08] text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500/40 transition-colors"
+          />
+          <textarea
+            placeholder="Mensaje de texto..."
+            value={sendMsg}
+            onChange={e => setSendMsg(e.target.value)}
+            rows={2}
+            className="w-full px-3 py-2 rounded-lg bg-white/[0.04] border border-white/[0.08] text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500/40 transition-colors resize-none"
+          />
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => handleSend('text')}
+              disabled={sending || !sendTo.trim() || !sendMsg.trim()}
+              className="btn-primary text-xs px-3 py-1.5 disabled:opacity-40"
+            >
+              {sending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+              Enviar texto
+            </button>
+            <button
+              onClick={() => handleSend('template')}
+              disabled={sending || !sendTo.trim()}
+              className="btn-ghost text-xs px-3 py-1.5 disabled:opacity-40"
+            >
+              Enviar template hello_world
+            </button>
+          </div>
+          {sendResult && (
+            <div className={`text-xs px-3 py-2 rounded-lg ${
+              sendResult.ok
+                ? 'bg-emerald-500/10 text-emerald-400'
+                : 'bg-red-500/10 text-red-400'
+            }`}>
+              {sendResult.text}
+            </div>
+          )}
+        </div>
+      )}
 
       {account.status_message && (
         <div className="mt-3 text-xs text-slate-500 bg-white/[0.02] px-3 py-2 rounded-lg">
