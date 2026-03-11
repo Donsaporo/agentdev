@@ -120,9 +120,9 @@ export default function EmbeddedSignup({ onSuccess }: EmbeddedSignupProps) {
     setConnecting(true);
     sessionInfoRef.current = {};
 
+    const trimmedConfigId = configId.trim();
+
     const loginParams: Record<string, unknown> = {
-      scope: 'whatsapp_business_management,whatsapp_business_messaging,business_management',
-      config_id: configId.trim() || undefined,
       response_type: 'code',
       override_default_response_type: true,
       extras: {
@@ -131,6 +131,12 @@ export default function EmbeddedSignup({ onSuccess }: EmbeddedSignupProps) {
         sessionInfoVersion: '3',
       },
     };
+
+    if (trimmedConfigId) {
+      loginParams.config_id = trimmedConfigId;
+    } else {
+      loginParams.scope = 'whatsapp_business_management,whatsapp_business_messaging';
+    }
 
     window.FB.login((response: FBLoginResponse) => {
       if (response.authResponse?.code) {
