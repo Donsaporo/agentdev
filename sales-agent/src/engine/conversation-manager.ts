@@ -6,6 +6,8 @@ import { buildContext } from './context-builder.js';
 import { decide, AgentAction } from './decision-engine.js';
 import { calculateDelay, sleep, shouldSplitMessage } from './human-simulator.js';
 import { sendTextMessage, setTypingIndicator } from '../services/whatsapp.js';
+import { scheduleMeeting } from '../services/calendar.js';
+import { joinMeeting } from '../services/recall.js';
 
 const log = createLogger('conversation-manager');
 
@@ -261,7 +263,50 @@ async function executeActions(
           await handleEscalation(supabase, conversationId, contactId, action.params.reason);
           break;
 
-        case 'schedule_meeting':
+        case 'schedule_meeting': {
+          const contactData = await supabase
+            .from('whatsapp_contacts')
+            .select('display_name, email')
+            .eq('id', contactId)
+            .maybeSingle();
+
+          const meeting = await scheduleMeeting(
+            action.params.title || `Reunion Obzide - ${contactData?.data?.display_name || 'Cliente'}`,
+            action.params.datetime,
+            parseInt(action.params.duration || '30', 10),
+            contactData?.data?.email || action.params.email
+          );
+
+          if (meeting) {
+            await supabase.from('sales_meetings').insert({
+              conversation_id: conversationId,
+              contact_id: contactId,
+              google_event_id: meeting.eventId,
+              title: meeting.title,
+              start_time: meeting.start,
+              end_time: meeting.end,
+              meet_link: meeting.meetLink,
+              status: 'scheduled',
+            });
+
+            if (meeting.meetLink) {
+              const botId = await joinMeeting(meeting.meetLink);
+              if (botId) {
+                await supabase
+                  .from('sales_meetings')
+                  .update({ recall_bot_id: botId })
+                  .eq('google_event_id', meeting.eventId);
+              }
+            }
+
+            log.info('Meeting scheduled and recorded', {
+              eventId: meeting.eventId,
+              meetLink: meeting.meetLink,
+            });
+          }
+          break;
+        }
+
         case 'create_crm_lead':
           log.info(`Action ${action.type} queued (integration pending)`, action.params);
           break;

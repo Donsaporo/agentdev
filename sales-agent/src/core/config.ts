@@ -32,6 +32,8 @@ export const config = {
   google: {
     clientId: optional('GOOGLE_CLIENT_ID'),
     clientSecret: optional('GOOGLE_CLIENT_SECRET'),
+    refreshToken: optional('GOOGLE_REFRESH_TOKEN'),
+    calendarId: optional('GOOGLE_CALENDAR_ID', 'primary'),
   },
   recall: {
     apiKey: optional('RECALL_API_KEY'),
