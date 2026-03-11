@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Phone, Trash2, CheckCircle2, AlertCircle, Clock, Loader2, Signal, Send, MessageSquare, PhoneCall, ShieldCheck, Info } from 'lucide-react';
+import { Phone, Trash2, CheckCircle2, AlertCircle, Clock, Loader2, Signal, Send, MessageSquare, PhoneCall, ShieldCheck, Info, RefreshCw } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import type { WhatsAppBusinessAccount } from '../../lib/types';
 
@@ -123,6 +123,26 @@ export default function WhatsAppAccountCard({ account, onDelete, deleting }: Wha
     }
   }
 
+  const [refreshing, setRefreshing] = useState(false);
+
+  async function handleRefreshToken() {
+    setRefreshing(true);
+    setSendResult(null);
+    try {
+      const data = await callAction({ action: 'refresh_token' });
+      setSendResult({
+        ok: true,
+        text: data.expires_in_days
+          ? `Token renovado - expira en ${data.expires_in_days} dias`
+          : 'Token renovado exitosamente',
+      });
+    } catch (err) {
+      setSendResult({ ok: false, text: err instanceof Error ? err.message : 'Error' });
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
   async function handleSend(type: 'text' | 'template') {
     if (!sendTo.trim()) return;
     if (type === 'text' && !sendMsg.trim()) return;
@@ -203,6 +223,16 @@ export default function WhatsAppAccountCard({ account, onDelete, deleting }: Wha
         <div className="flex items-center gap-2 flex-shrink-0">
           {account.status === 'connected' && (
             <button
+              onClick={handleRefreshToken}
+              disabled={refreshing}
+              className="p-2 rounded-lg text-slate-500 hover:text-sky-400 hover:bg-sky-500/10 transition-all disabled:opacity-50"
+              title="Renovar token de acceso"
+            >
+              {refreshing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+            </button>
+          )}
+          {account.status === 'connected' && (
+            <button
               onClick={() => { setShowSend(!showSend); setSendResult(null); }}
               className={`p-2 rounded-lg transition-all ${
                 showSend
@@ -224,6 +254,14 @@ export default function WhatsAppAccountCard({ account, onDelete, deleting }: Wha
           </button>
         </div>
       </div>
+
+      {!showSend && sendResult && (
+        <div className={`mt-3 text-xs px-3 py-2 rounded-lg ${
+          sendResult.ok ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'
+        }`}>
+          {sendResult.text}
+        </div>
+      )}
 
       {showSend && (
         <div className="mt-4 p-4 rounded-xl bg-white/[0.03] border border-white/[0.06] space-y-3 animate-fade-in">

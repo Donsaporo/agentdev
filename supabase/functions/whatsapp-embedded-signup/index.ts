@@ -62,7 +62,23 @@ async function exchangeCodeForToken(code: string, appId: string): Promise<string
     throw new Error("No se recibio access_token en la respuesta de Meta");
   }
 
-  return data.access_token as string;
+  const shortLivedToken = data.access_token as string;
+
+  const longLivedResp = await fetch(
+    `${GRAPH_API}/oauth/access_token?grant_type=fb_exchange_token&client_id=${appId}&client_secret=${appSecret}&fb_exchange_token=${shortLivedToken}`
+  );
+  const longLivedData = await longLivedResp.json();
+
+  if (longLivedData.access_token) {
+    console.log(
+      "Exchanged for long-lived token, expires in:",
+      longLivedData.expires_in ? `${Math.round(longLivedData.expires_in / 86400)} days` : "unknown"
+    );
+    return longLivedData.access_token as string;
+  }
+
+  console.warn("Long-lived token exchange failed, using short-lived token:", longLivedData.error?.message);
+  return shortLivedToken;
 }
 
 async function graphGet(path: string, token: string) {

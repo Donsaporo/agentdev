@@ -190,6 +190,54 @@ Deno.serve(async (req: Request) => {
       );
     }
 
+    if (action === "refresh_token") {
+      const { data: acct, error: acctErr } = await supabase
+        .from("whatsapp_business_accounts")
+        .select("*")
+        .eq("id", account_id)
+        .maybeSingle();
+
+      if (acctErr || !acct) throw new Error("Account not found");
+
+      const appSecret = Deno.env.get("META_APP_SECRET");
+      if (!appSecret) throw new Error("META_APP_SECRET not configured");
+
+      const appId = acct.meta_app_id;
+      if (!appId) throw new Error("No meta_app_id stored for this account");
+
+      const longLivedResp = await fetch(
+        `${GRAPH_API}/oauth/access_token?grant_type=fb_exchange_token&client_id=${appId}&client_secret=${appSecret}&fb_exchange_token=${acct.access_token}`
+      );
+      const longLivedData = await longLivedResp.json();
+
+      if (longLivedData.error) {
+        throw new Error(longLivedData.error.message || "Token refresh failed");
+      }
+
+      if (!longLivedData.access_token) {
+        throw new Error("No access_token in refresh response");
+      }
+
+      const { error: updateErr } = await supabase
+        .from("whatsapp_business_accounts")
+        .update({
+          access_token: longLivedData.access_token,
+          status_message: `Token renovado - expira en ${longLivedData.expires_in ? Math.round(longLivedData.expires_in / 86400) + " dias" : "~60 dias"}`,
+        })
+        .eq("id", account_id);
+
+      if (updateErr) throw new Error(updateErr.message);
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          message: `Token renovado exitosamente`,
+          expires_in_days: longLivedData.expires_in ? Math.round(longLivedData.expires_in / 86400) : null,
+        }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
     const account = await getAccount(supabase, account_id);
 
     if (action === "register") {
