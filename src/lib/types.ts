@@ -280,9 +280,17 @@ export interface WhatsAppContact {
   profile_name: string;
   lead_status: 'new' | 'contacted' | 'qualified' | 'proposal_sent' | 'won' | 'lost';
   notes: string;
+  email: string;
+  company: string;
+  lead_stage: string;
+  crm_client_id: string | null;
+  assigned_team_member: string | null;
   created_at: string;
   updated_at: string;
 }
+
+export type AgentMode = 'ai' | 'manual' | 'supervised';
+export type ConversationCategory = 'new_lead' | 'active_client' | 'support' | 'escalated' | 'archived';
 
 export interface WhatsAppConversation {
   id: string;
@@ -290,9 +298,15 @@ export interface WhatsAppConversation {
   status: 'active' | 'closed' | 'archived';
   last_message_at: string;
   unread_count: number;
+  agent_mode: AgentMode;
+  agent_persona_id: string | null;
+  category: ConversationCategory;
+  last_message_preview: string;
+  is_agent_typing: boolean;
   created_at: string;
   updated_at: string;
   contact?: WhatsAppContact;
+  persona?: SalesAgentPersona;
 }
 
 export interface WhatsAppMessage {
@@ -301,11 +315,91 @@ export interface WhatsAppMessage {
   contact_id: string;
   wa_message_id: string;
   direction: 'inbound' | 'outbound';
-  message_type: 'text' | 'image' | 'audio' | 'video' | 'document' | 'location' | 'interactive' | 'template';
+  message_type: 'text' | 'image' | 'audio' | 'video' | 'document' | 'location' | 'interactive' | 'template' | 'unsupported';
   content: string;
   media_url: string;
   media_mime_type: string;
   metadata: Record<string, unknown>;
   status: 'sent' | 'delivered' | 'read' | 'failed' | 'received';
+  sender_name: string;
+  created_at: string;
+}
+
+export interface SalesAgentPersona {
+  id: string;
+  first_name: string;
+  last_name: string;
+  full_name: string;
+  job_title: string;
+  communication_style: string;
+  greeting_template: string;
+  farewell_template: string;
+  signature: string;
+  avatar_url: string;
+  personality_traits: string[];
+  response_length_preference: string;
+  emoji_usage: string;
+  formality_level: string;
+  is_active: boolean;
+  total_conversations: number;
+  total_messages_sent: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SalesAgentFeedback {
+  id: string;
+  conversation_id: string | null;
+  message_id: string | null;
+  feedback_type: 'correction' | 'instruction' | 'new_knowledge' | 'praise';
+  content: string;
+  status: 'pending' | 'processed' | 'incorporated';
+  created_by: string;
+  processed_at: string | null;
+  resulting_instruction_id: string | null;
+  created_at: string;
+}
+
+export interface SalesAgentInstruction {
+  id: string;
+  instruction: string;
+  priority: 'critical' | 'high' | 'normal';
+  category: string;
+  is_active: boolean;
+  source_feedback_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SalesEscalation {
+  id: string;
+  conversation_id: string;
+  contact_id: string | null;
+  reason: string;
+  priority: 'critical' | 'high' | 'normal';
+  status: 'open' | 'attended' | 'resolved';
+  assigned_to: string | null;
+  resolved_at: string | null;
+  resolution_notes: string;
+  created_at: string;
+  conversation?: WhatsAppConversation;
+  contact?: WhatsAppContact;
+}
+
+export interface SalesAgentActionLog {
+  id: string;
+  action_type: string;
+  conversation_id: string | null;
+  contact_id: string | null;
+  persona_id: string | null;
+  input_summary: string;
+  output_summary: string;
+  model_used: string;
+  tokens_input: number;
+  tokens_output: number;
+  duration_ms: number;
+  success: boolean;
+  error_message: string;
+  metadata: Record<string, unknown>;
   created_at: string;
 }

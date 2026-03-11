@@ -68,11 +68,12 @@ async function upsertContact(
 
 async function getOrCreateConversation(
   supabase: ReturnType<typeof createClient>,
-  contactId: string
+  contactId: string,
+  messagePreview: string
 ) {
   const { data: existing } = await supabase
     .from("whatsapp_conversations")
-    .select("id")
+    .select("id, unread_count")
     .eq("contact_id", contactId)
     .eq("status", "active")
     .maybeSingle();
@@ -82,7 +83,8 @@ async function getOrCreateConversation(
       .from("whatsapp_conversations")
       .update({
         last_message_at: new Date().toISOString(),
-        unread_count: supabase.rpc ? 1 : 1,
+        last_message_preview: messagePreview.slice(0, 100),
+        unread_count: (existing.unread_count || 0) + 1,
       })
       .eq("id", existing.id);
     return existing.id;
@@ -90,7 +92,11 @@ async function getOrCreateConversation(
 
   const { data: created } = await supabase
     .from("whatsapp_conversations")
-    .insert({ contact_id: contactId })
+    .insert({
+      contact_id: contactId,
+      last_message_preview: messagePreview.slice(0, 100),
+      unread_count: 1,
+    })
     .select("id")
     .maybeSingle();
 
@@ -203,7 +209,8 @@ async function processIncomingMessages(body: Record<string, unknown>, provider: 
         const contactId = await upsertContact(supabase, waId, profileName);
         if (!contactId) continue;
 
-        const conversationId = await getOrCreateConversation(supabase, contactId);
+        const { content: msgContent } = extractMessageContent(message);
+        const conversationId = await getOrCreateConversation(supabase, contactId, msgContent || `[${message.type}]`);
         if (!conversationId) continue;
 
         const { content, media_url, media_mime_type } = extractMessageContent(message);

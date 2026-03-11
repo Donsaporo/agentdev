@@ -15,6 +15,8 @@ import ActivityPage from './pages/ActivityPage';
 import InfrastructurePage from './pages/InfrastructurePage';
 import SettingsPage from './pages/SettingsPage';
 import WhatsAppPage from './pages/WhatsAppPage';
+import InboxPage from './pages/InboxPage';
+import DirectorPage from './pages/DirectorPage';
 import type { ReactNode } from 'react';
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
@@ -62,6 +64,8 @@ function AppRoutes() {
         <Route path="qa" element={<QAReviewPage />} />
         <Route path="qa/:projectId" element={<QAReviewPage />} />
         <Route path="whatsapp" element={<WhatsAppPage />} />
+        <Route path="inbox" element={<InboxPage />} />
+        <Route path="director" element={<DirectorPage />} />
         <Route path="domains" element={<DomainsPage />} />
         <Route path="infrastructure" element={<InfrastructurePage />} />
         <Route path="activity" element={<ActivityPage />} />

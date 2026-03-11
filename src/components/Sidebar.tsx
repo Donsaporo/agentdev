@@ -15,6 +15,8 @@ import {
   Menu,
   X,
   MessageCircle,
+  Inbox,
+  Shield,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useState, useEffect } from 'react';
@@ -27,7 +29,9 @@ const navItems = [
   { to: '/briefs', icon: FileText, label: 'Briefs' },
   { to: '/chat', icon: MessageSquare, label: 'Agent Chat', badgeKey: 'chat' as const },
   { to: '/qa', icon: MonitorCheck, label: 'QA Review', badgeKey: 'qa' as const },
-  { to: '/whatsapp', icon: MessageCircle, label: 'WhatsApp' },
+  { to: '/inbox', icon: Inbox, label: 'Inbox WA', badgeKey: 'inbox' as const },
+  { to: '/director', icon: Shield, label: 'Director' },
+  { to: '/whatsapp', icon: MessageCircle, label: 'WA Config' },
   { to: '/domains', icon: Globe, label: 'Domains' },
   { to: '/infrastructure', icon: Server, label: 'Infrastructure' },
   { to: '/activity', icon: Activity, label: 'Activity' },
@@ -38,6 +42,7 @@ export default function Sidebar() {
   const { signOut, teamMember } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [pendingQA, setPendingQA] = useState(0);
+  const [unreadWA, setUnreadWA] = useState(0);
   const [agentOnline, setAgentOnline] = useState(false);
 
   useEffect(() => {
@@ -76,15 +81,17 @@ export default function Sidebar() {
   }
 
   async function loadBadges() {
-    const { count } = await supabase
-      .from('qa_screenshots')
-      .select('id', { count: 'exact', head: true })
-      .eq('status', 'pending');
-    setPendingQA(count || 0);
+    const [{ count: qaCount }, { data: waData }] = await Promise.all([
+      supabase.from('qa_screenshots').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
+      supabase.from('whatsapp_conversations').select('unread_count').gt('unread_count', 0),
+    ]);
+    setPendingQA(qaCount || 0);
+    setUnreadWA(waData?.reduce((sum, c) => sum + (c.unread_count || 0), 0) || 0);
   }
 
   const getBadge = (key?: string) => {
     if (key === 'qa' && pendingQA > 0) return pendingQA;
+    if (key === 'inbox' && unreadWA > 0) return unreadWA;
     return 0;
   };
 

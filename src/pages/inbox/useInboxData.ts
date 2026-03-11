@@ -1,0 +1,191 @@
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { supabase } from '../../lib/supabase';
+import type {
+  WhatsAppConversation,
+  WhatsAppMessage,
+  WhatsAppContact,
+  SalesAgentPersona,
+} from '../../lib/types';
+
+export function useInboxData() {
+  const [conversations, setConversations] = useState<WhatsAppConversation[]>([]);
+  const [personas, setPersonas] = useState<SalesAgentPersona[]>([]);
+  const [loading, setLoading] = useState(true);
+  const contactCache = useRef<Record<string, WhatsAppContact>>({});
+  const personaCache = useRef<Record<string, SalesAgentPersona>>({});
+
+  const loadConversations = useCallback(async () => {
+    const { data } = await supabase
+      .from('whatsapp_conversations')
+      .select('*, contact:whatsapp_contacts(*)')
+      .order('last_message_at', { ascending: false });
+
+    if (data) {
+      const enriched = data.map((c: WhatsAppConversation & { contact: WhatsAppContact }) => {
+        if (c.contact) contactCache.current[c.contact_id] = c.contact;
+        const persona = c.agent_persona_id ? personaCache.current[c.agent_persona_id] : undefined;
+        return { ...c, persona };
+      });
+      setConversations(enriched);
+    }
+    setLoading(false);
+  }, []);
+
+  const loadPersonas = useCallback(async () => {
+    const { data } = await supabase
+      .from('sales_agent_personas')
+      .select('*')
+      .eq('is_active', true);
+
+    if (data) {
+      setPersonas(data);
+      data.forEach((p: SalesAgentPersona) => {
+        personaCache.current[p.id] = p;
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    loadPersonas().then(loadConversations);
+  }, [loadPersonas, loadConversations]);
+
+  useEffect(() => {
+    const channel = supabase
+      .channel('inbox-realtime')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'whatsapp_messages' },
+        (payload) => {
+          const msg = payload.new as WhatsAppMessage;
+          setConversations((prev) => {
+            const idx = prev.findIndex((c) => c.id === msg.conversation_id);
+            if (idx === -1) {
+              loadConversations();
+              return prev;
+            }
+            const updated = [...prev];
+            updated[idx] = {
+              ...updated[idx],
+              last_message_at: msg.created_at,
+              last_message_preview: msg.content?.slice(0, 80) || '',
+              unread_count:
+                msg.direction === 'inbound'
+                  ? updated[idx].unread_count + 1
+                  : updated[idx].unread_count,
+            };
+            updated.sort(
+              (a, b) =>
+                new Date(b.last_message_at).getTime() -
+                new Date(a.last_message_at).getTime()
+            );
+            return updated;
+          });
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'whatsapp_conversations' },
+        (payload) => {
+          const updated = payload.new as WhatsAppConversation;
+          setConversations((prev) =>
+            prev.map((c) =>
+              c.id === updated.id ? { ...c, ...updated, contact: c.contact, persona: c.persona } : c
+            )
+          );
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [loadConversations]);
+
+  const markAsRead = useCallback(async (conversationId: string) => {
+    setConversations((prev) =>
+      prev.map((c) => (c.id === conversationId ? { ...c, unread_count: 0 } : c))
+    );
+    await supabase
+      .from('whatsapp_conversations')
+      .update({ unread_count: 0 })
+      .eq('id', conversationId);
+  }, []);
+
+  const getContact = useCallback(
+    (contactId: string) => contactCache.current[contactId],
+    []
+  );
+
+  return {
+    conversations,
+    personas,
+    loading,
+    markAsRead,
+    getContact,
+    refreshConversations: loadConversations,
+  };
+}
+
+export function useConversationMessages(conversationId: string | null) {
+  const [messages, setMessages] = useState<WhatsAppMessage[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!conversationId) {
+      setMessages([]);
+      return;
+    }
+
+    setLoading(true);
+    supabase
+      .from('whatsapp_messages')
+      .select('*')
+      .eq('conversation_id', conversationId)
+      .order('created_at', { ascending: true })
+      .then(({ data }) => {
+        setMessages(data || []);
+        setLoading(false);
+      });
+
+    const channel = supabase
+      .channel(`messages-${conversationId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'whatsapp_messages',
+          filter: `conversation_id=eq.${conversationId}`,
+        },
+        (payload) => {
+          setMessages((prev) => {
+            const msg = payload.new as WhatsAppMessage;
+            if (prev.some((m) => m.id === msg.id)) return prev;
+            return [...prev, msg];
+          });
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'whatsapp_messages',
+          filter: `conversation_id=eq.${conversationId}`,
+        },
+        (payload) => {
+          const updated = payload.new as WhatsAppMessage;
+          setMessages((prev) =>
+            prev.map((m) => (m.id === updated.id ? updated : m))
+          );
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [conversationId]);
+
+  return { messages, loading };
+}
