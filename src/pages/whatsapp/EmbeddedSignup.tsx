@@ -121,6 +121,7 @@ export default function EmbeddedSignup({ onSuccess }: EmbeddedSignupProps) {
     sessionInfoRef.current = {};
 
     const loginParams: Record<string, unknown> = {
+      scope: 'whatsapp_business_management,whatsapp_business_messaging,business_management',
       config_id: configId.trim() || undefined,
       response_type: 'code',
       override_default_response_type: true,
