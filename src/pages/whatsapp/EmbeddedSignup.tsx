@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Loader2, ExternalLink } from 'lucide-react';
 import { useToast } from '../../contexts/ToastContext';
 import { supabase } from '../../lib/supabase';
@@ -26,6 +26,11 @@ interface FBLoginResponse {
   status: string;
 }
 
+interface SignupSessionInfo {
+  waba_id?: string;
+  phone_number_id?: string;
+}
+
 interface EmbeddedSignupProps {
   onSuccess: () => void;
 }
@@ -37,6 +42,7 @@ export default function EmbeddedSignup({ onSuccess }: EmbeddedSignupProps) {
   const [sdkLoaded, setSdkLoaded] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [step, setStep] = useState<'config' | 'ready'>('config');
+  const sessionInfoRef = useRef<SignupSessionInfo>({});
 
   const initFacebookSDK = useCallback((fbAppId: string) => {
     if (window.FB) {
@@ -71,7 +77,26 @@ export default function EmbeddedSignup({ onSuccess }: EmbeddedSignupProps) {
   }, []);
 
   useEffect(() => {
+    function handleMessage(event: MessageEvent) {
+      if (event.origin !== 'https://www.facebook.com' && event.origin !== 'https://web.facebook.com') return;
+
+      try {
+        const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+        if (data.type === 'WA_EMBEDDED_SIGNUP') {
+          const info = data.data || {};
+          sessionInfoRef.current = {
+            waba_id: info.waba_id,
+            phone_number_id: info.phone_number_id,
+          };
+        }
+      } catch {
+        // not a JSON message we care about
+      }
+    }
+
+    window.addEventListener('message', handleMessage);
     return () => {
+      window.removeEventListener('message', handleMessage);
       const script = document.getElementById('facebook-jssdk');
       if (script) script.remove();
     };
@@ -93,6 +118,7 @@ export default function EmbeddedSignup({ onSuccess }: EmbeddedSignupProps) {
     }
 
     setConnecting(true);
+    sessionInfoRef.current = {};
 
     const loginParams: Record<string, unknown> = {
       config_id: configId.trim() || undefined,
@@ -137,6 +163,8 @@ export default function EmbeddedSignup({ onSuccess }: EmbeddedSignupProps) {
           code,
           app_id: appId.trim(),
           configuration_id: configId.trim(),
+          waba_id: sessionInfoRef.current.waba_id || '',
+          phone_number_id: sessionInfoRef.current.phone_number_id || '',
         }),
       });
 

@@ -40,17 +40,46 @@ async function exchangeCodeForToken(code: string, appId: string) {
   return data.access_token as string;
 }
 
-async function getDebugTokenInfo(inputToken: string, appId: string) {
+async function discoverWABAFromToken(accessToken: string, appId: string) {
   const appSecret = Deno.env.get("META_APP_SECRET");
-  const url = `https://graph.facebook.com/v21.0/debug_token?input_token=${inputToken}&access_token=${appId}|${appSecret}`;
-  const resp = await fetch(url);
-  return await resp.json();
-}
+  const debugUrl = `https://graph.facebook.com/v21.0/debug_token?input_token=${accessToken}&access_token=${appId}|${appSecret}`;
+  const debugResp = await fetch(debugUrl);
+  const debugData = await debugResp.json();
 
-async function getSharedWABAInfo(accessToken: string) {
-  const url = `https://graph.facebook.com/v21.0/me/businesses?access_token=${accessToken}`;
-  const resp = await fetch(url);
-  return await resp.json();
+  if (debugData.data?.granular_scopes) {
+    for (const scope of debugData.data.granular_scopes) {
+      if (
+        scope.scope === "whatsapp_business_management" &&
+        scope.target_ids?.length > 0
+      ) {
+        return scope.target_ids[0] as string;
+      }
+    }
+  }
+
+  const bizUrl = `https://graph.facebook.com/v21.0/me/businesses?access_token=${accessToken}`;
+  const bizResp = await fetch(bizUrl);
+  const bizData = await bizResp.json();
+
+  if (bizData.data) {
+    for (const biz of bizData.data) {
+      const wabaUrl = `https://graph.facebook.com/v21.0/${biz.id}/owned_whatsapp_business_accounts?access_token=${accessToken}`;
+      const wabaResp = await fetch(wabaUrl);
+      const wabaData = await wabaResp.json();
+      if (wabaData.data?.length > 0) {
+        return wabaData.data[0].id as string;
+      }
+
+      const clientWabaUrl = `https://graph.facebook.com/v21.0/${biz.id}/client_whatsapp_business_accounts?access_token=${accessToken}`;
+      const clientResp = await fetch(clientWabaUrl);
+      const clientData = await clientResp.json();
+      if (clientData.data?.length > 0) {
+        return clientData.data[0].id as string;
+      }
+    }
+  }
+
+  return null;
 }
 
 async function getWABAFromToken(accessToken: string, wabaId: string) {
@@ -138,43 +167,60 @@ Deno.serve(async (req: Request) => {
     const accessToken = await exchangeCodeForToken(code, app_id);
 
     let wabaInfo = null;
-    let phoneInfo = null;
     let finalWabaId = waba_id || "";
     let finalPhoneId = phone_number_id || "";
     let displayPhone = "";
     let verifiedName = "";
     let qualityRating = "unknown";
 
-    if (finalWabaId) {
-      wabaInfo = await getWABAFromToken(accessToken, finalWabaId);
+    if (!finalWabaId) {
+      const discovered = await discoverWABAFromToken(accessToken, app_id);
+      if (discovered) {
+        finalWabaId = discovered;
+      }
+    }
 
-      const phonesResp = await getPhoneNumbers(accessToken, finalWabaId);
-      if (phonesResp.data && phonesResp.data.length > 0) {
-        const phone = finalPhoneId
-          ? phonesResp.data.find(
-              (p: Record<string, string>) => p.id === finalPhoneId
-            ) || phonesResp.data[0]
-          : phonesResp.data[0];
+    if (!finalWabaId) {
+      return new Response(
+        JSON.stringify({
+          error:
+            "Could not detect your WhatsApp Business Account. Please ensure the number was connected during signup and try again.",
+        }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
+    }
 
-        finalPhoneId = phone.id;
-        displayPhone = phone.display_phone_number || "";
-        verifiedName = phone.verified_name || wabaInfo?.name || "";
-        qualityRating = phone.quality_rating || "unknown";
+    wabaInfo = await getWABAFromToken(accessToken, finalWabaId);
+
+    const phonesResp = await getPhoneNumbers(accessToken, finalWabaId);
+    if (phonesResp.data && phonesResp.data.length > 0) {
+      const phone = finalPhoneId
+        ? phonesResp.data.find(
+            (p: Record<string, string>) => p.id === finalPhoneId
+          ) || phonesResp.data[0]
+        : phonesResp.data[0];
+
+      finalPhoneId = phone.id;
+      displayPhone = phone.display_phone_number || "";
+      verifiedName = phone.verified_name || wabaInfo?.name || "";
+      qualityRating = phone.quality_rating || "unknown";
+    }
+
+    if (finalPhoneId) {
+      try {
+        await registerPhoneNumber(accessToken, finalPhoneId);
+      } catch (_e) {
+        // phone may already be registered
       }
     }
 
     try {
-      await registerPhoneNumber(accessToken, finalPhoneId);
+      await subscribeToWebhook(accessToken, finalWabaId);
     } catch (_e) {
-      // phone may already be registered
-    }
-
-    if (finalWabaId) {
-      try {
-        await subscribeToWebhook(accessToken, finalWabaId);
-      } catch (_e) {
-        // subscription may already exist
-      }
+      // subscription may already exist
     }
 
     const supabase = getSupabase();
