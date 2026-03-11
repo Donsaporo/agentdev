@@ -15,8 +15,18 @@ export interface AgentDecision {
   model: string;
 }
 
+export type AgentActionType =
+  | 'update_lead_stage'
+  | 'schedule_meeting'
+  | 'create_crm_lead'
+  | 'escalate'
+  | 'add_note'
+  | 'sync_to_crm'
+  | 'update_crm_stage'
+  | 'add_crm_comment';
+
 export interface AgentAction {
-  type: 'update_lead_stage' | 'schedule_meeting' | 'create_crm_lead' | 'escalate' | 'add_note';
+  type: AgentActionType;
   params: Record<string, string>;
 }
 
@@ -49,6 +59,8 @@ ${ctx.contactCompany ? `Empresa: ${ctx.contactCompany}` : ''}
 ${ctx.contactEmail ? `Email: ${ctx.contactEmail}` : ''}
 Etapa: ${ctx.leadStage}
 ${ctx.crmNotes ? `Notas: ${ctx.crmNotes}` : ''}
+Vinculado al CRM: ${ctx.crmClientId ? 'Si' : 'No'}
+${ctx.crmHistory ? `\n=== HISTORIAL CRM ===\n${ctx.crmHistory}` : ''}
 
 === INSTRUCCIONES ACTIVAS ===
 ${instructionBlock}
@@ -84,8 +96,17 @@ Acciones disponibles:
 - {"type": "update_lead_stage", "params": {"stage": "vacio|lead|cliente_nuevo|cliente_terminado"}}
 - {"type": "schedule_meeting", "params": {"title": "...", "datetime": "ISO8601"}}
 - {"type": "create_crm_lead", "params": {"name": "...", "email": "...", "company": "..."}}
+- {"type": "sync_to_crm", "params": {}} (sincroniza contacto actual al CRM, usar cuando ya tienes nombre+empresa o nombre+email)
+- {"type": "update_crm_stage", "params": {"stage": "vacio|lead|cliente_nuevo|cliente_terminado"}}
+- {"type": "add_crm_comment", "params": {"comment": "nota interna sobre la conversacion"}}
 - {"type": "escalate", "params": {"reason": "..."}}
-- {"type": "add_note", "params": {"note": "..."}}`;
+- {"type": "add_note", "params": {"note": "..."}}
+
+=== REGLAS DE CRM ===
+1. Si el contacto NO esta vinculado al CRM y ya tienes su nombre + (empresa O email), ejecuta "sync_to_crm".
+2. Si el contacto YA esta vinculado, NO ejecutes "create_crm_lead" ni "sync_to_crm" de nuevo.
+3. Cuando cambies la etapa del lead, ejecuta tambien "update_crm_stage" con la misma etapa.
+4. Usa "add_crm_comment" para registrar informacion importante del cliente (necesidades, presupuesto, timeline, preferencias tecnicas).`;
 }
 
 export async function decide(

@@ -1,0 +1,376 @@
+import { getCrmSupabase } from '../core/supabase.js';
+import { createLogger } from '../core/logger.js';
+
+const log = createLogger('crm');
+
+const STAGE_MAP: Record<string, string> = {
+  vacio: 'nuevo',
+  lead: 'contactado',
+  cliente_nuevo: 'en_negociacion',
+  cliente_terminado: 'cerrado_ganado',
+};
+
+export interface CrmLeadParams {
+  name: string;
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+  phone?: string;
+  company?: string;
+  notes?: string;
+  source?: string;
+}
+
+export interface CrmTimelineEvent {
+  clientId: string;
+  eventType: string;
+  title: string;
+  description?: string;
+  metadata?: Record<string, unknown>;
+  referenceId?: string;
+  referenceTable?: string;
+}
+
+export interface CrmMeetingParams {
+  clientId: string;
+  title: string;
+  startTime: string;
+  endTime: string;
+  meetLink?: string;
+  googleEventId?: string;
+  description?: string;
+}
+
+function isAvailable(): boolean {
+  const crm = getCrmSupabase();
+  if (!crm) {
+    log.debug('CRM not configured, skipping');
+    return false;
+  }
+  return true;
+}
+
+export async function findClientByPhone(phone: string): Promise<string | null> {
+  if (!isAvailable()) return null;
+  const crm = getCrmSupabase()!;
+
+  const cleaned = phone.replace(/\D/g, '');
+  const { data } = await crm
+    .from('tech_clients')
+    .select('id')
+    .or(`phone.ilike.%${cleaned}%,phone.ilike.%${phone}%`)
+    .limit(1)
+    .maybeSingle();
+
+  return data?.id || null;
+}
+
+export async function findClientByEmail(email: string): Promise<string | null> {
+  if (!isAvailable() || !email) return null;
+  const crm = getCrmSupabase()!;
+
+  const { data } = await crm
+    .from('tech_clients')
+    .select('id')
+    .ilike('email', email.trim())
+    .limit(1)
+    .maybeSingle();
+
+  return data?.id || null;
+}
+
+export async function createCrmLead(params: CrmLeadParams): Promise<string | null> {
+  if (!isAvailable()) return null;
+  const crm = getCrmSupabase()!;
+
+  try {
+    if (params.phone) {
+      const existing = await findClientByPhone(params.phone);
+      if (existing) {
+        log.info('Client already exists by phone', { clientId: existing, phone: params.phone });
+        return existing;
+      }
+    }
+
+    if (params.email) {
+      const existing = await findClientByEmail(params.email);
+      if (existing) {
+        log.info('Client already exists by email', { clientId: existing, email: params.email });
+        return existing;
+      }
+    }
+
+    const { data, error } = await crm.from('tech_clients').insert({
+      name: params.name,
+      first_name: params.firstName || params.name.split(' ')[0] || '',
+      last_name: params.lastName || params.name.split(' ').slice(1).join(' ') || '',
+      email: params.email || null,
+      phone: params.phone || null,
+      company_name: params.company || null,
+      notes: params.notes || null,
+      client_type: params.company ? 'business' : 'individual',
+      status_tag: 'Lead',
+      lead_stage: 'nuevo',
+      last_activity_at: new Date().toISOString(),
+    }).select('id').single();
+
+    if (error) {
+      log.error('Failed to create CRM lead', { error: error.message });
+      return null;
+    }
+
+    log.info('CRM lead created', { clientId: data.id, name: params.name });
+    return data.id;
+  } catch (err) {
+    log.error('CRM createCrmLead error', { error: err instanceof Error ? err.message : String(err) });
+    return null;
+  }
+}
+
+export async function updateCrmClient(
+  clientId: string,
+  updates: Record<string, unknown>
+): Promise<boolean> {
+  if (!isAvailable()) return false;
+  const crm = getCrmSupabase()!;
+
+  try {
+    const { error } = await crm
+      .from('tech_clients')
+      .update({ ...updates, last_activity_at: new Date().toISOString() })
+      .eq('id', clientId);
+
+    if (error) {
+      log.error('Failed to update CRM client', { clientId, error: error.message });
+      return false;
+    }
+
+    log.debug('CRM client updated', { clientId });
+    return true;
+  } catch (err) {
+    log.error('CRM updateCrmClient error', { error: err instanceof Error ? err.message : String(err) });
+    return false;
+  }
+}
+
+export async function addTimelineEvent(event: CrmTimelineEvent): Promise<string | null> {
+  if (!isAvailable()) return null;
+  const crm = getCrmSupabase()!;
+
+  try {
+    const { data, error } = await crm.from('tech_lead_timeline_events').insert({
+      client_id: event.clientId,
+      event_type: event.eventType,
+      title: event.title,
+      description: event.description || null,
+      metadata: event.metadata || {},
+      reference_id: event.referenceId || null,
+      reference_table: event.referenceTable || null,
+    }).select('id').single();
+
+    if (error) {
+      log.error('Failed to add timeline event', { clientId: event.clientId, error: error.message });
+      return null;
+    }
+
+    log.debug('Timeline event added', { clientId: event.clientId, type: event.eventType });
+    return data.id;
+  } catch (err) {
+    log.error('CRM addTimelineEvent error', { error: err instanceof Error ? err.message : String(err) });
+    return null;
+  }
+}
+
+export async function addComment(
+  clientId: string,
+  comment: string,
+  isInternal = true
+): Promise<boolean> {
+  if (!isAvailable()) return false;
+  const crm = getCrmSupabase()!;
+
+  try {
+    const { error } = await crm.from('tech_lead_comments').insert({
+      client_id: clientId,
+      comment,
+      is_internal: isInternal,
+    });
+
+    if (error) {
+      log.error('Failed to add CRM comment', { clientId, error: error.message });
+      return false;
+    }
+
+    log.debug('CRM comment added', { clientId });
+    return true;
+  } catch (err) {
+    log.error('CRM addComment error', { error: err instanceof Error ? err.message : String(err) });
+    return false;
+  }
+}
+
+export async function addMeeting(params: CrmMeetingParams): Promise<string | null> {
+  if (!isAvailable()) return null;
+  const crm = getCrmSupabase()!;
+
+  try {
+    const { data, error } = await crm.from('tech_lead_meetings').insert({
+      client_id: params.clientId,
+      title: params.title,
+      description: params.description || null,
+      meeting_type: 'virtual',
+      start_time: params.startTime,
+      end_time: params.endTime,
+      meeting_link: params.meetLink || null,
+      google_event_id: params.googleEventId || null,
+      status: 'programada',
+    }).select('id').single();
+
+    if (error) {
+      log.error('Failed to add CRM meeting', { clientId: params.clientId, error: error.message });
+      return null;
+    }
+
+    log.info('CRM meeting added', { clientId: params.clientId, meetingId: data.id });
+    return data.id;
+  } catch (err) {
+    log.error('CRM addMeeting error', { error: err instanceof Error ? err.message : String(err) });
+    return null;
+  }
+}
+
+export async function getClientHistory(clientId: string): Promise<{
+  timeline: Array<{ event_type: string; title: string; description: string; created_at: string }>;
+  meetings: Array<{ title: string; start_time: string; status: string; meeting_link: string }>;
+  comments: Array<{ comment: string; created_at: string }>;
+}> {
+  if (!isAvailable()) return { timeline: [], meetings: [], comments: [] };
+  const crm = getCrmSupabase()!;
+
+  try {
+    const [timelineRes, meetingsRes, commentsRes] = await Promise.all([
+      crm
+        .from('tech_lead_timeline_events')
+        .select('event_type, title, description, created_at')
+        .eq('client_id', clientId)
+        .order('created_at', { ascending: false })
+        .limit(10),
+      crm
+        .from('tech_lead_meetings')
+        .select('title, start_time, status, meeting_link')
+        .eq('client_id', clientId)
+        .order('start_time', { ascending: false })
+        .limit(5),
+      crm
+        .from('tech_lead_comments')
+        .select('comment, created_at')
+        .eq('client_id', clientId)
+        .order('created_at', { ascending: false })
+        .limit(5),
+    ]);
+
+    return {
+      timeline: timelineRes.data || [],
+      meetings: meetingsRes.data || [],
+      comments: commentsRes.data || [],
+    };
+  } catch (err) {
+    log.error('CRM getClientHistory error', { error: err instanceof Error ? err.message : String(err) });
+    return { timeline: [], meetings: [], comments: [] };
+  }
+}
+
+export async function getCrmClientData(clientId: string): Promise<Record<string, unknown> | null> {
+  if (!isAvailable()) return null;
+  const crm = getCrmSupabase()!;
+
+  try {
+    const { data } = await crm
+      .from('tech_clients')
+      .select('id, name, email, phone, company_name, lead_stage, status_tag, estimated_value, next_action, next_action_date, notes, last_activity_at')
+      .eq('id', clientId)
+      .maybeSingle();
+
+    return data;
+  } catch (err) {
+    log.error('CRM getCrmClientData error', { error: err instanceof Error ? err.message : String(err) });
+    return null;
+  }
+}
+
+export function mapWhatsAppStageToCrm(whatsAppStage: string): string {
+  return STAGE_MAP[whatsAppStage] || 'nuevo';
+}
+
+export async function syncStageToCrm(
+  clientId: string,
+  whatsAppStage: string,
+  personaName: string
+): Promise<void> {
+  if (!isAvailable()) return;
+
+  const crmStage = mapWhatsAppStageToCrm(whatsAppStage);
+
+  await updateCrmClient(clientId, { lead_stage: crmStage });
+  await addTimelineEvent({
+    clientId,
+    eventType: 'stage_change',
+    title: `Etapa cambiada a "${crmStage}"`,
+    description: `Cambio automatico por agente ${personaName} desde WhatsApp. Etapa WhatsApp: ${whatsAppStage}`,
+  });
+}
+
+export async function syncContactToCrm(contact: {
+  phone_number: string;
+  display_name: string;
+  profile_name: string;
+  email?: string;
+  company?: string;
+  notes?: string;
+}, personaName: string): Promise<string | null> {
+  if (!isAvailable()) return null;
+
+  try {
+    let clientId = await findClientByPhone(contact.phone_number);
+
+    if (!clientId && contact.email) {
+      clientId = await findClientByEmail(contact.email);
+    }
+
+    if (clientId) {
+      const updates: Record<string, unknown> = {};
+      if (contact.email) updates.email = contact.email;
+      if (contact.company) updates.company_name = contact.company;
+      if (Object.keys(updates).length > 0) {
+        await updateCrmClient(clientId, updates);
+      }
+      return clientId;
+    }
+
+    const name = contact.display_name || contact.profile_name || contact.phone_number;
+
+    clientId = await createCrmLead({
+      name,
+      phone: contact.phone_number,
+      email: contact.email,
+      company: contact.company,
+      notes: contact.notes,
+      source: 'whatsapp',
+    });
+
+    if (clientId) {
+      await addTimelineEvent({
+        clientId,
+        eventType: 'lead_created',
+        title: 'Lead creado desde WhatsApp',
+        description: `Lead creado automaticamente por ${personaName}. Telefono: ${contact.phone_number}`,
+        metadata: { source: 'whatsapp_sales_agent', persona: personaName },
+      });
+    }
+
+    return clientId;
+  } catch (err) {
+    log.error('CRM syncContactToCrm error', { error: err instanceof Error ? err.message : String(err) });
+    return null;
+  }
+}

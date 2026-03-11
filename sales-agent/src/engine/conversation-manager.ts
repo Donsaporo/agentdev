@@ -8,6 +8,7 @@ import { calculateDelay, sleep, shouldSplitMessage } from './human-simulator.js'
 import { sendTextMessage, setTypingIndicator } from '../services/whatsapp.js';
 import { scheduleMeeting } from '../services/calendar.js';
 import { joinMeeting } from '../services/recall.js';
+import * as crm from '../services/crm.js';
 
 const log = createLogger('conversation-manager');
 
@@ -167,6 +168,10 @@ async function processMessage(
       outputTokens: decision.outputTokens,
     });
 
+    await autoSyncToCrm(supabase, msg.contactId, persona.full_name).catch((err) => {
+      log.warn('Auto CRM sync failed (non-blocking)', { error: err instanceof Error ? err.message : String(err) });
+    });
+
     log.info('Message handled', {
       conversation: msg.conversationId,
       persona: persona.full_name,
@@ -231,6 +236,17 @@ async function handleEscalation(
     .update({ agent_mode: 'manual', category: 'escalated' })
     .eq('id', conversationId);
 
+  const escContact = await loadContactForCrm(supabase, contactId);
+  if (escContact?.crm_client_id) {
+    await crm.addTimelineEvent({
+      clientId: escContact.crm_client_id,
+      eventType: 'escalation',
+      title: 'Conversacion escalada a humano',
+      description: reason,
+      metadata: { conversation_id: conversationId },
+    }).catch(() => {});
+  }
+
   log.warn('Conversation escalated', { conversationId, reason });
 }
 
@@ -243,12 +259,18 @@ async function executeActions(
   for (const action of actions) {
     try {
       switch (action.type) {
-        case 'update_lead_stage':
+        case 'update_lead_stage': {
           await supabase
             .from('whatsapp_contacts')
             .update({ lead_stage: action.params.stage })
             .eq('id', contactId);
+
+          const stageContact = await loadContactForCrm(supabase, contactId);
+          if (stageContact?.crm_client_id) {
+            await crm.syncStageToCrm(stageContact.crm_client_id, action.params.stage, 'Sales Agent');
+          }
           break;
+        }
 
         case 'add_note':
           await supabase
@@ -299,6 +321,25 @@ async function executeActions(
               }
             }
 
+            const meetingContact = await loadContactForCrm(supabase, contactId);
+            if (meetingContact?.crm_client_id) {
+              await crm.addMeeting({
+                clientId: meetingContact.crm_client_id,
+                title: meeting.title,
+                startTime: meeting.start,
+                endTime: meeting.end,
+                meetLink: meeting.meetLink,
+                googleEventId: meeting.eventId,
+              });
+              await crm.addTimelineEvent({
+                clientId: meetingContact.crm_client_id,
+                eventType: 'meeting_scheduled',
+                title: `Reunion agendada: ${meeting.title}`,
+                description: `Google Meet: ${meeting.meetLink || 'Sin enlace'}`,
+                metadata: { google_event_id: meeting.eventId, source: 'whatsapp_sales_agent' },
+              });
+            }
+
             log.info('Meeting scheduled and recorded', {
               eventId: meeting.eventId,
               meetLink: meeting.meetLink,
@@ -307,9 +348,70 @@ async function executeActions(
           break;
         }
 
-        case 'create_crm_lead':
-          log.info(`Action ${action.type} queued (integration pending)`, action.params);
+        case 'create_crm_lead': {
+          const crmContact = await loadContactForCrm(supabase, contactId);
+          if (crmContact?.crm_client_id) {
+            log.info('Contact already linked to CRM', { contactId, crmClientId: crmContact.crm_client_id });
+            break;
+          }
+
+          const clientId = await crm.syncContactToCrm({
+            phone_number: crmContact?.phone_number || action.params.phone || '',
+            display_name: crmContact?.display_name || action.params.name || '',
+            profile_name: crmContact?.profile_name || '',
+            email: crmContact?.email || action.params.email,
+            company: crmContact?.company || action.params.company,
+            notes: crmContact?.notes,
+          }, 'Sales Agent');
+
+          if (clientId) {
+            await supabase
+              .from('whatsapp_contacts')
+              .update({ crm_client_id: clientId })
+              .eq('id', contactId);
+
+            log.info('CRM lead created and linked', { contactId, crmClientId: clientId });
+          }
           break;
+        }
+
+        case 'sync_to_crm': {
+          const syncContact = await loadContactForCrm(supabase, contactId);
+          if (!syncContact) break;
+
+          const syncClientId = await crm.syncContactToCrm({
+            phone_number: syncContact.phone_number || '',
+            display_name: syncContact.display_name || '',
+            profile_name: syncContact.profile_name || '',
+            email: syncContact.email,
+            company: syncContact.company,
+            notes: syncContact.notes,
+          }, 'Sales Agent');
+
+          if (syncClientId && !syncContact.crm_client_id) {
+            await supabase
+              .from('whatsapp_contacts')
+              .update({ crm_client_id: syncClientId })
+              .eq('id', contactId);
+          }
+          break;
+        }
+
+        case 'update_crm_stage': {
+          const crmStageContact = await loadContactForCrm(supabase, contactId);
+          if (crmStageContact?.crm_client_id && action.params.stage) {
+            await crm.syncStageToCrm(crmStageContact.crm_client_id, action.params.stage, 'Sales Agent');
+          }
+          break;
+        }
+
+        case 'add_crm_comment': {
+          const commentContact = await loadContactForCrm(supabase, contactId);
+          if (commentContact?.crm_client_id && action.params.comment) {
+            await crm.addComment(commentContact.crm_client_id, action.params.comment);
+          }
+          break;
+        }
       }
     } catch (err) {
       log.error(`Action ${action.type} failed`, {
@@ -317,6 +419,41 @@ async function executeActions(
       });
     }
   }
+}
+
+async function autoSyncToCrm(supabase: SupabaseClient, contactId: string, personaName: string) {
+  const contact = await loadContactForCrm(supabase, contactId);
+  if (!contact || contact.crm_client_id) return;
+
+  const hasName = !!(contact.display_name || contact.profile_name);
+  if (!hasName) return;
+
+  const clientId = await crm.syncContactToCrm({
+    phone_number: contact.phone_number || '',
+    display_name: contact.display_name || '',
+    profile_name: contact.profile_name || '',
+    email: contact.email,
+    company: contact.company,
+    notes: contact.notes,
+  }, personaName);
+
+  if (clientId) {
+    await supabase
+      .from('whatsapp_contacts')
+      .update({ crm_client_id: clientId })
+      .eq('id', contactId);
+
+    log.info('Auto-synced contact to CRM', { contactId, crmClientId: clientId });
+  }
+}
+
+async function loadContactForCrm(supabase: SupabaseClient, contactId: string) {
+  const { data } = await supabase
+    .from('whatsapp_contacts')
+    .select('phone_number, display_name, profile_name, email, company, notes, crm_client_id')
+    .eq('id', contactId)
+    .maybeSingle();
+  return data;
 }
 
 async function logAction(
