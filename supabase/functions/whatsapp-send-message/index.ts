@@ -220,6 +220,72 @@ Deno.serve(async (req: Request) => {
       );
     }
 
+    if (action === "check_status") {
+      const statusRes = await fetch(
+        `${GRAPH_API}/${account.phone_number_id}?fields=verified_name,code_verification_status,quality_rating,platform_type,throughput,is_official_business_account,account_mode,is_pin_enabled,name_status,new_name_status,status,search_visibility,messaging_limit_tier`,
+        {
+          headers: { Authorization: `Bearer ${account.access_token}` },
+        }
+      );
+      const statusData = await statusRes.json();
+      if (!statusRes.ok) {
+        throw new Error(statusData.error?.message || `Status check failed: ${statusRes.status}`);
+      }
+
+      return new Response(JSON.stringify({ success: true, phone_status: statusData }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    if (action === "request_code") {
+      const codeMethod = body.code_method || "SMS";
+      const codeLang = body.language || "es";
+      const codeRes = await fetch(`${GRAPH_API}/${account.phone_number_id}/request_code`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${account.access_token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          code_method: codeMethod,
+          language: codeLang,
+        }),
+      });
+      const codeData = await codeRes.json();
+      if (!codeRes.ok) {
+        throw new Error(codeData.error?.message || `Request code failed: ${codeRes.status}`);
+      }
+
+      return new Response(JSON.stringify({ success: true, message: `Verification code sent via ${codeMethod}` }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    if (action === "verify_code") {
+      const code = body.code;
+      if (!code) throw new Error("code is required");
+
+      const verifyRes = await fetch(`${GRAPH_API}/${account.phone_number_id}/verify_code`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${account.access_token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ code }),
+      });
+      const verifyData = await verifyRes.json();
+      if (!verifyRes.ok) {
+        throw new Error(verifyData.error?.message || `Verification failed: ${verifyRes.status}`);
+      }
+
+      return new Response(JSON.stringify({ success: true, message: "Phone number verified and registered" }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
     if (!to) {
       return new Response(
         JSON.stringify({ error: "to is required" }),
