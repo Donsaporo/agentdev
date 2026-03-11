@@ -1,16 +1,19 @@
 import { useState, useEffect } from 'react';
-import { MessageCircle, Plus, Loader2, RefreshCw, Smartphone } from 'lucide-react';
+import { MessageCircle, Plus, RefreshCw, Key, Smartphone } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useToast } from '../contexts/ToastContext';
 import type { WhatsAppBusinessAccount } from '../lib/types';
+import WhatsAppConnect from './whatsapp/WhatsAppConnect';
 import EmbeddedSignup from './whatsapp/EmbeddedSignup';
 import WhatsAppAccountCard from './whatsapp/WhatsAppAccountCard';
+
+type SetupMode = null | 'connect' | 'embedded';
 
 export default function WhatsAppPage() {
   const toast = useToast();
   const [accounts, setAccounts] = useState<WhatsAppBusinessAccount[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showSetup, setShowSetup] = useState(false);
+  const [setupMode, setSetupMode] = useState<SetupMode>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -51,7 +54,7 @@ export default function WhatsAppPage() {
   }
 
   function handleSetupSuccess() {
-    setShowSetup(false);
+    setSetupMode(null);
     loadAccounts();
   }
 
@@ -69,7 +72,7 @@ export default function WhatsAppPage() {
         <div>
           <h1 className="text-2xl font-bold text-white tracking-tight">WhatsApp</h1>
           <p className="text-slate-400 mt-1 text-sm">
-            Connect and manage your WhatsApp Business accounts
+            Conecta y administra tus cuentas de WhatsApp Business
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -77,51 +80,79 @@ export default function WhatsAppPage() {
             <RefreshCw className="w-4 h-4" />
             <span className="hidden sm:inline">Refresh</span>
           </button>
-          {!showSetup && (
-            <button onClick={() => setShowSetup(true)} className="btn-primary">
+          {!setupMode && (
+            <button onClick={() => setSetupMode('connect')} className="btn-primary">
               <Plus className="w-4 h-4" />
-              Connect Account
+              Conectar cuenta
             </button>
           )}
         </div>
       </div>
 
-      {showSetup && (
+      {setupMode && (
         <div className="animate-fade-in-up">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-              <Smartphone className="w-5 h-5 text-emerald-400" />
-              Connect WhatsApp via Meta Embedded Signup
-            </h2>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setSetupMode('connect')}
+                className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all ${
+                  setupMode === 'connect'
+                    ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+                    : 'text-slate-400 hover:text-slate-300 border border-transparent'
+                }`}
+              >
+                <Key className="w-4 h-4" />
+                Cuenta existente
+              </button>
+              <button
+                onClick={() => setSetupMode('embedded')}
+                className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all ${
+                  setupMode === 'embedded'
+                    ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+                    : 'text-slate-400 hover:text-slate-300 border border-transparent'
+                }`}
+              >
+                <Smartphone className="w-4 h-4" />
+                Embedded Signup
+              </button>
+            </div>
             <button
-              onClick={() => setShowSetup(false)}
+              onClick={() => setSetupMode(null)}
               className="text-sm text-slate-500 hover:text-slate-300 transition-colors"
             >
-              Cancel
+              Cancelar
             </button>
           </div>
-          <EmbeddedSignup onSuccess={handleSetupSuccess} />
+
+          {setupMode === 'connect' && <WhatsAppConnect onSuccess={handleSetupSuccess} />}
+          {setupMode === 'embedded' && <EmbeddedSignup onSuccess={handleSetupSuccess} />}
         </div>
       )}
 
-      {!showSetup && accounts.length === 0 && (
+      {!setupMode && accounts.length === 0 && (
         <div className="glass-card flex flex-col items-center justify-center py-16 px-6 text-center">
           <div className="w-16 h-16 rounded-2xl bg-emerald-500/10 flex items-center justify-center mb-5">
             <MessageCircle className="w-8 h-8 text-emerald-400" />
           </div>
-          <h3 className="text-lg font-semibold text-white mb-2">No WhatsApp accounts connected</h3>
+          <h3 className="text-lg font-semibold text-white mb-2">No hay cuentas de WhatsApp conectadas</h3>
           <p className="text-sm text-slate-400 max-w-md mb-6">
-            Connect your WhatsApp Business account using Meta's Embedded Signup flow.
-            You can use an existing WhatsApp Business App number or register a new one.
+            Conecta tu cuenta de WhatsApp Business existente con su Access Token,
+            o usa el Embedded Signup de Meta para crear una nueva.
           </p>
-          <button onClick={() => setShowSetup(true)} className="btn-primary">
-            <Plus className="w-4 h-4" />
-            Connect Your First Account
-          </button>
+          <div className="flex items-center gap-3">
+            <button onClick={() => setSetupMode('connect')} className="btn-primary">
+              <Key className="w-4 h-4" />
+              Conectar cuenta existente
+            </button>
+            <button onClick={() => setSetupMode('embedded')} className="btn-ghost">
+              <Smartphone className="w-4 h-4" />
+              Embedded Signup
+            </button>
+          </div>
         </div>
       )}
 
-      {!showSetup && accounts.length > 0 && (
+      {!setupMode && accounts.length > 0 && (
         <div className="space-y-3">
           {accounts.map(account => (
             <WhatsAppAccountCard
