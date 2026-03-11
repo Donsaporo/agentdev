@@ -8,11 +8,13 @@ const corsHeaders = {
     "Content-Type, Authorization, X-Client-Info, Apikey",
 };
 
-function getSupabase() {
-  return createClient(
-    Deno.env.get("SUPABASE_URL")!,
-    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
-  );
+const GRAPH_API = "https://graph.facebook.com/v25.0";
+
+function jsonResponse(body: Record<string, unknown>, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
 }
 
 function getAuthSupabase(authHeader: string) {
@@ -23,26 +25,55 @@ function getAuthSupabase(authHeader: string) {
   );
 }
 
-async function exchangeCodeForToken(code: string, appId: string) {
+function getServiceSupabase() {
+  return createClient(
+    Deno.env.get("SUPABASE_URL")!,
+    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+  );
+}
+
+async function exchangeCodeForToken(code: string, appId: string): Promise<string> {
   const appSecret = Deno.env.get("META_APP_SECRET");
   if (!appSecret) {
-    throw new Error("META_APP_SECRET not configured");
+    throw new Error("META_APP_SECRET no esta configurado en los secrets de Edge Functions");
   }
 
-  const url = `https://graph.facebook.com/v21.0/oauth/access_token?client_id=${appId}&client_secret=${appSecret}&code=${code}`;
-  const resp = await fetch(url);
+  const resp = await fetch(`${GRAPH_API}/oauth/access_token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      client_id: appId,
+      client_secret: appSecret,
+      code,
+      grant_type: "authorization_code",
+    }),
+  });
+
   const data = await resp.json();
 
   if (data.error) {
-    throw new Error(data.error.message || "Token exchange failed");
+    console.error("Token exchange error:", JSON.stringify(data.error));
+    throw new Error(
+      data.error.message || "Fallo el intercambio de token. Verifica META_APP_SECRET."
+    );
+  }
+
+  if (!data.access_token) {
+    throw new Error("No se recibio access_token en la respuesta de Meta");
   }
 
   return data.access_token as string;
 }
 
-async function discoverWABAFromToken(accessToken: string, appId: string) {
+async function graphGet(path: string, token: string) {
+  const url = `${GRAPH_API}${path}${path.includes("?") ? "&" : "?"}access_token=${token}`;
+  const resp = await fetch(url);
+  return await resp.json();
+}
+
+async function discoverWABA(accessToken: string, appId: string): Promise<string | null> {
   const appSecret = Deno.env.get("META_APP_SECRET");
-  const debugUrl = `https://graph.facebook.com/v21.0/debug_token?input_token=${accessToken}&access_token=${appId}|${appSecret}`;
+  const debugUrl = `${GRAPH_API}/debug_token?input_token=${accessToken}&access_token=${appId}|${appSecret}`;
   const debugResp = await fetch(debugUrl);
   const debugData = await debugResp.json();
 
@@ -57,64 +88,55 @@ async function discoverWABAFromToken(accessToken: string, appId: string) {
     }
   }
 
-  const bizUrl = `https://graph.facebook.com/v21.0/me/businesses?access_token=${accessToken}`;
-  const bizResp = await fetch(bizUrl);
-  const bizData = await bizResp.json();
-
+  const bizData = await graphGet("/me/businesses", accessToken);
   if (bizData.data) {
     for (const biz of bizData.data) {
-      const wabaUrl = `https://graph.facebook.com/v21.0/${biz.id}/owned_whatsapp_business_accounts?access_token=${accessToken}`;
-      const wabaResp = await fetch(wabaUrl);
-      const wabaData = await wabaResp.json();
-      if (wabaData.data?.length > 0) {
-        return wabaData.data[0].id as string;
-      }
+      const owned = await graphGet(
+        `/${biz.id}/owned_whatsapp_business_accounts`,
+        accessToken
+      );
+      if (owned.data?.length > 0) return owned.data[0].id;
 
-      const clientWabaUrl = `https://graph.facebook.com/v21.0/${biz.id}/client_whatsapp_business_accounts?access_token=${accessToken}`;
-      const clientResp = await fetch(clientWabaUrl);
-      const clientData = await clientResp.json();
-      if (clientData.data?.length > 0) {
-        return clientData.data[0].id as string;
-      }
+      const client = await graphGet(
+        `/${biz.id}/client_whatsapp_business_accounts`,
+        accessToken
+      );
+      if (client.data?.length > 0) return client.data[0].id;
     }
   }
 
   return null;
 }
 
-async function getWABAFromToken(accessToken: string, wabaId: string) {
-  const url = `https://graph.facebook.com/v21.0/${wabaId}?fields=id,name,currency,timezone_id,message_template_namespace&access_token=${accessToken}`;
-  const resp = await fetch(url);
-  return await resp.json();
-}
-
 async function getPhoneNumbers(accessToken: string, wabaId: string) {
-  const url = `https://graph.facebook.com/v21.0/${wabaId}/phone_numbers?fields=id,display_phone_number,verified_name,quality_rating,code_verification_status&access_token=${accessToken}`;
-  const resp = await fetch(url);
-  return await resp.json();
+  return await graphGet(
+    `/${wabaId}/phone_numbers?fields=id,display_phone_number,verified_name,quality_rating,code_verification_status`,
+    accessToken
+  );
 }
 
-async function registerPhoneNumber(accessToken: string, phoneNumberId: string) {
-  const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/register`;
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      messaging_product: "whatsapp",
-      pin: "123456",
-    }),
-  });
-  return await resp.json();
-}
-
-async function subscribeToWebhook(accessToken: string, wabaId: string) {
-  const url = `https://graph.facebook.com/v21.0/${wabaId}/subscribed_apps`;
-  const resp = await fetch(url, {
+async function subscribeApp(accessToken: string, wabaId: string) {
+  const resp = await fetch(`${GRAPH_API}/${wabaId}/subscribed_apps`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
     },
+  });
+  return await resp.json();
+}
+
+async function registerPhone(accessToken: string, phoneNumberId: string) {
+  const resp = await fetch(`${GRAPH_API}/${phoneNumberId}/register`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      pin: "123456",
+    }),
   });
   return await resp.json();
 }
@@ -126,18 +148,12 @@ Deno.serve(async (req: Request) => {
     }
 
     if (req.method !== "POST") {
-      return new Response("Method not allowed", {
-        status: 405,
-        headers: corsHeaders,
-      });
+      return jsonResponse({ error: "Method not allowed" }, 405);
     }
 
     const authHeader = req.headers.get("Authorization");
     if (!authHeader) {
-      return new Response(JSON.stringify({ error: "Unauthorized" }), {
-        status: 401,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      return jsonResponse({ error: "Unauthorized" }, 401);
     }
 
     const authClient = getAuthSupabase(authHeader);
@@ -145,28 +161,20 @@ Deno.serve(async (req: Request) => {
       data: { user },
     } = await authClient.auth.getUser();
     if (!user) {
-      return new Response(JSON.stringify({ error: "Unauthorized" }), {
-        status: 401,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      return jsonResponse({ error: "Unauthorized" }, 401);
     }
 
     const body = await req.json();
     const { code, app_id, configuration_id, waba_id, phone_number_id } = body;
 
     if (!code || !app_id) {
-      return new Response(
-        JSON.stringify({ error: "Missing code or app_id" }),
-        {
-          status: 400,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        }
-      );
+      return jsonResponse({ error: "Faltan code o app_id" }, 400);
     }
 
+    console.log("Exchanging code for token...");
     const accessToken = await exchangeCodeForToken(code, app_id);
+    console.log("Token obtained successfully");
 
-    let wabaInfo = null;
     let finalWabaId = waba_id || "";
     let finalPhoneId = phone_number_id || "";
     let displayPhone = "";
@@ -174,26 +182,29 @@ Deno.serve(async (req: Request) => {
     let qualityRating = "unknown";
 
     if (!finalWabaId) {
-      const discovered = await discoverWABAFromToken(accessToken, app_id);
+      console.log("Discovering WABA from token...");
+      const discovered = await discoverWABA(accessToken, app_id);
       if (discovered) {
         finalWabaId = discovered;
+        console.log("Discovered WABA:", finalWabaId);
       }
     }
 
     if (!finalWabaId) {
-      return new Response(
-        JSON.stringify({
-          error:
-            "Could not detect your WhatsApp Business Account. Please ensure the number was connected during signup and try again.",
-        }),
+      return jsonResponse(
         {
-          status: 400,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        }
+          error:
+            "No se detecto tu WhatsApp Business Account. Asegurate de haber completado el flujo y seleccionado una cuenta.",
+        },
+        400
       );
     }
 
-    wabaInfo = await getWABAFromToken(accessToken, finalWabaId);
+    const wabaInfo = await graphGet(
+      `/${finalWabaId}?fields=id,name,currency,timezone_id,message_template_namespace`,
+      accessToken
+    );
+    console.log("WABA info:", wabaInfo.name || finalWabaId);
 
     const phonesResp = await getPhoneNumbers(accessToken, finalWabaId);
     if (phonesResp.data && phonesResp.data.length > 0) {
@@ -207,67 +218,107 @@ Deno.serve(async (req: Request) => {
       displayPhone = phone.display_phone_number || "";
       verifiedName = phone.verified_name || wabaInfo?.name || "";
       qualityRating = phone.quality_rating || "unknown";
+      console.log("Phone:", displayPhone, "ID:", finalPhoneId);
+    }
+
+    try {
+      console.log("Subscribing app to WABA...");
+      const subResult = await subscribeApp(accessToken, finalWabaId);
+      console.log("Subscribe result:", JSON.stringify(subResult));
+    } catch (e) {
+      console.warn("Subscribe failed (may already exist):", e);
     }
 
     if (finalPhoneId) {
       try {
-        await registerPhoneNumber(accessToken, finalPhoneId);
-      } catch (_e) {
-        // phone may already be registered
+        console.log("Registering phone for Cloud API...");
+        const regResult = await registerPhone(accessToken, finalPhoneId);
+        console.log("Register result:", JSON.stringify(regResult));
+      } catch (e) {
+        console.warn("Phone register failed (may already be registered):", e);
       }
     }
 
-    try {
-      await subscribeToWebhook(accessToken, finalWabaId);
-    } catch (_e) {
-      // subscription may already exist
-    }
+    const supabase = getServiceSupabase();
 
-    const supabase = getSupabase();
-
-    const { data: account, error: dbError } = await supabase
+    const { data: existing } = await supabase
       .from("whatsapp_business_accounts")
-      .insert({
-        waba_id: finalWabaId,
-        phone_number_id: finalPhoneId,
-        display_phone_number: displayPhone,
-        verified_name: verifiedName,
-        quality_rating: qualityRating,
-        access_token: accessToken,
-        meta_app_id: app_id,
-        configuration_id: configuration_id || "",
-        status: "connected",
-        status_message: "Connected via Embedded Signup",
-        connected_by: user.id,
-        connected_at: new Date().toISOString(),
-      })
-      .select("id, waba_id, phone_number_id, display_phone_number, verified_name, status")
+      .select("id")
+      .eq("waba_id", finalWabaId)
+      .eq("connected_by", user.id)
       .maybeSingle();
 
-    if (dbError) {
-      return new Response(JSON.stringify({ error: dbError.message }), {
-        status: 500,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+    let account;
+    let dbError;
+
+    if (existing) {
+      const result = await supabase
+        .from("whatsapp_business_accounts")
+        .update({
+          phone_number_id: finalPhoneId,
+          display_phone_number: displayPhone,
+          verified_name: verifiedName,
+          quality_rating: qualityRating,
+          access_token: accessToken,
+          meta_app_id: app_id,
+          configuration_id: configuration_id || "",
+          status: "connected",
+          status_message: "Reconectado via Embedded Signup",
+          connected_at: new Date().toISOString(),
+        })
+        .eq("id", existing.id)
+        .select(
+          "id, waba_id, phone_number_id, display_phone_number, verified_name, status"
+        )
+        .maybeSingle();
+
+      account = result.data;
+      dbError = result.error;
+    } else {
+      const result = await supabase
+        .from("whatsapp_business_accounts")
+        .insert({
+          waba_id: finalWabaId,
+          phone_number_id: finalPhoneId,
+          display_phone_number: displayPhone,
+          verified_name: verifiedName,
+          quality_rating: qualityRating,
+          access_token: accessToken,
+          meta_app_id: app_id,
+          configuration_id: configuration_id || "",
+          status: "connected",
+          status_message: "Conectado via Embedded Signup",
+          connected_by: user.id,
+          connected_at: new Date().toISOString(),
+        })
+        .select(
+          "id, waba_id, phone_number_id, display_phone_number, verified_name, status"
+        )
+        .maybeSingle();
+
+      account = result.data;
+      dbError = result.error;
     }
 
-    return new Response(
-      JSON.stringify({
-        success: true,
-        account,
-        waba_details: wabaInfo,
-      }),
-      {
-        status: 200,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      }
-    );
+    if (dbError) {
+      console.error("DB error:", dbError);
+      return jsonResponse({ error: dbError.message }, 500);
+    }
+
+    console.log("Account saved:", account?.id);
+
+    return jsonResponse({
+      success: true,
+      account,
+      waba_details: {
+        id: wabaInfo.id,
+        name: wabaInfo.name,
+        currency: wabaInfo.currency,
+      },
+    });
   } catch (error) {
     console.error("Embedded signup error:", error);
-    const message = error instanceof Error ? error.message : "Internal error";
-    return new Response(JSON.stringify({ error: message }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    const message = error instanceof Error ? error.message : "Error interno";
+    return jsonResponse({ error: message }, 500);
   }
 });
