@@ -14,6 +14,7 @@ import {
   LogOut,
   Menu,
   X,
+  MessageCircle,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useState, useEffect } from 'react';
@@ -26,6 +27,7 @@ const navItems = [
   { to: '/briefs', icon: FileText, label: 'Briefs' },
   { to: '/chat', icon: MessageSquare, label: 'Agent Chat', badgeKey: 'chat' as const },
   { to: '/qa', icon: MonitorCheck, label: 'QA Review', badgeKey: 'qa' as const },
+  { to: '/whatsapp', icon: MessageCircle, label: 'WhatsApp' },
   { to: '/domains', icon: Globe, label: 'Domains' },
   { to: '/infrastructure', icon: Server, label: 'Infrastructure' },
   { to: '/activity', icon: Activity, label: 'Activity' },

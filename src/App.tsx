@@ -14,6 +14,7 @@ import DomainsPage from './pages/DomainsPage';
 import ActivityPage from './pages/ActivityPage';
 import InfrastructurePage from './pages/InfrastructurePage';
 import SettingsPage from './pages/SettingsPage';
+import WhatsAppPage from './pages/WhatsAppPage';
 import type { ReactNode } from 'react';
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
@@ -60,6 +61,7 @@ function AppRoutes() {
         <Route path="chat/:projectId" element={<AgentChatPage />} />
         <Route path="qa" element={<QAReviewPage />} />
         <Route path="qa/:projectId" element={<QAReviewPage />} />
+        <Route path="whatsapp" element={<WhatsAppPage />} />
         <Route path="domains" element={<DomainsPage />} />
         <Route path="infrastructure" element={<InfrastructurePage />} />
         <Route path="activity" element={<ActivityPage />} />

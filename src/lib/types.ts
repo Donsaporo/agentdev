@@ -250,3 +250,59 @@ export interface PipelineState {
   created_at: string;
   projects?: Project;
 }
+
+export interface WhatsAppBusinessAccount {
+  id: string;
+  waba_id: string;
+  phone_number_id: string;
+  display_phone_number: string;
+  verified_name: string;
+  quality_rating: string;
+  access_token: string;
+  meta_app_id: string;
+  configuration_id: string;
+  status: 'pending' | 'connected' | 'disconnected' | 'error';
+  status_message: string;
+  connected_by: string | null;
+  connected_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WhatsAppContact {
+  id: string;
+  wa_id: string;
+  phone_number: string;
+  display_name: string;
+  profile_name: string;
+  lead_status: 'new' | 'contacted' | 'qualified' | 'proposal_sent' | 'won' | 'lost';
+  notes: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WhatsAppConversation {
+  id: string;
+  contact_id: string;
+  status: 'active' | 'closed' | 'archived';
+  last_message_at: string;
+  unread_count: number;
+  created_at: string;
+  updated_at: string;
+  contact?: WhatsAppContact;
+}
+
+export interface WhatsAppMessage {
+  id: string;
+  conversation_id: string;
+  contact_id: string;
+  wa_message_id: string;
+  direction: 'inbound' | 'outbound';
+  message_type: 'text' | 'image' | 'audio' | 'video' | 'document' | 'location' | 'interactive' | 'template';
+  content: string;
+  media_url: string;
+  media_mime_type: string;
+  metadata: Record<string, unknown>;
+  status: 'sent' | 'delivered' | 'read' | 'failed' | 'received';
+  created_at: string;
+}
