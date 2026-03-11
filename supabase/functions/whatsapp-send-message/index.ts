@@ -302,7 +302,10 @@ Deno.serve(async (req: Request) => {
       });
       const codeData = await codeRes.json();
       if (!codeRes.ok) {
-        throw new Error(codeData.error?.message || `Request code failed: ${codeRes.status}`);
+        const errMsg = codeData.error?.message || "";
+        const errCode = codeData.error?.code || "";
+        const errSub = codeData.error?.error_subcode || "";
+        throw new Error(`${errMsg || "Request code failed"} (code: ${errCode}, subcode: ${errSub}, status: ${codeRes.status})`);
       }
 
       return new Response(JSON.stringify({ success: true, message: `Verification code sent via ${codeMethod}` }), {
@@ -321,11 +324,14 @@ Deno.serve(async (req: Request) => {
           Authorization: `Bearer ${account.access_token}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ code }),
+        body: JSON.stringify({ messaging_product: "whatsapp", code }),
       });
       const verifyData = await verifyRes.json();
       if (!verifyRes.ok) {
-        throw new Error(verifyData.error?.message || `Verification failed: ${verifyRes.status}`);
+        const errMsg = verifyData.error?.message || "";
+        const errCode = verifyData.error?.code || "";
+        const errSub = verifyData.error?.error_subcode || "";
+        throw new Error(`${errMsg || "Verification failed"} (code: ${errCode}, subcode: ${errSub}, status: ${verifyRes.status})`);
       }
 
       return new Response(JSON.stringify({ success: true, message: "Phone number verified and registered" }), {
