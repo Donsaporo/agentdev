@@ -131,13 +131,55 @@ function extractMessageContent(message: Record<string, unknown>) {
   }
 }
 
-async function processIncomingMessages(body: Record<string, unknown>) {
-  const supabase = getSupabase();
+function detectProvider(req: Request, body: Record<string, unknown>): string {
+  if (req.headers.get("D360-API-KEY")) return "360dialog";
+  if (req.headers.get("x-]360dialog-channel")) return "360dialog";
+
   const entries = (body.entry as Array<Record<string, unknown>>) || [];
+  if (entries.length > 0) return "cloud_api";
+
+  if (body.messages || body.statuses || body.contacts) return "360dialog";
+
+  return "cloud_api";
+}
+
+function normalize360Payload(body: Record<string, unknown>): Record<string, unknown> {
+  if (body.entry) return body;
+
+  const messages = (body.messages as Array<Record<string, unknown>>) || [];
+  const contacts = (body.contacts as Array<Record<string, unknown>>) || [];
+  const statuses = (body.statuses as Array<Record<string, unknown>>) || [];
+
+  return {
+    entry: [
+      {
+        changes: [
+          {
+            field: "messages",
+            value: {
+              metadata: {
+                phone_number_id: "",
+                display_phone_number: "",
+              },
+              messages,
+              contacts,
+              statuses,
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+async function processIncomingMessages(body: Record<string, unknown>, provider: string) {
+  const supabase = getSupabase();
+
+  const normalized = provider === "360dialog" ? normalize360Payload(body) : body;
+  const entries = (normalized.entry as Array<Record<string, unknown>>) || [];
 
   for (const entry of entries) {
-    const changes =
-      (entry.changes as Array<Record<string, unknown>>) || [];
+    const changes = (entry.changes as Array<Record<string, unknown>>) || [];
 
     for (const change of changes) {
       if (change.field !== "messages") continue;
@@ -145,10 +187,8 @@ async function processIncomingMessages(body: Record<string, unknown>) {
       const value = change.value as Record<string, unknown>;
       const metadata = value.metadata as Record<string, string>;
       const phoneNumberId = metadata?.phone_number_id || "";
-      const messages =
-        (value.messages as Array<Record<string, unknown>>) || [];
-      const contacts =
-        (value.contacts as Array<Record<string, unknown>>) || [];
+      const messages = (value.messages as Array<Record<string, unknown>>) || [];
+      const contacts = (value.contacts as Array<Record<string, unknown>>) || [];
 
       const contactMap: Record<string, string> = {};
       for (const c of contacts) {
@@ -163,14 +203,10 @@ async function processIncomingMessages(body: Record<string, unknown>) {
         const contactId = await upsertContact(supabase, waId, profileName);
         if (!contactId) continue;
 
-        const conversationId = await getOrCreateConversation(
-          supabase,
-          contactId
-        );
+        const conversationId = await getOrCreateConversation(supabase, contactId);
         if (!conversationId) continue;
 
-        const { content, media_url, media_mime_type } =
-          extractMessageContent(message);
+        const { content, media_url, media_mime_type } = extractMessageContent(message);
 
         await supabase.from("whatsapp_messages").insert({
           conversation_id: conversationId,
@@ -184,14 +220,14 @@ async function processIncomingMessages(body: Record<string, unknown>) {
           metadata: {
             phone_number_id: phoneNumberId,
             timestamp: message.timestamp,
+            provider,
             raw: message,
           },
           status: "received",
         });
       }
 
-      const statuses =
-        (value.statuses as Array<Record<string, unknown>>) || [];
+      const statuses = (value.statuses as Array<Record<string, unknown>>) || [];
       for (const status of statuses) {
         const waMessageId = status.id as string;
         const statusValue = status.status as string;
@@ -222,9 +258,12 @@ Deno.serve(async (req: Request) => {
 
     if (req.method === "POST") {
       const body = (await req.json()) as Record<string, unknown>;
+      const provider = detectProvider(req, body);
+
+      console.log(`Webhook received from provider: ${provider}`);
 
       EdgeRuntime.waitUntil(
-        processIncomingMessages(body).catch((err) =>
+        processIncomingMessages(body, provider).catch((err) =>
           console.error("Webhook processing error:", err)
         )
       );

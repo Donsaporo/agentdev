@@ -1,13 +1,14 @@
 import { useState, useEffect } from 'react';
-import { MessageCircle, Plus, RefreshCw, Key, Smartphone } from 'lucide-react';
+import { MessageCircle, Plus, RefreshCw, Key, Smartphone, Zap } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useToast } from '../contexts/ToastContext';
 import type { WhatsAppBusinessAccount } from '../lib/types';
 import WhatsAppConnect from './whatsapp/WhatsAppConnect';
 import EmbeddedSignup from './whatsapp/EmbeddedSignup';
+import Connect360Dialog from './whatsapp/Connect360Dialog';
 import WhatsAppAccountCard from './whatsapp/WhatsAppAccountCard';
 
-type SetupMode = null | 'connect' | 'embedded';
+type SetupMode = null | 'connect' | 'embedded' | '360dialog';
 
 export default function WhatsAppPage() {
   const toast = useToast();
@@ -105,6 +106,17 @@ export default function WhatsAppPage() {
                 Cuenta existente
               </button>
               <button
+                onClick={() => setSetupMode('360dialog')}
+                className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all ${
+                  setupMode === '360dialog'
+                    ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
+                    : 'text-slate-400 hover:text-slate-300 border border-transparent'
+                }`}
+              >
+                <Zap className="w-4 h-4" />
+                360dialog
+              </button>
+              <button
                 onClick={() => setSetupMode('embedded')}
                 className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all ${
                   setupMode === 'embedded'
@@ -125,6 +137,7 @@ export default function WhatsAppPage() {
           </div>
 
           {setupMode === 'connect' && <WhatsAppConnect onSuccess={handleSetupSuccess} />}
+          {setupMode === '360dialog' && <Connect360Dialog onSuccess={handleSetupSuccess} />}
           {setupMode === 'embedded' && <EmbeddedSignup onSuccess={handleSetupSuccess} />}
         </div>
       )}
@@ -136,13 +149,17 @@ export default function WhatsAppPage() {
           </div>
           <h3 className="text-lg font-semibold text-white mb-2">No hay cuentas de WhatsApp conectadas</h3>
           <p className="text-sm text-slate-400 max-w-md mb-6">
-            Conecta tu cuenta de WhatsApp Business existente con su Access Token,
-            o usa el Embedded Signup de Meta para crear una nueva.
+            Conecta tu cuenta de WhatsApp Business via 360dialog, con Access Token directo,
+            o usa el Embedded Signup de Meta.
           </p>
-          <div className="flex items-center gap-3">
-            <button onClick={() => setSetupMode('connect')} className="btn-primary">
+          <div className="flex items-center gap-3 flex-wrap justify-center">
+            <button onClick={() => setSetupMode('360dialog')} className="btn-primary">
+              <Zap className="w-4 h-4" />
+              Conectar via 360dialog
+            </button>
+            <button onClick={() => setSetupMode('connect')} className="btn-ghost">
               <Key className="w-4 h-4" />
-              Conectar cuenta existente
+              Cuenta existente (Meta)
             </button>
             <button onClick={() => setSetupMode('embedded')} className="btn-ghost">
               <Smartphone className="w-4 h-4" />

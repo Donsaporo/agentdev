@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Phone, Trash2, CheckCircle2, AlertCircle, Clock, Loader2, Signal, Send, MessageSquare, PhoneCall, ShieldCheck, Info, RefreshCw } from 'lucide-react';
+import { Phone, Trash2, CheckCircle2, AlertCircle, Clock, Loader2, Signal, Send, MessageSquare, PhoneCall, ShieldCheck, Info, RefreshCw, Zap } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import type { WhatsAppBusinessAccount } from '../../lib/types';
 
@@ -27,6 +27,7 @@ export default function WhatsAppAccountCard({ account, onDelete, deleting }: Wha
   const status = statusConfig[account.status] || statusConfig.pending;
   const StatusIcon = status.icon;
   const quality = qualityColors[account.quality_rating] || qualityColors.unknown;
+  const is360 = account.provider === '360dialog';
 
   const [showSend, setShowSend] = useState(false);
   const [sendTo, setSendTo] = useState('');
@@ -34,8 +35,12 @@ export default function WhatsAppAccountCard({ account, onDelete, deleting }: Wha
   const [sending, setSending] = useState(false);
   const [sendResult, setSendResult] = useState<{ ok: boolean; text: string } | null>(null);
   const [registering, setRegistering] = useState(false);
-  const [registered, setRegistered] = useState(false);
+  const [registered, setRegistered] = useState(is360);
   const [phoneStatus, setPhoneStatus] = useState<Record<string, unknown> | null>(null);
+  const [verifyStep, setVerifyStep] = useState<'idle' | 'code_sent' | 'verified'>('idle');
+  const [verifyCode, setVerifyCode] = useState('');
+  const [verifyLoading, setVerifyLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/whatsapp-send-message`;
   const apiHeaders = {
@@ -76,22 +81,35 @@ export default function WhatsAppAccountCard({ account, onDelete, deleting }: Wha
     }
   }
 
-
-  async function handleRegister() {
-    setRegistering(true);
+  async function handleRequestCode(method: string) {
+    setVerifyLoading(true);
     setSendResult(null);
     try {
-      await callAction({ action: 'register' });
-      setSendResult({ ok: true, text: 'Phone number registered with Cloud API' });
-      setRegistered(true);
+      await callAction({ action: 'request_code', code_method: method, language: 'es' });
+      setVerifyStep('code_sent');
+      setSendResult({ ok: true, text: `Codigo de verificacion enviado por ${method}` });
     } catch (err) {
-      setSendResult({ ok: false, text: err instanceof Error ? err.message : 'Network error' });
+      setSendResult({ ok: false, text: err instanceof Error ? err.message : 'Error' });
     } finally {
-      setRegistering(false);
+      setVerifyLoading(false);
     }
   }
 
-  const [refreshing, setRefreshing] = useState(false);
+  async function handleVerifyCode() {
+    if (!verifyCode.trim()) return;
+    setVerifyLoading(true);
+    setSendResult(null);
+    try {
+      await callAction({ action: 'verify_code', code: verifyCode.trim() });
+      setVerifyStep('verified');
+      setRegistered(true);
+      setSendResult({ ok: true, text: 'Numero verificado y registrado correctamente' });
+    } catch (err) {
+      setSendResult({ ok: false, text: err instanceof Error ? err.message : 'Error' });
+    } finally {
+      setVerifyLoading(false);
+    }
+  }
 
   async function handleRefreshToken() {
     setRefreshing(true);
@@ -102,7 +120,7 @@ export default function WhatsAppAccountCard({ account, onDelete, deleting }: Wha
         ok: true,
         text: data.expires_in_days
           ? `Token renovado - expira en ${data.expires_in_days} dias`
-          : 'Token renovado exitosamente',
+          : data.message || 'Token renovado exitosamente',
       });
     } catch (err) {
       setSendResult({ ok: false, text: err instanceof Error ? err.message : 'Error' });
@@ -119,7 +137,6 @@ export default function WhatsAppAccountCard({ account, onDelete, deleting }: Wha
     setSendResult(null);
 
     try {
-      const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/whatsapp-send-message`;
       const payload: Record<string, string> = {
         account_id: account.id,
         to: sendTo.trim(),
@@ -133,10 +150,7 @@ export default function WhatsAppAccountCard({ account, onDelete, deleting }: Wha
 
       const res = await fetch(apiUrl, {
         method: 'POST',
-        headers: {
-          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-          'Content-Type': 'application/json',
-        },
+        headers: apiHeaders,
         body: JSON.stringify(payload),
       });
 
@@ -144,7 +158,7 @@ export default function WhatsAppAccountCard({ account, onDelete, deleting }: Wha
       if (!res.ok || data.error) {
         setSendResult({ ok: false, text: data.error || 'Error sending message' });
       } else {
-        setSendResult({ ok: true, text: `Sent! ID: ${data.message_id}` });
+        setSendResult({ ok: true, text: `Enviado! ID: ${data.message_id}` });
         setSendMsg('');
       }
     } catch (err) {
@@ -167,6 +181,12 @@ export default function WhatsAppAccountCard({ account, onDelete, deleting }: Wha
                 {account.display_phone_number || 'Pending number'}
               </h3>
               <StatusIcon className={`w-4 h-4 ${status.color} flex-shrink-0`} />
+              {is360 && (
+                <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-400 flex-shrink-0">
+                  <Zap className="w-2.5 h-2.5" />
+                  360dialog
+                </span>
+              )}
             </div>
             {account.verified_name && (
               <p className="text-sm text-slate-400 mt-0.5 truncate">{account.verified_name}</p>
@@ -181,15 +201,22 @@ export default function WhatsAppAccountCard({ account, onDelete, deleting }: Wha
               <span className="text-xs text-slate-500">
                 WABA: <span className="font-mono text-slate-400">{account.waba_id || '---'}</span>
               </span>
-              <span className="text-xs text-slate-500">
-                Phone ID: <span className="font-mono text-slate-400">{account.phone_number_id || '---'}</span>
-              </span>
+              {is360 && account.channel_id && (
+                <span className="text-xs text-slate-500">
+                  Channel: <span className="font-mono text-slate-400">{account.channel_id}</span>
+                </span>
+              )}
+              {!is360 && (
+                <span className="text-xs text-slate-500">
+                  Phone ID: <span className="font-mono text-slate-400">{account.phone_number_id || '---'}</span>
+                </span>
+              )}
             </div>
           </div>
         </div>
 
         <div className="flex items-center gap-2 flex-shrink-0">
-          {account.status === 'connected' && (
+          {account.status === 'connected' && !is360 && (
             <button
               onClick={handleRefreshToken}
               disabled={refreshing}
@@ -207,7 +234,7 @@ export default function WhatsAppAccountCard({ account, onDelete, deleting }: Wha
                   ? 'text-emerald-400 bg-emerald-500/10'
                   : 'text-slate-500 hover:text-emerald-400 hover:bg-emerald-500/10'
               }`}
-              title="Send test message"
+              title="Enviar mensaje de prueba"
             >
               <MessageSquare className="w-4 h-4" />
             </button>
@@ -216,7 +243,7 @@ export default function WhatsAppAccountCard({ account, onDelete, deleting }: Wha
             onClick={() => onDelete(account.id)}
             disabled={deleting}
             className="p-2 rounded-lg text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-all disabled:opacity-50"
-            title="Remove account"
+            title="Eliminar cuenta"
           >
             {deleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
           </button>
@@ -233,41 +260,86 @@ export default function WhatsAppAccountCard({ account, onDelete, deleting }: Wha
 
       {showSend && (
         <div className="mt-4 p-4 rounded-xl bg-white/[0.03] border border-white/[0.06] space-y-3 animate-fade-in">
-          {!registered && (
+          {!registered && !is360 && (
             <div className="space-y-2.5 p-3 rounded-lg bg-amber-500/5 border border-amber-500/10">
               <div className="flex items-center gap-2 text-xs font-medium text-amber-300">
                 <PhoneCall className="w-3.5 h-3.5" />
-                Registro de numero
+                Verificacion de numero
               </div>
 
-              <p className="text-xs text-amber-300/70">
-                El numero necesita registrarse en Cloud API antes de enviar mensajes.
-              </p>
-              <div className="flex items-center gap-2 flex-wrap">
-                <button
-                  onClick={handleRegister}
-                  disabled={registering}
-                  className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition-colors disabled:opacity-50"
-                >
-                  {registering ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
-                  Registrar numero
-                </button>
-                <button
-                  onClick={handleCheckStatus}
-                  disabled={registering}
-                  className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-white/[0.04] text-slate-300 hover:bg-white/[0.08] transition-colors disabled:opacity-50"
-                >
-                  {registering ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Info className="w-3.5 h-3.5" />}
-                  Ver estado
-                </button>
-              </div>
-              {phoneStatus && (
-                <div className="text-xs font-mono text-slate-400 bg-white/[0.02] p-2 rounded-lg max-h-32 overflow-auto">
-                  {JSON.stringify(phoneStatus, null, 2)}
+              {verifyStep === 'idle' && (
+                <div className="space-y-2">
+                  <p className="text-xs text-amber-300/70">
+                    El numero debe verificarse antes de enviar mensajes. Solicita un codigo por SMS o llamada.
+                  </p>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      onClick={() => handleRequestCode('SMS')}
+                      disabled={verifyLoading}
+                      className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition-colors disabled:opacity-50"
+                    >
+                      {verifyLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+                      Verificar por SMS
+                    </button>
+                    <button
+                      onClick={() => handleRequestCode('VOICE')}
+                      disabled={verifyLoading}
+                      className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-sky-500/10 text-sky-400 hover:bg-sky-500/20 transition-colors disabled:opacity-50"
+                    >
+                      {verifyLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <PhoneCall className="w-3.5 h-3.5" />}
+                      Verificar por llamada
+                    </button>
+                    <button
+                      onClick={handleCheckStatus}
+                      disabled={registering}
+                      className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-white/[0.04] text-slate-300 hover:bg-white/[0.08] transition-colors disabled:opacity-50"
+                    >
+                      {registering ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Info className="w-3.5 h-3.5" />}
+                      Ver estado
+                    </button>
+                  </div>
+                  {phoneStatus && (
+                    <div className="text-xs font-mono text-slate-400 bg-white/[0.02] p-2 rounded-lg max-h-32 overflow-auto">
+                      {JSON.stringify(phoneStatus, null, 2)}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {verifyStep === 'code_sent' && (
+                <div className="space-y-2">
+                  <p className="text-xs text-amber-300/70">
+                    Ingresa el codigo de verificacion que recibiste:
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      placeholder="Codigo de 6 digitos"
+                      value={verifyCode}
+                      onChange={e => setVerifyCode(e.target.value)}
+                      maxLength={6}
+                      className="w-40 px-3 py-1.5 rounded-lg bg-white/[0.04] border border-white/[0.08] text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500/40 transition-colors font-mono tracking-widest"
+                    />
+                    <button
+                      onClick={handleVerifyCode}
+                      disabled={verifyLoading || !verifyCode.trim()}
+                      className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition-colors disabled:opacity-50"
+                    >
+                      {verifyLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+                      Verificar
+                    </button>
+                    <button
+                      onClick={() => { setVerifyStep('idle'); setVerifyCode(''); }}
+                      className="text-xs text-slate-500 hover:text-slate-300 transition-colors"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
           )}
+
           <div className="flex items-center gap-2 text-sm font-medium text-slate-300">
             <Send className="w-3.5 h-3.5 text-emerald-400" />
             Enviar mensaje de prueba
@@ -324,12 +396,12 @@ export default function WhatsAppAccountCard({ account, onDelete, deleting }: Wha
       <div className="mt-3 pt-3 border-t border-white/[0.04] flex items-center justify-between">
         <span className="text-xs text-slate-500">
           {account.connected_at
-            ? `Connected ${formatDistanceToNow(new Date(account.connected_at), { addSuffix: true })}`
-            : 'Not yet connected'
+            ? `Conectado ${formatDistanceToNow(new Date(account.connected_at), { addSuffix: true })}`
+            : 'Sin conectar'
           }
         </span>
         <span className="text-xs text-slate-600 font-mono">
-          App: {account.meta_app_id}
+          {is360 ? `Channel: ${account.channel_id}` : `App: ${account.meta_app_id}`}
         </span>
       </div>
     </div>

@@ -261,6 +261,9 @@ export interface WhatsAppBusinessAccount {
   access_token: string;
   meta_app_id: string;
   configuration_id: string;
+  provider: 'cloud_api' | '360dialog';
+  channel_id: string;
+  api_base_url: string;
   status: 'pending' | 'connected' | 'disconnected' | 'error';
   status_message: string;
   connected_by: string | null;

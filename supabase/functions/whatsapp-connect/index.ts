@@ -9,6 +9,7 @@ const corsHeaders = {
 };
 
 const GRAPH_API = "https://graph.facebook.com/v21.0";
+const D360_API = "https://waba-v2.360dialog.io";
 
 function jsonResponse(body: Record<string, unknown>, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -31,6 +32,8 @@ function getServiceSupabase() {
     Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
   );
 }
+
+// --- Meta Cloud API helpers ---
 
 async function graphGet(path: string, token: string) {
   const url = `${GRAPH_API}${path}${path.includes("?") ? "&" : "?"}access_token=${token}`;
@@ -57,7 +60,6 @@ async function discoverAccounts(accessToken: string) {
 
   if (wabaResp.error) {
     const bizResp = await graphGet("/me/businesses?fields=id,name", accessToken);
-
     if (bizResp.data) {
       for (const biz of bizResp.data) {
         const ownedResp = await graphGet(
@@ -111,10 +113,7 @@ async function discoverAccounts(accessToken: string) {
           scope.target_ids?.length > 0
         ) {
           for (const wabaId of scope.target_ids) {
-            const wabaInfo = await graphGet(
-              `/${wabaId}?fields=id,name`,
-              accessToken
-            );
+            const wabaInfo = await graphGet(`/${wabaId}?fields=id,name`, accessToken);
             const phones = await getPhoneNumbers(accessToken, wabaId);
             accounts.push({
               waba_id: wabaId,
@@ -135,9 +134,7 @@ async function getPhoneNumbers(accessToken: string, wabaId: string) {
     `/${wabaId}/phone_numbers?fields=id,display_phone_number,verified_name,quality_rating,code_verification_status`,
     accessToken
   );
-
   if (!resp.data) return [];
-
   return resp.data.map(
     (p: Record<string, string>) => ({
       id: p.id,
@@ -148,7 +145,7 @@ async function getPhoneNumbers(accessToken: string, wabaId: string) {
   );
 }
 
-async function connectAccount(
+async function connectCloudApiAccount(
   accessToken: string,
   wabaId: string,
   phoneNumberId: string | undefined,
@@ -158,11 +155,8 @@ async function connectAccount(
     `/${wabaId}?fields=id,name,currency,timezone_id,message_template_namespace`,
     accessToken
   );
-
   if (wabaInfo.error) {
-    throw new Error(
-      wabaInfo.error.message || "No se pudo acceder al WABA. Verifica el token y los permisos."
-    );
+    throw new Error(wabaInfo.error.message || "No se pudo acceder al WABA. Verifica el token y los permisos.");
   }
 
   let finalPhoneId = phoneNumberId || "";
@@ -175,7 +169,6 @@ async function connectAccount(
     const phone = finalPhoneId
       ? phones.find((p: { id: string }) => p.id === finalPhoneId) || phones[0]
       : phones[0];
-
     finalPhoneId = phone.id;
     displayPhone = phone.display_phone_number;
     verifiedName = phone.verified_name || wabaInfo.name || "";
@@ -185,10 +178,7 @@ async function connectAccount(
   try {
     await fetch(`${GRAPH_API}/${wabaId}/subscribed_apps`, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-      },
+      headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
     });
   } catch (_e) {
     // subscription may already exist
@@ -212,12 +202,13 @@ async function connectAccount(
         verified_name: verifiedName,
         quality_rating: qualityRating,
         access_token: accessToken,
+        provider: "cloud_api",
         status: "connected",
         status_message: "Reconectado con token actualizado",
         connected_at: new Date().toISOString(),
       })
       .eq("id", existing.id)
-      .select("id, waba_id, phone_number_id, display_phone_number, verified_name, status")
+      .select("id, waba_id, phone_number_id, display_phone_number, verified_name, status, provider")
       .maybeSingle();
 
     if (dbError) throw new Error(dbError.message);
@@ -235,12 +226,122 @@ async function connectAccount(
       access_token: accessToken,
       meta_app_id: "",
       configuration_id: "",
+      provider: "cloud_api",
       status: "connected",
       status_message: "Conectado con Access Token",
       connected_by: userId,
       connected_at: new Date().toISOString(),
     })
-    .select("id, waba_id, phone_number_id, display_phone_number, verified_name, status")
+    .select("id, waba_id, phone_number_id, display_phone_number, verified_name, status, provider")
+    .maybeSingle();
+
+  if (dbError) throw new Error(dbError.message);
+  return { account, updated: false };
+}
+
+// --- 360dialog helpers ---
+
+async function validate360ApiKey(apiKey: string) {
+  const res = await fetch(`${D360_API}/configs/webhook`, {
+    headers: { "D360-API-KEY": apiKey, "Content-Type": "application/json" },
+  });
+
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    const msg = data.meta?.developer_message || data.error?.message || `API key validation failed (${res.status})`;
+    throw new Error(msg);
+  }
+
+  return await res.json();
+}
+
+async function get360PhoneInfo(apiKey: string) {
+  const res = await fetch(`${D360_API}/configs/phone_number`, {
+    headers: { "D360-API-KEY": apiKey, "Content-Type": "application/json" },
+  });
+
+  if (res.ok) {
+    return await res.json();
+  }
+  return null;
+}
+
+async function set360Webhook(apiKey: string, webhookUrl: string) {
+  const res = await fetch(`${D360_API}/configs/webhook`, {
+    method: "POST",
+    headers: { "D360-API-KEY": apiKey, "Content-Type": "application/json" },
+    body: JSON.stringify({ url: webhookUrl }),
+  });
+
+  if (!res.ok) {
+    console.error("Failed to set 360dialog webhook:", await res.text());
+    return false;
+  }
+  return true;
+}
+
+async function connect360Account(
+  apiKey: string,
+  channelId: string,
+  phoneNumber: string,
+  displayName: string,
+  wabaId: string,
+  userId: string
+) {
+  await validate360ApiKey(apiKey);
+
+  const phoneInfo = await get360PhoneInfo(apiKey);
+  const finalPhone = phoneInfo?.phone_number || phoneNumber;
+  const finalName = phoneInfo?.verified_name || displayName;
+
+  const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+  const webhookUrl = `${supabaseUrl}/functions/v1/whatsapp-webhook`;
+  await set360Webhook(apiKey, webhookUrl);
+
+  const supabase = getServiceSupabase();
+
+  const { data: existing } = await supabase
+    .from("whatsapp_business_accounts")
+    .select("id")
+    .eq("provider", "360dialog")
+    .eq("channel_id", channelId)
+    .eq("connected_by", userId)
+    .maybeSingle();
+
+  const accountData = {
+    waba_id: wabaId,
+    phone_number_id: "",
+    display_phone_number: finalPhone,
+    verified_name: finalName,
+    quality_rating: "unknown",
+    access_token: apiKey,
+    meta_app_id: "",
+    configuration_id: "",
+    provider: "360dialog",
+    channel_id: channelId,
+    api_base_url: D360_API,
+    status: "connected",
+    status_message: "Conectado via 360dialog",
+    connected_by: userId,
+    connected_at: new Date().toISOString(),
+  };
+
+  if (existing) {
+    const { data: account, error: dbError } = await supabase
+      .from("whatsapp_business_accounts")
+      .update(accountData)
+      .eq("id", existing.id)
+      .select("id, waba_id, display_phone_number, verified_name, status, provider, channel_id")
+      .maybeSingle();
+
+    if (dbError) throw new Error(dbError.message);
+    return { account, updated: true };
+  }
+
+  const { data: account, error: dbError } = await supabase
+    .from("whatsapp_business_accounts")
+    .insert(accountData)
+    .select("id, waba_id, display_phone_number, verified_name, status, provider, channel_id")
     .maybeSingle();
 
   if (dbError) throw new Error(dbError.message);
@@ -263,15 +364,52 @@ Deno.serve(async (req: Request) => {
     }
 
     const authClient = getAuthSupabase(authHeader);
-    const {
-      data: { user },
-    } = await authClient.auth.getUser();
+    const { data: { user } } = await authClient.auth.getUser();
     if (!user) {
       return jsonResponse({ error: "Unauthorized" }, 401);
     }
 
     const body = await req.json();
-    const { action, access_token, waba_id, phone_number_id } = body;
+    const { action, provider } = body;
+
+    if (provider === "360dialog") {
+      const { api_key, channel_id, phone_number, display_name, waba_id } = body;
+
+      if (!api_key) return jsonResponse({ error: "API key es requerido" }, 400);
+
+      if (action === "validate") {
+        const webhookConfig = await validate360ApiKey(api_key);
+        const phoneInfo = await get360PhoneInfo(api_key);
+        return jsonResponse({
+          valid: true,
+          webhook: webhookConfig,
+          phone: phoneInfo,
+        });
+      }
+
+      if (action === "connect") {
+        if (!channel_id) return jsonResponse({ error: "Channel ID es requerido" }, 400);
+
+        const result = await connect360Account(
+          api_key,
+          channel_id,
+          phone_number || "",
+          display_name || "",
+          waba_id || "",
+          user.id
+        );
+
+        return jsonResponse({
+          success: true,
+          account: result.account,
+          updated: result.updated,
+        });
+      }
+
+      return jsonResponse({ error: "Invalid action for 360dialog. Use 'validate' or 'connect'" }, 400);
+    }
+
+    const { access_token, waba_id, phone_number_id } = body;
 
     if (!access_token) {
       return jsonResponse({ error: "Access token es requerido" }, 400);
@@ -287,7 +425,7 @@ Deno.serve(async (req: Request) => {
         return jsonResponse({ error: "WABA ID es requerido" }, 400);
       }
 
-      const result = await connectAccount(
+      const result = await connectCloudApiAccount(
         access_token,
         waba_id,
         phone_number_id,
