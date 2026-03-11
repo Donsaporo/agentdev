@@ -36,9 +36,6 @@ export default function WhatsAppAccountCard({ account, onDelete, deleting }: Wha
   const [registering, setRegistering] = useState(false);
   const [registered, setRegistered] = useState(false);
   const [phoneStatus, setPhoneStatus] = useState<Record<string, unknown> | null>(null);
-  const [verifyStep, setVerifyStep] = useState<'idle' | 'code_sent' | 'verified'>('idle');
-  const [verifyCode, setVerifyCode] = useState('');
-  const [verifyLoading, setVerifyLoading] = useState(false);
 
   const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/whatsapp-send-message`;
   const apiHeaders = {
@@ -79,35 +76,6 @@ export default function WhatsAppAccountCard({ account, onDelete, deleting }: Wha
     }
   }
 
-  async function handleRequestCode(method: string) {
-    setVerifyLoading(true);
-    setSendResult(null);
-    try {
-      await callAction({ action: 'request_code', code_method: method, language: 'es' });
-      setVerifyStep('code_sent');
-      setSendResult({ ok: true, text: `Codigo de verificacion enviado por ${method}` });
-    } catch (err) {
-      setSendResult({ ok: false, text: err instanceof Error ? err.message : 'Error' });
-    } finally {
-      setVerifyLoading(false);
-    }
-  }
-
-  async function handleVerifyCode() {
-    if (!verifyCode.trim()) return;
-    setVerifyLoading(true);
-    setSendResult(null);
-    try {
-      await callAction({ action: 'verify_code', code: verifyCode.trim() });
-      setVerifyStep('verified');
-      setRegistered(true);
-      setSendResult({ ok: true, text: 'Numero verificado y registrado correctamente' });
-    } catch (err) {
-      setSendResult({ ok: false, text: err instanceof Error ? err.message : 'Error' });
-    } finally {
-      setVerifyLoading(false);
-    }
-  }
 
   async function handleRegister() {
     setRegistering(true);
@@ -272,80 +240,30 @@ export default function WhatsAppAccountCard({ account, onDelete, deleting }: Wha
                 Registro de numero
               </div>
 
-              {verifyStep === 'idle' && (
-                <div className="space-y-2">
-                  <p className="text-xs text-amber-300/70">
-                    Si recibes error "Account not registered", primero verifica el estado y luego registra el numero.
-                  </p>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <button
-                      onClick={handleCheckStatus}
-                      disabled={registering}
-                      className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-white/[0.04] text-slate-300 hover:bg-white/[0.08] transition-colors disabled:opacity-50"
-                    >
-                      {registering ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Info className="w-3.5 h-3.5" />}
-                      Ver estado
-                    </button>
-                    <button
-                      onClick={handleRegister}
-                      disabled={registering}
-                      className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 transition-colors disabled:opacity-50"
-                    >
-                      Registrar directo
-                    </button>
-                    <button
-                      onClick={() => handleRequestCode('SMS')}
-                      disabled={verifyLoading}
-                      className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition-colors disabled:opacity-50"
-                    >
-                      {verifyLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
-                      Verificar por SMS
-                    </button>
-                    <button
-                      onClick={() => handleRequestCode('VOICE')}
-                      disabled={verifyLoading}
-                      className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-sky-500/10 text-sky-400 hover:bg-sky-500/20 transition-colors disabled:opacity-50"
-                    >
-                      Verificar por llamada
-                    </button>
-                  </div>
-                  {phoneStatus && (
-                    <div className="text-xs font-mono text-slate-400 bg-white/[0.02] p-2 rounded-lg max-h-32 overflow-auto">
-                      {JSON.stringify(phoneStatus, null, 2)}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {verifyStep === 'code_sent' && (
-                <div className="space-y-2">
-                  <p className="text-xs text-amber-300/70">
-                    Ingresa el codigo de verificacion que recibiste:
-                  </p>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      placeholder="Codigo de 6 digitos"
-                      value={verifyCode}
-                      onChange={e => setVerifyCode(e.target.value)}
-                      maxLength={6}
-                      className="w-40 px-3 py-1.5 rounded-lg bg-white/[0.04] border border-white/[0.08] text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500/40 transition-colors font-mono tracking-widest"
-                    />
-                    <button
-                      onClick={handleVerifyCode}
-                      disabled={verifyLoading || !verifyCode.trim()}
-                      className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition-colors disabled:opacity-50"
-                    >
-                      {verifyLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
-                      Verificar
-                    </button>
-                    <button
-                      onClick={() => { setVerifyStep('idle'); setVerifyCode(''); }}
-                      className="text-xs text-slate-500 hover:text-slate-300 transition-colors"
-                    >
-                      Cancelar
-                    </button>
-                  </div>
+              <p className="text-xs text-amber-300/70">
+                El numero necesita registrarse en Cloud API antes de enviar mensajes.
+              </p>
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  onClick={handleRegister}
+                  disabled={registering}
+                  className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition-colors disabled:opacity-50"
+                >
+                  {registering ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+                  Registrar numero
+                </button>
+                <button
+                  onClick={handleCheckStatus}
+                  disabled={registering}
+                  className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-white/[0.04] text-slate-300 hover:bg-white/[0.08] transition-colors disabled:opacity-50"
+                >
+                  {registering ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Info className="w-3.5 h-3.5" />}
+                  Ver estado
+                </button>
+              </div>
+              {phoneStatus && (
+                <div className="text-xs font-mono text-slate-400 bg-white/[0.02] p-2 rounded-lg max-h-32 overflow-auto">
+                  {JSON.stringify(phoneStatus, null, 2)}
                 </div>
               )}
             </div>
