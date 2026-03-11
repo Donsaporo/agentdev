@@ -295,6 +295,7 @@ Deno.serve(async (req: Request) => {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
+          messaging_product: "whatsapp",
           code_method: codeMethod,
           language: codeLang,
         }),
