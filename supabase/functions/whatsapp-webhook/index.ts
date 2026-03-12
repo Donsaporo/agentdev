@@ -37,10 +37,10 @@ async function upsertContact(
   supabase: ReturnType<typeof createClient>,
   waId: string,
   profileName: string
-) {
+): Promise<{ id: string; isNew: boolean } | null> {
   const { data: existing } = await supabase
     .from("whatsapp_contacts")
-    .select("id")
+    .select("id, intro_sent")
     .eq("wa_id", waId)
     .maybeSingle();
 
@@ -49,7 +49,7 @@ async function upsertContact(
       .from("whatsapp_contacts")
       .update({ profile_name: profileName, updated_at: new Date().toISOString() })
       .eq("id", existing.id);
-    return existing.id;
+    return { id: existing.id, isNew: false };
   }
 
   const { data: created } = await supabase
@@ -59,11 +59,13 @@ async function upsertContact(
       phone_number: waId,
       display_name: profileName,
       profile_name: profileName,
+      intro_sent: false,
+      is_imported: false,
     })
     .select("id")
     .maybeSingle();
 
-  return created?.id;
+  return created ? { id: created.id, isNew: true } : null;
 }
 
 async function getOrCreateConversation(
@@ -206,12 +208,21 @@ async function processIncomingMessages(body: Record<string, unknown>, provider: 
         const waId = message.from as string;
         const profileName = contactMap[waId] || waId;
 
-        const contactId = await upsertContact(supabase, waId, profileName);
-        if (!contactId) continue;
+        const contactResult = await upsertContact(supabase, waId, profileName);
+        if (!contactResult) continue;
+
+        const { id: contactId, isNew } = contactResult;
 
         const { content: msgContent } = extractMessageContent(message);
         const conversationId = await getOrCreateConversation(supabase, contactId, msgContent || `[${message.type}]`);
         if (!conversationId) continue;
+
+        if (isNew) {
+          await supabase
+            .from("whatsapp_conversations")
+            .update({ category: "new_lead" })
+            .eq("id", conversationId);
+        }
 
         const { content, media_url, media_mime_type } = extractMessageContent(message);
 
@@ -237,7 +248,7 @@ async function processIncomingMessages(body: Record<string, unknown>, provider: 
             phone_number_id: phoneNumberId,
             timestamp: message.timestamp,
             provider,
-            raw: message,
+            is_new_contact: isNew,
           },
           status: "received",
         });

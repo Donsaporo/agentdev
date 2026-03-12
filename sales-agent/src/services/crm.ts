@@ -3,6 +3,27 @@ import { createLogger } from '../core/logger.js';
 
 const log = createLogger('crm');
 
+const VALID_LEAD_STAGES = [
+  'nuevo', 'contactado', 'en_negociacion', 'demo_solicitada',
+  'cotizacion_enviada', 'por_cerrar', 'ganado', 'perdido',
+] as const;
+
+const VALID_EVENT_TYPES = [
+  'lead_creado', 'whatsapp', 'estado_cambio', 'reunion_programada',
+  'demo_solicitada', 'comentario', 'cotizacion_creada', 'cotizacion_enviada',
+  'cotizacion_aceptada', 'cotizacion_rechazada', 'reunion_completada',
+  'reunion_cancelada', 'documento_subido', 'llamada', 'email',
+  'demo_completada', 'lead_cerrado', 'otro',
+] as const;
+
+const PERSONA_TO_SALESPERSON: Record<string, string> = {
+  'Tatiana Velazquez': 'ace63d9d-ce98-4f87-b822-bdd2b0bcebfc',
+  'Julieta Casanova': 'ace63d9d-ce98-4f87-b822-bdd2b0bcebfc',
+  'Hugo Sanchez': '46493789-3fb2-4d3d-80c1-b0e7edc89a41',
+  'Maria Fernanda Rodriguez': '263d984a-35d5-4d9d-bb7e-0e20f5eb9ba8',
+  'Danna Almirante': '263d984a-35d5-4d9d-bb7e-0e20f5eb9ba8',
+};
+
 export interface CrmLeadParams {
   name: string;
   firstName?: string;
@@ -12,6 +33,7 @@ export interface CrmLeadParams {
   company?: string;
   notes?: string;
   source?: string;
+  assignedPersonaName?: string;
 }
 
 export interface CrmTimelineEvent {
@@ -41,6 +63,26 @@ function isAvailable(): boolean {
     return false;
   }
   return true;
+}
+
+function validateStage(stage: string): string {
+  if (VALID_LEAD_STAGES.includes(stage as typeof VALID_LEAD_STAGES[number])) {
+    return stage;
+  }
+  log.warn('Invalid lead stage, defaulting to nuevo', { stage });
+  return 'nuevo';
+}
+
+function validateEventType(eventType: string): string {
+  if (VALID_EVENT_TYPES.includes(eventType as typeof VALID_EVENT_TYPES[number])) {
+    return eventType;
+  }
+  log.warn('Invalid event type, defaulting to otro', { eventType });
+  return 'otro';
+}
+
+export function getSalespersonId(personaName: string): string | null {
+  return PERSONA_TO_SALESPERSON[personaName] || null;
 }
 
 export async function findClientByPhone(phone: string): Promise<string | null> {
@@ -93,6 +135,10 @@ export async function createCrmLead(params: CrmLeadParams): Promise<string | nul
       }
     }
 
+    const salespersonId = params.assignedPersonaName
+      ? getSalespersonId(params.assignedPersonaName)
+      : null;
+
     const { data, error } = await crm.from('tech_clients').insert({
       name: params.name,
       first_name: params.firstName || params.name.split(' ')[0] || '',
@@ -104,6 +150,8 @@ export async function createCrmLead(params: CrmLeadParams): Promise<string | nul
       client_type: params.company ? 'business' : 'individual',
       status_tag: 'Lead',
       lead_stage: 'nuevo',
+      source: params.source || 'whatsapp',
+      assigned_salesperson_id: salespersonId,
       last_activity_at: new Date().toISOString(),
     }).select('id').single();
 
@@ -112,7 +160,7 @@ export async function createCrmLead(params: CrmLeadParams): Promise<string | nul
       return null;
     }
 
-    log.info('CRM lead created', { clientId: data.id, name: params.name });
+    log.info('CRM lead created', { clientId: data.id, name: params.name, salesperson: salespersonId });
     return data.id;
   } catch (err) {
     log.error('CRM createCrmLead error', { error: err instanceof Error ? err.message : String(err) });
@@ -128,6 +176,10 @@ export async function updateCrmClient(
   const crm = getCrmSupabase()!;
 
   try {
+    if (updates.lead_stage) {
+      updates.lead_stage = validateStage(updates.lead_stage as string);
+    }
+
     const { error } = await crm
       .from('tech_clients')
       .update({ ...updates, last_activity_at: new Date().toISOString() })
@@ -153,7 +205,7 @@ export async function addTimelineEvent(event: CrmTimelineEvent): Promise<string 
   try {
     const { data, error } = await crm.from('tech_lead_timeline_events').insert({
       client_id: event.clientId,
-      event_type: event.eventType,
+      event_type: validateEventType(event.eventType),
       title: event.title,
       description: event.description || null,
       metadata: event.metadata || {},
@@ -193,6 +245,13 @@ export async function addComment(
       log.error('Failed to add CRM comment', { clientId, error: error.message });
       return false;
     }
+
+    await addTimelineEvent({
+      clientId,
+      eventType: 'comentario',
+      title: 'Comentario agregado desde WhatsApp',
+      description: comment.slice(0, 200),
+    }).catch(() => {});
 
     log.debug('CRM comment added', { clientId });
     return true;
@@ -280,7 +339,7 @@ export async function getCrmClientData(clientId: string): Promise<Record<string,
   try {
     const { data } = await crm
       .from('tech_clients')
-      .select('id, name, email, phone, company_name, lead_stage, status_tag, estimated_value, next_action, next_action_date, notes, last_activity_at')
+      .select('id, name, email, phone, company_name, lead_stage, status_tag, estimated_value, next_action, next_action_date, notes, last_activity_at, assigned_salesperson_id')
       .eq('id', clientId)
       .maybeSingle();
 
@@ -298,13 +357,20 @@ export async function syncStageToCrm(
 ): Promise<void> {
   if (!isAvailable()) return;
 
-  await updateCrmClient(clientId, { lead_stage: stage });
+  const validStage = validateStage(stage);
+  await updateCrmClient(clientId, { lead_stage: validStage });
   await addTimelineEvent({
     clientId,
     eventType: 'estado_cambio',
-    title: `Etapa cambiada a "${stage}"`,
+    title: `Etapa cambiada a "${validStage}"`,
     description: `Cambio automatico por agente ${personaName} desde WhatsApp`,
   });
+
+  if (validStage === 'ganado') {
+    await updateCrmClient(clientId, { status_tag: 'Ganado' });
+  } else if (validStage === 'perdido') {
+    await updateCrmClient(clientId, { status_tag: 'Cerrado' });
+  }
 }
 
 export async function syncContactToCrm(contact: {
@@ -328,6 +394,10 @@ export async function syncContactToCrm(contact: {
       const updates: Record<string, unknown> = {};
       if (contact.email) updates.email = contact.email;
       if (contact.company) updates.company_name = contact.company;
+
+      const salespersonId = getSalespersonId(personaName);
+      if (salespersonId) updates.assigned_salesperson_id = salespersonId;
+
       if (Object.keys(updates).length > 0) {
         await updateCrmClient(clientId, updates);
       }
@@ -343,15 +413,23 @@ export async function syncContactToCrm(contact: {
       company: contact.company,
       notes: contact.notes,
       source: 'whatsapp',
+      assignedPersonaName: personaName,
     });
 
     if (clientId) {
       await addTimelineEvent({
         clientId,
-        eventType: 'lead_created',
+        eventType: 'lead_creado',
         title: 'Lead creado desde WhatsApp',
         description: `Lead creado automaticamente por ${personaName}. Telefono: ${contact.phone_number}`,
         metadata: { source: 'whatsapp_sales_agent', persona: personaName },
+      });
+
+      await addTimelineEvent({
+        clientId,
+        eventType: 'whatsapp',
+        title: 'Conversacion de WhatsApp iniciada',
+        description: `Primer contacto via WhatsApp, atendido por ${personaName}`,
       });
     }
 

@@ -16,6 +16,7 @@ import InfrastructurePage from './pages/InfrastructurePage';
 import SettingsPage from './pages/SettingsPage';
 import InboxPage from './pages/InboxPage';
 import DirectorPage from './pages/DirectorPage';
+import ImportPage from './pages/ImportPage';
 import type { ReactNode } from 'react';
 
 function ProtectedRoute({ children }: { children: ReactNode }) {
@@ -64,6 +65,7 @@ function AppRoutes() {
         <Route path="qa/:projectId" element={<QAReviewPage />} />
         <Route path="inbox" element={<InboxPage />} />
         <Route path="director" element={<DirectorPage />} />
+        <Route path="import" element={<ImportPage />} />
         <Route path="domains" element={<DomainsPage />} />
         <Route path="infrastructure" element={<InfrastructurePage />} />
         <Route path="activity" element={<ActivityPage />} />

@@ -1,5 +1,6 @@
 import { SupabaseClient } from '@supabase/supabase-js';
 import { createLogger } from '../core/logger.js';
+import { getSalespersonId } from '../services/crm.js';
 
 const log = createLogger('persona-engine');
 
@@ -61,6 +62,34 @@ export async function getAssignedPersona(
   return null;
 }
 
+async function findContactPersona(
+  supabase: SupabaseClient,
+  contactId: string
+): Promise<Persona | null> {
+  const { data: previousAssignment } = await supabase
+    .from('sales_agent_assignments')
+    .select('persona_id, conversation_id')
+    .eq('contact_id', contactId)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (previousAssignment?.persona_id) {
+    const personas = await loadPersonas(supabase);
+    const found = personas.find((p) => p.id === previousAssignment.persona_id);
+    if (found) {
+      log.info('Found existing persona for contact', {
+        contactId,
+        persona: found.full_name,
+        fromConversation: previousAssignment.conversation_id,
+      });
+      return found;
+    }
+  }
+
+  return null;
+}
+
 export async function assignPersona(
   supabase: SupabaseClient,
   conversationId: string,
@@ -69,11 +98,20 @@ export async function assignPersona(
   const personas = await loadPersonas(supabase);
   if (personas.length === 0) throw new Error('No active personas available');
 
-  const selected = personas[Math.floor(Math.random() * personas.length)];
+  let selected: Persona | null = null;
+
+  if (contactId) {
+    selected = await findContactPersona(supabase, contactId);
+  }
+
+  if (!selected) {
+    selected = personas[Math.floor(Math.random() * personas.length)];
+  }
 
   await supabase.from('sales_agent_assignments').upsert(
     {
       conversation_id: conversationId,
+      contact_id: contactId || null,
       persona_id: selected.id,
       mode: 'ai',
     },
@@ -85,11 +123,17 @@ export async function assignPersona(
     .update({ agent_persona_id: selected.id })
     .eq('id', conversationId);
 
-  if (contactId && selected.team_member_id) {
-    await supabase
-      .from('whatsapp_contacts')
-      .update({ assigned_team_member: selected.team_member_id })
-      .eq('id', contactId);
+  if (contactId) {
+    const updates: Record<string, unknown> = {};
+    if (selected.team_member_id) {
+      updates.assigned_team_member = selected.team_member_id;
+    }
+    if (Object.keys(updates).length > 0) {
+      await supabase
+        .from('whatsapp_contacts')
+        .update(updates)
+        .eq('id', contactId);
+    }
   }
 
   log.info(`Assigned persona ${selected.full_name} to conversation ${conversationId}`);

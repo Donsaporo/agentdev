@@ -16,6 +16,7 @@ import {
   X,
   Inbox,
   Shield,
+  Upload,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useState, useEffect } from 'react';
@@ -30,6 +31,7 @@ const navItems = [
   { to: '/qa', icon: MonitorCheck, label: 'QA Review', badgeKey: 'qa' as const },
   { to: '/inbox', icon: Inbox, label: 'Inbox WA', badgeKey: 'inbox' as const },
   { to: '/director', icon: Shield, label: 'Director' },
+  { to: '/import', icon: Upload, label: 'Importar' },
   { to: '/domains', icon: Globe, label: 'Domains' },
   { to: '/infrastructure', icon: Server, label: 'Infrastructure' },
   { to: '/activity', icon: Activity, label: 'Activity' },

@@ -106,7 +106,7 @@ async function processMessage(
 
     const { data: contact } = await supabase
       .from('whatsapp_contacts')
-      .select('phone_number, wa_id')
+      .select('phone_number, wa_id, intro_sent, is_imported')
       .eq('id', msg.contactId)
       .maybeSingle();
 
@@ -116,6 +116,16 @@ async function processMessage(
     }
 
     const persona = await getOrAssignPersona(supabase, msg.conversationId, msg.contactId);
+
+    await supabase
+      .from('whatsapp_contacts')
+      .update({ follow_up_count: 0 })
+      .eq('id', msg.contactId);
+
+    const needsIntro = !contact.intro_sent && !contact.is_imported;
+    if (needsIntro) {
+      await sendIntroMessage(supabase, msg.conversationId, msg.contactId, contact.wa_id || contact.phone_number, persona);
+    }
 
     const context = await buildContext(
       supabase,
@@ -190,6 +200,40 @@ async function processMessage(
   }
 }
 
+async function sendIntroMessage(
+  supabase: SupabaseClient,
+  conversationId: string,
+  contactId: string,
+  recipientPhone: string,
+  persona: { full_name: string; first_name: string }
+) {
+  try {
+    const introText = `Hola, gracias por comunicarte con Obzide Tech. Te voy a comunicar con ${persona.first_name}, quien te va a atender. Un momento por favor.`;
+
+    await setTypingIndicator(supabase, conversationId, true);
+    await sleep(2_000 + Math.random() * 2_000);
+    await setTypingIndicator(supabase, conversationId, false);
+
+    const result = await sendTextMessage(recipientPhone, introText);
+    await recordOutbound(supabase, conversationId, contactId, result.messageId, introText, 'Obzide Tech');
+
+    await supabase
+      .from('whatsapp_contacts')
+      .update({ intro_sent: true })
+      .eq('id', contactId);
+
+    await sleep(3_000 + Math.random() * 5_000);
+
+    log.info('Intro message sent', { conversationId, persona: persona.full_name });
+  } catch (err) {
+    log.warn('Failed to send intro message', { error: err instanceof Error ? err.message : String(err) });
+    await supabase
+      .from('whatsapp_contacts')
+      .update({ intro_sent: true })
+      .eq('id', contactId);
+  }
+}
+
 async function recordOutbound(
   supabase: SupabaseClient,
   conversationId: string,
@@ -248,7 +292,7 @@ async function handleEscalation(
   if (escContact?.crm_client_id) {
     await crm.addTimelineEvent({
       clientId: escContact.crm_client_id,
-      eventType: 'escalation',
+      eventType: 'otro',
       title: 'Conversacion escalada a humano',
       description: reason,
       metadata: { conversation_id: conversationId },
@@ -451,7 +495,7 @@ async function executeActions(
               });
               await crm.addTimelineEvent({
                 clientId: meetingContact.crm_client_id,
-                eventType: 'reunion_agendada',
+                eventType: 'reunion_programada',
                 title: `Reunion agendada: ${meeting.title}`,
                 description: `Google Meet: ${meeting.meetLink || 'Presencial'}`,
                 metadata: { google_event_id: meeting.eventId, recall_bot_id: recallBotId, source: 'whatsapp_sales_agent' },
@@ -562,7 +606,7 @@ async function autoSyncToCrm(supabase: SupabaseClient, contactId: string, person
 async function loadContactForCrm(supabase: SupabaseClient, contactId: string) {
   const { data } = await supabase
     .from('whatsapp_contacts')
-    .select('phone_number, display_name, profile_name, email, company, notes, crm_client_id, client_profile_id')
+    .select('phone_number, display_name, profile_name, email, company, notes, crm_client_id, client_profile_id, follow_up_count')
     .eq('id', contactId)
     .maybeSingle();
   return data;

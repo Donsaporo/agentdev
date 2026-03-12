@@ -22,15 +22,13 @@ const CATEGORY_COLORS: Record<ConversationCategory, string> = {
 
 const STAGE_CONFIG: Record<string, { label: string; color: string; short: string }> = {
   nuevo: { label: 'Nuevo', color: 'bg-slate-500/20 text-slate-400', short: 'N' },
-  interesado: { label: 'Interesado', color: 'bg-blue-500/20 text-blue-400', short: 'I' },
-  calificado: { label: 'Calificado', color: 'bg-cyan-500/20 text-cyan-400', short: 'C' },
-  reunion_agendada: { label: 'Reunion', color: 'bg-amber-500/20 text-amber-400', short: 'R' },
-  reunion_completada: { label: 'Post-reunion', color: 'bg-teal-500/20 text-teal-400', short: 'PR' },
-  propuesta_enviada: { label: 'Propuesta', color: 'bg-sky-500/20 text-sky-400', short: 'P' },
-  negociacion: { label: 'Negociacion', color: 'bg-orange-500/20 text-orange-400', short: 'Ng' },
-  cerrado_ganado: { label: 'Ganado', color: 'bg-emerald-500/20 text-emerald-400', short: 'G' },
-  cerrado_perdido: { label: 'Perdido', color: 'bg-red-500/20 text-red-400', short: 'X' },
-  inactivo: { label: 'Inactivo', color: 'bg-slate-600/20 text-slate-500', short: '-' },
+  contactado: { label: 'Contactado', color: 'bg-blue-500/20 text-blue-400', short: 'C' },
+  en_negociacion: { label: 'Negociacion', color: 'bg-cyan-500/20 text-cyan-400', short: 'Ng' },
+  demo_solicitada: { label: 'Demo', color: 'bg-amber-500/20 text-amber-400', short: 'D' },
+  cotizacion_enviada: { label: 'Cotizacion', color: 'bg-sky-500/20 text-sky-400', short: 'Cz' },
+  por_cerrar: { label: 'Por Cerrar', color: 'bg-orange-500/20 text-orange-400', short: 'PC' },
+  ganado: { label: 'Ganado', color: 'bg-emerald-500/20 text-emerald-400', short: 'G' },
+  perdido: { label: 'Perdido', color: 'bg-red-500/20 text-red-400', short: 'X' },
 };
 
 interface Props {

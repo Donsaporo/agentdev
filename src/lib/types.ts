@@ -274,15 +274,13 @@ export interface WhatsAppBusinessAccount {
 
 export type LeadStage =
   | 'nuevo'
-  | 'interesado'
-  | 'calificado'
-  | 'reunion_agendada'
-  | 'reunion_completada'
-  | 'propuesta_enviada'
-  | 'negociacion'
-  | 'cerrado_ganado'
-  | 'cerrado_perdido'
-  | 'inactivo';
+  | 'contactado'
+  | 'en_negociacion'
+  | 'demo_solicitada'
+  | 'cotizacion_enviada'
+  | 'por_cerrar'
+  | 'ganado'
+  | 'perdido';
 
 export interface ClientProfile {
   id: string;
@@ -311,6 +309,9 @@ export interface WhatsAppContact {
   crm_client_id: string | null;
   client_profile_id: string | null;
   assigned_team_member: string | null;
+  is_imported: boolean;
+  intro_sent: boolean;
+  follow_up_count: number;
   created_at: string;
   updated_at: string;
   client_profile?: ClientProfile;
