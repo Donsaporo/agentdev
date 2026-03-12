@@ -28,6 +28,15 @@ interface ConversationOption {
   lastMessageAt: string;
 }
 
+interface AgentAck {
+  id: string;
+  isAgent: true;
+  content: string;
+  created_at: string;
+}
+
+type ChatEntry = (SalesAgentFeedback & { isAgent?: false }) | AgentAck;
+
 const FEEDBACK_TYPES = [
   { value: 'correction' as const, label: 'Correccion', icon: AlertCircle, color: 'text-red-400', bg: 'bg-red-500/10', border: 'border-red-500/20' },
   { value: 'instruction' as const, label: 'Instruccion', icon: Lightbulb, color: 'text-amber-400', bg: 'bg-amber-500/10', border: 'border-amber-500/20' },
@@ -41,10 +50,27 @@ const STATUS_BADGE = {
   incorporated: { label: 'Incorporado', color: 'bg-emerald-500/15 text-emerald-400' },
 };
 
+function getAgentAck(feedbackType: SalesAgentFeedback['feedback_type'], autoCreated: boolean): string {
+  if (feedbackType === 'correction') {
+    return autoCreated
+      ? 'Entendido. He registrado la correccion como instruccion de prioridad alta. La aplicare en mis proximas respuestas.'
+      : 'He recibido tu correccion. La tendre en cuenta.';
+  }
+  if (feedbackType === 'instruction') {
+    return autoCreated
+      ? 'Instruccion registrada. Ya la estoy aplicando en mis conversaciones activas.'
+      : 'Instruccion recibida. La procesare pronto.';
+  }
+  if (feedbackType === 'new_knowledge') {
+    return 'Informacion guardada en mi base de conocimiento. La usare cuando sea relevante en conversaciones.';
+  }
+  return 'Gracias por el feedback. Lo aprecio.';
+}
+
 export default function DirectorChat() {
   const { user } = useAuth();
   const toast = useToast();
-  const [messages, setMessages] = useState<SalesAgentFeedback[]>([]);
+  const [entries, setEntries] = useState<ChatEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
@@ -68,7 +94,7 @@ export default function DirectorChat() {
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages, scrollToBottom]);
+  }, [entries, scrollToBottom]);
 
   async function loadMessages() {
     setLoading(true);
@@ -78,7 +104,19 @@ export default function DirectorChat() {
       .order('created_at', { ascending: true })
       .limit(100);
 
-    setMessages(data || []);
+    const loaded: ChatEntry[] = [];
+    for (const msg of data || []) {
+      loaded.push(msg);
+      if (msg.status === 'incorporated') {
+        loaded.push({
+          id: `ack-${msg.id}`,
+          isAgent: true,
+          content: getAgentAck(msg.feedback_type, true),
+          created_at: msg.processed_at || msg.created_at,
+        });
+      }
+    }
+    setEntries(loaded);
     setLoading(false);
   }
 
@@ -129,8 +167,10 @@ export default function DirectorChat() {
     }
 
     if (feedback) {
-      setMessages((prev) => [...prev, feedback]);
+      setEntries((prev) => [...prev, feedback]);
     }
+
+    let wasIncorporated = false;
 
     if (autoCreateInstruction && (feedbackType === 'instruction' || feedbackType === 'correction')) {
       const priority = feedbackType === 'correction' ? 'high' : 'normal';
@@ -149,14 +189,15 @@ export default function DirectorChat() {
           .update({ status: 'incorporated' })
           .eq('id', feedback.id);
 
-        setMessages((prev) =>
+        setEntries((prev) =>
           prev.map((m) => (m.id === feedback.id ? { ...m, status: 'incorporated' as const } : m))
         );
+        wasIncorporated = true;
       }
     }
 
     if (feedbackType === 'new_knowledge') {
-      await supabase.from('sales_agent_knowledge_base').insert({
+      await supabase.from('sales_agent_knowledge').insert({
         title: text.slice(0, 80),
         content: text,
         category: 'director_input',
@@ -169,11 +210,21 @@ export default function DirectorChat() {
           .update({ status: 'incorporated' })
           .eq('id', feedback.id);
 
-        setMessages((prev) =>
+        setEntries((prev) =>
           prev.map((m) => (m.id === feedback.id ? { ...m, status: 'incorporated' as const } : m))
         );
+        wasIncorporated = true;
       }
     }
+
+    const ackText = getAgentAck(feedbackType, wasIncorporated);
+    const ack: AgentAck = {
+      id: `ack-${feedback?.id || Date.now()}`,
+      isAgent: true,
+      content: ackText,
+      created_at: new Date().toISOString(),
+    };
+    setEntries((prev) => [...prev, ack]);
 
     setLinkedConversationId(null);
     setSending(false);
@@ -222,7 +273,7 @@ export default function DirectorChat() {
           <div className="flex items-center justify-center h-full">
             <Loader2 className="w-5 h-5 text-emerald-500 animate-spin" />
           </div>
-        ) : messages.length === 0 ? (
+        ) : entries.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center px-6">
             <div className="w-16 h-16 rounded-2xl bg-emerald-500/[0.07] flex items-center justify-center mb-4">
               <MessageSquare className="w-8 h-8 text-emerald-500/40" />
@@ -252,7 +303,31 @@ export default function DirectorChat() {
           </div>
         ) : (
           <div className="p-4 space-y-4">
-            {messages.map((msg) => {
+            {entries.map((entry) => {
+              if ('isAgent' in entry && entry.isAgent) {
+                return (
+                  <div key={entry.id} className="flex gap-3">
+                    <div className="flex-shrink-0 mt-1">
+                      <div className="w-8 h-8 rounded-lg bg-emerald-500/10 flex items-center justify-center ring-1 ring-emerald-500/20">
+                        <Bot className="w-4 h-4 text-emerald-400" />
+                      </div>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-xs font-medium text-emerald-400">Agente</span>
+                        <span className="text-[10px] text-slate-600">
+                          {formatTime(entry.created_at)}
+                        </span>
+                      </div>
+                      <div className="bg-emerald-500/[0.04] border border-emerald-500/10 rounded-xl rounded-tl-sm px-4 py-3">
+                        <p className="text-sm text-emerald-300/80 leading-relaxed">{entry.content}</p>
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+
+              const msg = entry as SalesAgentFeedback;
               const typeConf = FEEDBACK_TYPES.find((t) => t.value === msg.feedback_type) || FEEDBACK_TYPES[0];
               const statusConf = STATUS_BADGE[msg.status];
               const TypeIcon = typeConf.icon;

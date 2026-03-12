@@ -33,7 +33,7 @@ export async function buildContext(
     loadContact(supabase, contactId),
     loadRecentMessages(supabase, conversationId),
     searchKnowledge(supabase, incomingMessage),
-    getAllInstructions(supabase),
+    getAllInstructions(supabase, persona.id),
   ]);
 
   const crmClientId = contact?.crm_client_id || null;
@@ -89,7 +89,7 @@ export async function buildContext(
     contactPhone: contact?.phone_number || '',
     contactEmail: contact?.email || '',
     contactCompany: contact?.company || '',
-    leadStage: contact?.lead_stage || 'vacio',
+    leadStage: contact?.lead_stage || 'nuevo',
     conversationCategory: 'new_lead',
     messageHistory: messages.map((m) => ({
       role: m.direction === 'inbound' ? 'user' : 'assistant',

@@ -374,6 +374,7 @@ export interface SalesAgentPersona {
   is_active: boolean;
   total_conversations: number;
   total_messages_sent: number;
+  team_member_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -398,6 +399,7 @@ export interface SalesAgentInstruction {
   category: string;
   is_active: boolean;
   source_feedback_id: string | null;
+  persona_id: string | null;
   created_at: string;
   updated_at: string;
 }

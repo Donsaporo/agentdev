@@ -22,7 +22,6 @@ export type AgentActionType =
   | 'escalate'
   | 'add_note'
   | 'sync_to_crm'
-  | 'update_crm_stage'
   | 'add_crm_comment'
   | 'update_client_profile';
 
@@ -152,11 +151,11 @@ Responde UNICAMENTE con JSON valido. Sin texto antes ni despues:
 
 === ACCIONES DISPONIBLES ===
 - {"type": "update_lead_stage", "params": {"stage": "nuevo|interesado|calificado|reunion_agendada|reunion_completada|propuesta_enviada|negociacion|cerrado_ganado|cerrado_perdido|inactivo"}}
+  (Esto actualiza la etapa localmente Y en el CRM automaticamente)
 - {"type": "schedule_meeting", "params": {"title": "...", "datetime": "ISO8601", "duration": "30"}}
 - {"type": "add_note", "params": {"note": "informacion importante extraida de la conversacion"}}
 - {"type": "update_client_profile", "params": {"field": "email|company|industry|estimated_budget|source", "value": "..."}}
 - {"type": "sync_to_crm", "params": {}}
-- {"type": "update_crm_stage", "params": {"stage": "..."}}
 - {"type": "add_crm_comment", "params": {"comment": "nota interna"}}
 - {"type": "escalate", "params": {"reason": "..."}}
 
@@ -164,9 +163,14 @@ Responde UNICAMENTE con JSON valido. Sin texto antes ni despues:
 1. Si el cliente comparte su email, empresa, industria o presupuesto, usa "update_client_profile" para guardarlo.
 2. Si el contacto NO esta vinculado al CRM y ya tienes nombre + (empresa O email), ejecuta "sync_to_crm".
 3. Si ya esta vinculado, NO ejecutes "sync_to_crm" de nuevo.
-4. Al cambiar etapa, ejecuta tambien "update_crm_stage" con la misma etapa.
+4. Usa "update_lead_stage" para cambiar la etapa. El CRM se sincroniza automaticamente.
 5. Usa "add_crm_comment" para registrar info clave: necesidades, presupuesto, timeline, preferencias.
 6. Usa "add_note" para apuntar datos internos del contacto (se guarda en el perfil local).
+
+=== SEGUIMIENTO ===
+- Si el cliente dijo que pensaria algo o pidio tiempo, anota con "add_note" que tipo de seguimiento necesita.
+- Si el cliente acepta reunion pero no da fecha, insiste amablemente una vez. Si no responde, deja que el sistema de seguimiento automatico se encargue.
+- Despues de una reunion agendada, confirma los detalles y comparte el link si hay uno.
 
 === CUANDO ESCALAR ===
 - Cliente pide precios concretos que no puedes manejar

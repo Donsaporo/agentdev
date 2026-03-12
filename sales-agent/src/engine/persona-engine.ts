@@ -16,6 +16,7 @@ export interface Persona {
   response_length_preference: string;
   emoji_usage: string;
   formality_level: string;
+  team_member_id: string | null;
 }
 
 let cachedPersonas: Persona[] = [];
@@ -62,7 +63,8 @@ export async function getAssignedPersona(
 
 export async function assignPersona(
   supabase: SupabaseClient,
-  conversationId: string
+  conversationId: string,
+  contactId?: string
 ): Promise<Persona> {
   const personas = await loadPersonas(supabase);
   if (personas.length === 0) throw new Error('No active personas available');
@@ -83,15 +85,23 @@ export async function assignPersona(
     .update({ agent_persona_id: selected.id })
     .eq('id', conversationId);
 
+  if (contactId && selected.team_member_id) {
+    await supabase
+      .from('whatsapp_contacts')
+      .update({ assigned_team_member: selected.team_member_id })
+      .eq('id', contactId);
+  }
+
   log.info(`Assigned persona ${selected.full_name} to conversation ${conversationId}`);
   return selected;
 }
 
 export async function getOrAssignPersona(
   supabase: SupabaseClient,
-  conversationId: string
+  conversationId: string,
+  contactId?: string
 ): Promise<Persona> {
   const existing = await getAssignedPersona(supabase, conversationId);
   if (existing) return existing;
-  return assignPersona(supabase, conversationId);
+  return assignPersona(supabase, conversationId, contactId);
 }

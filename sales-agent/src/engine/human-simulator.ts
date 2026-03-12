@@ -7,20 +7,20 @@ export function calculateDelay(responseText: string, isShortReply = false): numb
   const wordCount = responseText.split(/\s+/).length;
 
   if (isShortReply || wordCount <= 5) {
-    const quick = 3_000 + Math.random() * 5_000;
+    const quick = 2_000 + Math.random() * 3_000;
     log.debug('Quick reply delay', { words: wordCount, delayMs: Math.round(quick) });
     return Math.round(quick);
   }
 
   if (wordCount <= 15) {
-    const medium = 5_000 + Math.random() * 8_000;
+    const medium = 3_000 + Math.random() * 5_000;
     log.debug('Medium reply delay', { words: wordCount, delayMs: Math.round(medium) });
     return Math.round(medium);
   }
 
-  const readTime = Math.min(wordCount * 200, 8_000);
-  const typingTime = Math.min(wordCount * 120, 6_000);
-  const thinkingTime = 2_000 + Math.random() * 4_000;
+  const readTime = Math.min(wordCount * 150, 5_000);
+  const typingTime = Math.min(wordCount * 100, 4_000);
+  const thinkingTime = 1_500 + Math.random() * 3_000;
 
   const total = thinkingTime + readTime * 0.3 + typingTime * 0.4;
 

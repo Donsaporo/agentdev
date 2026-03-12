@@ -3,13 +3,6 @@ import { createLogger } from '../core/logger.js';
 
 const log = createLogger('crm');
 
-const STAGE_MAP: Record<string, string> = {
-  vacio: 'nuevo',
-  lead: 'contactado',
-  cliente_nuevo: 'en_negociacion',
-  cliente_terminado: 'cerrado_ganado',
-};
-
 export interface CrmLeadParams {
   name: string;
   firstName?: string;
@@ -298,25 +291,19 @@ export async function getCrmClientData(clientId: string): Promise<Record<string,
   }
 }
 
-export function mapWhatsAppStageToCrm(whatsAppStage: string): string {
-  return STAGE_MAP[whatsAppStage] || 'nuevo';
-}
-
 export async function syncStageToCrm(
   clientId: string,
-  whatsAppStage: string,
+  stage: string,
   personaName: string
 ): Promise<void> {
   if (!isAvailable()) return;
 
-  const crmStage = mapWhatsAppStageToCrm(whatsAppStage);
-
-  await updateCrmClient(clientId, { lead_stage: crmStage });
+  await updateCrmClient(clientId, { lead_stage: stage });
   await addTimelineEvent({
     clientId,
-    eventType: 'stage_change',
-    title: `Etapa cambiada a "${crmStage}"`,
-    description: `Cambio automatico por agente ${personaName} desde WhatsApp. Etapa WhatsApp: ${whatsAppStage}`,
+    eventType: 'estado_cambio',
+    title: `Etapa cambiada a "${stage}"`,
+    description: `Cambio automatico por agente ${personaName} desde WhatsApp`,
   });
 }
 

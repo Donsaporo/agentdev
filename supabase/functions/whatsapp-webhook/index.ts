@@ -215,10 +215,19 @@ async function processIncomingMessages(body: Record<string, unknown>, provider: 
 
         const { content, media_url, media_mime_type } = extractMessageContent(message);
 
+        const waMessageId = message.id as string;
+        const { data: existing } = await supabase
+          .from("whatsapp_messages")
+          .select("id")
+          .eq("wa_message_id", waMessageId)
+          .maybeSingle();
+
+        if (existing) continue;
+
         await supabase.from("whatsapp_messages").insert({
           conversation_id: conversationId,
           contact_id: contactId,
-          wa_message_id: message.id as string,
+          wa_message_id: waMessageId,
           direction: "inbound",
           message_type: message.type as string,
           content,

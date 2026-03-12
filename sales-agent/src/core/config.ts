@@ -40,14 +40,14 @@ export const config = {
     webhookSecret: optional('RECALL_WEBHOOK_SECRET'),
   },
   escalation: {
-    emailTo: optional('ESCALATION_EMAIL', 'sales@obzid.com'),
+    emailTo: optional('ESCALATION_EMAIL', 'sales@obzide.com'),
     supabaseUrl: optional('SUPABASE_URL'),
     supabaseAnonKey: optional('SUPABASE_ANON_KEY'),
   },
   agent: {
     heartbeatInterval: 60_000,
-    minResponseDelay: 8_000,
-    maxResponseDelay: 45_000,
+    minResponseDelay: 4_000,
+    maxResponseDelay: 25_000,
     messageBatchWindow: 10_000,
     messageBatchExtraDelay: 5_000,
   },

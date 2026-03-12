@@ -67,7 +67,7 @@ Deno.serve(async (req: Request) => {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        from: "Obzide Sales Agent <noreply@obzid.com>",
+        from: "Obzide Sales Agent <noreply@obzide.com>",
         to: [to],
         subject: `[ESCALACION] ${contactName} - ${reason.slice(0, 50)}`,
         html: emailHtml,

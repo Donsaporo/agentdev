@@ -7,6 +7,7 @@ import { decide, AgentAction } from './decision-engine.js';
 import { calculateDelay, sleep, shouldSplitMessage } from './human-simulator.js';
 import { sendTextMessage, setTypingIndicator } from '../services/whatsapp.js';
 import { scheduleMeeting } from '../services/calendar.js';
+import { joinMeeting } from '../services/recall.js';
 import * as crm from '../services/crm.js';
 
 const log = createLogger('conversation-manager');
@@ -114,7 +115,7 @@ async function processMessage(
       return;
     }
 
-    const persona = await getOrAssignPersona(supabase, msg.conversationId);
+    const persona = await getOrAssignPersona(supabase, msg.conversationId, msg.contactId);
 
     const context = await buildContext(
       supabase,
@@ -418,6 +419,14 @@ async function executeActions(
           );
 
           if (meeting) {
+            let recallBotId: string | null = null;
+            if (meeting.meetLink) {
+              recallBotId = await joinMeeting(meeting.meetLink).catch((err) => {
+                log.warn('Failed to launch Recall bot', { error: err instanceof Error ? err.message : String(err) });
+                return null;
+              });
+            }
+
             await supabase.from('sales_meetings').insert({
               conversation_id: conversationId,
               contact_id: contactId,
@@ -426,6 +435,7 @@ async function executeActions(
               start_time: meeting.start,
               end_time: meeting.end,
               meet_link: meeting.meetLink,
+              recall_bot_id: recallBotId,
               status: 'scheduled',
             });
 
@@ -441,16 +451,17 @@ async function executeActions(
               });
               await crm.addTimelineEvent({
                 clientId: meetingContact.crm_client_id,
-                eventType: 'meeting_scheduled',
+                eventType: 'reunion_agendada',
                 title: `Reunion agendada: ${meeting.title}`,
                 description: `Google Meet: ${meeting.meetLink || 'Presencial'}`,
-                metadata: { google_event_id: meeting.eventId, source: 'whatsapp_sales_agent' },
+                metadata: { google_event_id: meeting.eventId, recall_bot_id: recallBotId, source: 'whatsapp_sales_agent' },
               });
             }
 
             log.info('Meeting scheduled and recorded', {
               eventId: meeting.eventId,
               meetLink: meeting.meetLink,
+              recallBotId,
             });
           }
           break;
@@ -502,14 +513,6 @@ async function executeActions(
               .update({ crm_client_id: syncClientId })
               .eq('id', contactId);
             cachedContact = null;
-          }
-          break;
-        }
-
-        case 'update_crm_stage': {
-          const contact = await getContact();
-          if (contact?.crm_client_id && action.params.stage) {
-            await crm.syncStageToCrm(contact.crm_client_id, action.params.stage, 'Sales Agent');
           }
           break;
         }
