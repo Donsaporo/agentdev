@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Users, ToggleLeft, ToggleRight, CreditCard as Edit2, Save, X, Loader2 } from 'lucide-react';
+import { ToggleLeft, ToggleRight, CreditCard as Edit2, Save, X, Loader2 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { useToast } from '../../contexts/ToastContext';
 import type { SalesAgentPersona } from '../../lib/types';

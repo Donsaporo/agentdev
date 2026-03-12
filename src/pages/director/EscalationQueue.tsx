@@ -3,7 +3,6 @@ import {
   AlertTriangle,
   CheckCircle2,
   Clock,
-  ExternalLink,
   Loader2,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';

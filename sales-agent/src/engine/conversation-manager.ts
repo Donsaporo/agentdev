@@ -7,7 +7,6 @@ import { decide, AgentAction } from './decision-engine.js';
 import { calculateDelay, sleep, shouldSplitMessage } from './human-simulator.js';
 import { sendTextMessage, setTypingIndicator } from '../services/whatsapp.js';
 import { scheduleMeeting } from '../services/calendar.js';
-import { joinMeeting } from '../services/recall.js';
 import * as crm from '../services/crm.js';
 
 const log = createLogger('conversation-manager');
@@ -81,7 +80,7 @@ async function processMessage(
   msg: IncomingMessage
 ): Promise<void> {
   if (processingLock.has(msg.conversationId)) {
-    log.debug('Conversation already being processed, skipping', {
+    log.debug('Conversation already being processed, requeueing', {
       conversationId: msg.conversationId,
     });
     return;
@@ -143,14 +142,14 @@ async function processMessage(
       const recipientPhone = contact.wa_id || contact.phone_number;
 
       for (let i = 0; i < chunks.length; i++) {
-        const delay = calculateDelay(chunks[i]);
+        const isShort = chunks[i].split(/\s+/).length <= 5;
+        const delay = calculateDelay(chunks[i], isShort);
         await setTypingIndicator(supabase, msg.conversationId, true);
         await sleep(delay);
         await setTypingIndicator(supabase, msg.conversationId, false);
 
         const result = await sendTextMessage(recipientPhone, chunks[i]);
-
-        await recordOutbound(supabase, msg.conversationId, msg.contactId, result.messageId, chunks[i]);
+        await recordOutbound(supabase, msg.conversationId, msg.contactId, result.messageId, chunks[i], persona.full_name);
 
         if (i < chunks.length - 1) {
           await sleep(1_500 + Math.random() * 3_000);
@@ -195,7 +194,8 @@ async function recordOutbound(
   conversationId: string,
   contactId: string,
   waMessageId: string,
-  content: string
+  content: string,
+  senderName: string
 ) {
   await supabase.from('whatsapp_messages').insert({
     conversation_id: conversationId,
@@ -205,6 +205,7 @@ async function recordOutbound(
     message_type: 'text',
     content,
     status: 'sent',
+    sender_name: senderName,
     metadata: { sent_by: 'sales_agent' },
   });
 
@@ -213,6 +214,7 @@ async function recordOutbound(
     .update({
       last_message_at: new Date().toISOString(),
       last_message_preview: content.slice(0, 100),
+      needs_director_attention: true,
     })
     .eq('id', conversationId);
 }
@@ -227,13 +229,18 @@ async function handleEscalation(
     conversation_id: conversationId,
     contact_id: contactId,
     reason,
-    priority: 'normal',
+    priority: 'high',
     status: 'open',
   });
 
   await supabase
     .from('whatsapp_conversations')
-    .update({ agent_mode: 'manual', category: 'escalated' })
+    .update({
+      agent_mode: 'manual',
+      category: 'escalated',
+      needs_director_attention: true,
+      priority_score: 100,
+    })
     .eq('id', conversationId);
 
   const escContact = await loadContactForCrm(supabase, contactId);
@@ -247,7 +254,51 @@ async function handleEscalation(
     }).catch(() => {});
   }
 
+  await sendEscalationEmail(supabase, conversationId, contactId, reason).catch((err) => {
+    log.warn('Failed to send escalation email', { error: err instanceof Error ? err.message : String(err) });
+  });
+
   log.warn('Conversation escalated', { conversationId, reason });
+}
+
+async function sendEscalationEmail(
+  supabase: SupabaseClient,
+  conversationId: string,
+  contactId: string,
+  reason: string
+) {
+  const { data: contact } = await supabase
+    .from('whatsapp_contacts')
+    .select('display_name, phone_number')
+    .eq('id', contactId)
+    .maybeSingle();
+
+  const supabaseUrl = config.escalation.supabaseUrl || config.supabase.url;
+  const anonKey = config.escalation.supabaseAnonKey;
+
+  if (!anonKey) {
+    log.warn('Cannot send escalation email: missing SUPABASE_ANON_KEY');
+    return;
+  }
+
+  const response = await fetch(`${supabaseUrl}/functions/v1/send-escalation-email`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${anonKey}`,
+    },
+    body: JSON.stringify({
+      to: config.escalation.emailTo,
+      contactName: contact?.display_name || 'Desconocido',
+      contactPhone: contact?.phone_number || '',
+      conversationId,
+      reason,
+    }),
+  });
+
+  if (!response.ok) {
+    log.warn('Escalation email request failed', { status: response.status });
+  }
 }
 
 async function executeActions(
@@ -256,6 +307,15 @@ async function executeActions(
   contactId: string,
   actions: AgentAction[]
 ) {
+  let cachedContact: Awaited<ReturnType<typeof loadContactForCrm>> = null;
+
+  async function getContact() {
+    if (!cachedContact) {
+      cachedContact = await loadContactForCrm(supabase, contactId);
+    }
+    return cachedContact;
+  }
+
   for (const action of actions) {
     try {
       switch (action.type) {
@@ -265,21 +325,79 @@ async function executeActions(
             .update({ lead_stage: action.params.stage })
             .eq('id', contactId);
 
-          const stageContact = await loadContactForCrm(supabase, contactId);
-          if (stageContact?.crm_client_id) {
-            await crm.syncStageToCrm(stageContact.crm_client_id, action.params.stage, 'Sales Agent');
+          const contact = await getContact();
+          if (contact?.crm_client_id) {
+            await crm.syncStageToCrm(contact.crm_client_id, action.params.stage, 'Sales Agent');
           }
           break;
         }
 
-        case 'add_note':
+        case 'add_note': {
+          const { data: current } = await supabase
+            .from('whatsapp_contacts')
+            .select('notes')
+            .eq('id', contactId)
+            .maybeSingle();
+
+          const existingNotes = current?.notes || '';
+          const timestamp = new Date().toLocaleDateString('es-PA', { day: '2-digit', month: '2-digit', year: '2-digit' });
+          const newNotes = existingNotes
+            ? `${existingNotes}\n[${timestamp}] ${action.params.note}`
+            : `[${timestamp}] ${action.params.note}`;
+
           await supabase
             .from('whatsapp_contacts')
-            .update({
-              notes: action.params.note,
-            })
+            .update({ notes: newNotes })
             .eq('id', contactId);
           break;
+        }
+
+        case 'update_client_profile': {
+          const field = action.params.field;
+          const value = action.params.value;
+          const allowedFields = ['email', 'company', 'industry', 'estimated_budget', 'source'];
+
+          if (!allowedFields.includes(field) || !value) break;
+
+          const contactFields = ['email', 'company'];
+          if (contactFields.includes(field)) {
+            await supabase
+              .from('whatsapp_contacts')
+              .update({ [field]: value })
+              .eq('id', contactId);
+            cachedContact = null;
+          }
+
+          const { data: contactData } = await supabase
+            .from('whatsapp_contacts')
+            .select('client_profile_id')
+            .eq('id', contactId)
+            .maybeSingle();
+
+          if (contactData?.client_profile_id) {
+            await supabase
+              .from('client_profiles')
+              .update({ [field]: value, updated_at: new Date().toISOString() })
+              .eq('id', contactData.client_profile_id);
+          } else {
+            const { data: profile } = await supabase
+              .from('client_profiles')
+              .insert({
+                display_name: (await getContact())?.display_name || '',
+                [field]: value,
+              })
+              .select('id')
+              .single();
+
+            if (profile) {
+              await supabase
+                .from('whatsapp_contacts')
+                .update({ client_profile_id: profile.id })
+                .eq('id', contactId);
+            }
+          }
+          break;
+        }
 
         case 'escalate':
           await handleEscalation(supabase, conversationId, contactId, action.params.reason);
@@ -311,17 +429,7 @@ async function executeActions(
               status: 'scheduled',
             });
 
-            if (meeting.meetLink) {
-              const botId = await joinMeeting(meeting.meetLink);
-              if (botId) {
-                await supabase
-                  .from('sales_meetings')
-                  .update({ recall_bot_id: botId })
-                  .eq('google_event_id', meeting.eventId);
-              }
-            }
-
-            const meetingContact = await loadContactForCrm(supabase, contactId);
+            const meetingContact = await getContact();
             if (meetingContact?.crm_client_id) {
               await crm.addMeeting({
                 clientId: meetingContact.crm_client_id,
@@ -335,7 +443,7 @@ async function executeActions(
                 clientId: meetingContact.crm_client_id,
                 eventType: 'meeting_scheduled',
                 title: `Reunion agendada: ${meeting.title}`,
-                description: `Google Meet: ${meeting.meetLink || 'Sin enlace'}`,
+                description: `Google Meet: ${meeting.meetLink || 'Presencial'}`,
                 metadata: { google_event_id: meeting.eventId, source: 'whatsapp_sales_agent' },
               });
             }
@@ -349,19 +457,19 @@ async function executeActions(
         }
 
         case 'create_crm_lead': {
-          const crmContact = await loadContactForCrm(supabase, contactId);
-          if (crmContact?.crm_client_id) {
-            log.info('Contact already linked to CRM', { contactId, crmClientId: crmContact.crm_client_id });
+          const contact = await getContact();
+          if (contact?.crm_client_id) {
+            log.info('Contact already linked to CRM', { contactId });
             break;
           }
 
           const clientId = await crm.syncContactToCrm({
-            phone_number: crmContact?.phone_number || action.params.phone || '',
-            display_name: crmContact?.display_name || action.params.name || '',
-            profile_name: crmContact?.profile_name || '',
-            email: crmContact?.email || action.params.email,
-            company: crmContact?.company || action.params.company,
-            notes: crmContact?.notes,
+            phone_number: contact?.phone_number || action.params.phone || '',
+            display_name: contact?.display_name || action.params.name || '',
+            profile_name: contact?.profile_name || '',
+            email: contact?.email || action.params.email,
+            company: contact?.company || action.params.company,
+            notes: contact?.notes,
           }, 'Sales Agent');
 
           if (clientId) {
@@ -369,46 +477,47 @@ async function executeActions(
               .from('whatsapp_contacts')
               .update({ crm_client_id: clientId })
               .eq('id', contactId);
-
+            cachedContact = null;
             log.info('CRM lead created and linked', { contactId, crmClientId: clientId });
           }
           break;
         }
 
         case 'sync_to_crm': {
-          const syncContact = await loadContactForCrm(supabase, contactId);
-          if (!syncContact) break;
+          const contact = await getContact();
+          if (!contact) break;
 
           const syncClientId = await crm.syncContactToCrm({
-            phone_number: syncContact.phone_number || '',
-            display_name: syncContact.display_name || '',
-            profile_name: syncContact.profile_name || '',
-            email: syncContact.email,
-            company: syncContact.company,
-            notes: syncContact.notes,
+            phone_number: contact.phone_number || '',
+            display_name: contact.display_name || '',
+            profile_name: contact.profile_name || '',
+            email: contact.email,
+            company: contact.company,
+            notes: contact.notes,
           }, 'Sales Agent');
 
-          if (syncClientId && !syncContact.crm_client_id) {
+          if (syncClientId && !contact.crm_client_id) {
             await supabase
               .from('whatsapp_contacts')
               .update({ crm_client_id: syncClientId })
               .eq('id', contactId);
+            cachedContact = null;
           }
           break;
         }
 
         case 'update_crm_stage': {
-          const crmStageContact = await loadContactForCrm(supabase, contactId);
-          if (crmStageContact?.crm_client_id && action.params.stage) {
-            await crm.syncStageToCrm(crmStageContact.crm_client_id, action.params.stage, 'Sales Agent');
+          const contact = await getContact();
+          if (contact?.crm_client_id && action.params.stage) {
+            await crm.syncStageToCrm(contact.crm_client_id, action.params.stage, 'Sales Agent');
           }
           break;
         }
 
         case 'add_crm_comment': {
-          const commentContact = await loadContactForCrm(supabase, contactId);
-          if (commentContact?.crm_client_id && action.params.comment) {
-            await crm.addComment(commentContact.crm_client_id, action.params.comment);
+          const contact = await getContact();
+          if (contact?.crm_client_id && action.params.comment) {
+            await crm.addComment(contact.crm_client_id, action.params.comment);
           }
           break;
         }
@@ -450,7 +559,7 @@ async function autoSyncToCrm(supabase: SupabaseClient, contactId: string, person
 async function loadContactForCrm(supabase: SupabaseClient, contactId: string) {
   const { data } = await supabase
     .from('whatsapp_contacts')
-    .select('phone_number, display_name, profile_name, email, company, notes, crm_client_id')
+    .select('phone_number, display_name, profile_name, email, company, notes, crm_client_id, client_profile_id')
     .eq('id', contactId)
     .maybeSingle();
   return data;

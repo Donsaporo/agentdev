@@ -1,23 +1,25 @@
 import { useState } from 'react';
-import { Shield, MessageSquareQuote, AlertTriangle, Users, Brain, BarChart3 } from 'lucide-react';
+import { Shield, MessageSquareQuote, AlertTriangle, Users, Brain, BarChart3, MessageCircle } from 'lucide-react';
 import DirectorMetrics from './director/DirectorMetrics';
 import EscalationQueue from './director/EscalationQueue';
 import FeedbackHistory from './director/FeedbackHistory';
 import InstructionManager from './director/InstructionManager';
 import PersonaManager from './director/PersonaManager';
+import DirectorChat from './director/DirectorChat';
 
-type Tab = 'metrics' | 'escalations' | 'feedback' | 'instructions' | 'personas';
+type Tab = 'chat' | 'metrics' | 'escalations' | 'feedback' | 'instructions' | 'personas';
 
 const TABS: { id: Tab; label: string; icon: typeof Shield }[] = [
+  { id: 'chat', label: 'Chat Agente', icon: MessageCircle },
   { id: 'metrics', label: 'Metricas', icon: BarChart3 },
   { id: 'escalations', label: 'Escalaciones', icon: AlertTriangle },
-  { id: 'feedback', label: 'Feedback', icon: MessageSquareQuote },
+  { id: 'feedback', label: 'Historial', icon: MessageSquareQuote },
   { id: 'instructions', label: 'Instrucciones', icon: Brain },
   { id: 'personas', label: 'Agentes', icon: Users },
 ];
 
 export default function DirectorPage() {
-  const [activeTab, setActiveTab] = useState<Tab>('metrics');
+  const [activeTab, setActiveTab] = useState<Tab>('chat');
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -49,6 +51,7 @@ export default function DirectorPage() {
       </div>
 
       <div className="animate-fade-in-up">
+        {activeTab === 'chat' && <DirectorChat />}
         {activeTab === 'metrics' && <DirectorMetrics />}
         {activeTab === 'escalations' && <EscalationQueue />}
         {activeTab === 'feedback' && <FeedbackHistory />}

@@ -3,13 +3,26 @@ import { createLogger } from '../core/logger.js';
 
 const log = createLogger('human-simulator');
 
-export function calculateDelay(responseText: string): number {
+export function calculateDelay(responseText: string, isShortReply = false): number {
   const wordCount = responseText.split(/\s+/).length;
-  const readTime = Math.min(wordCount * 300, 10_000);
-  const typingTime = Math.min(wordCount * 150, 8_000);
-  const thinkingTime = 2_000 + Math.random() * 5_000;
 
-  const total = thinkingTime + readTime * 0.4 + typingTime * 0.5;
+  if (isShortReply || wordCount <= 5) {
+    const quick = 3_000 + Math.random() * 5_000;
+    log.debug('Quick reply delay', { words: wordCount, delayMs: Math.round(quick) });
+    return Math.round(quick);
+  }
+
+  if (wordCount <= 15) {
+    const medium = 5_000 + Math.random() * 8_000;
+    log.debug('Medium reply delay', { words: wordCount, delayMs: Math.round(medium) });
+    return Math.round(medium);
+  }
+
+  const readTime = Math.min(wordCount * 200, 8_000);
+  const typingTime = Math.min(wordCount * 120, 6_000);
+  const thinkingTime = 2_000 + Math.random() * 4_000;
+
+  const total = thinkingTime + readTime * 0.3 + typingTime * 0.4;
 
   const clamped = Math.max(
     config.agent.minResponseDelay,

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   X,
   Phone,
@@ -11,16 +11,24 @@ import {
   Save,
   ChevronDown,
   ChevronRight,
+  Eye,
+  Calendar,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { useToast } from '../../contexts/ToastContext';
-import type { WhatsAppConversation, WhatsAppContact, SalesAgentPersona, ConversationCategory } from '../../lib/types';
+import type { WhatsAppConversation, WhatsAppContact, SalesAgentPersona, ConversationCategory, LeadStage } from '../../lib/types';
 
-const LEAD_STAGES = [
-  { value: 'vacio', label: 'Vacio', color: 'bg-slate-500/20 text-slate-400' },
-  { value: 'lead', label: 'Lead', color: 'bg-blue-500/20 text-blue-400' },
-  { value: 'cliente_nuevo', label: 'Cliente Nuevo', color: 'bg-emerald-500/20 text-emerald-400' },
-  { value: 'cliente_terminado', label: 'Cliente Terminado', color: 'bg-cyan-500/20 text-cyan-400' },
+const LEAD_STAGES: { value: LeadStage; label: string; color: string }[] = [
+  { value: 'nuevo', label: 'Nuevo', color: 'bg-slate-500/20 text-slate-400' },
+  { value: 'interesado', label: 'Interesado', color: 'bg-blue-500/20 text-blue-400' },
+  { value: 'calificado', label: 'Calificado', color: 'bg-cyan-500/20 text-cyan-400' },
+  { value: 'reunion_agendada', label: 'Reunion Agendada', color: 'bg-amber-500/20 text-amber-400' },
+  { value: 'reunion_completada', label: 'Post-Reunion', color: 'bg-teal-500/20 text-teal-400' },
+  { value: 'propuesta_enviada', label: 'Propuesta', color: 'bg-sky-500/20 text-sky-400' },
+  { value: 'negociacion', label: 'Negociacion', color: 'bg-orange-500/20 text-orange-400' },
+  { value: 'cerrado_ganado', label: 'Ganado', color: 'bg-emerald-500/20 text-emerald-400' },
+  { value: 'cerrado_perdido', label: 'Perdido', color: 'bg-red-500/20 text-red-400' },
+  { value: 'inactivo', label: 'Inactivo', color: 'bg-slate-600/20 text-slate-500' },
 ];
 
 const CATEGORIES: { value: ConversationCategory; label: string }[] = [
@@ -43,13 +51,28 @@ export default function ContactPanel({ conversation, contact, personas, onClose 
   const [editMode, setEditMode] = useState(false);
   const [showDetails, setShowDetails] = useState(true);
   const [showAgent, setShowAgent] = useState(true);
+  const [showDirector, setShowDirector] = useState(false);
   const [form, setForm] = useState({
-    email: contact?.email || '',
-    company: contact?.company || '',
-    notes: contact?.notes || '',
-    lead_stage: contact?.lead_stage || 'vacio',
+    email: '',
+    company: '',
+    notes: '',
+    lead_stage: 'nuevo' as string,
   });
+  const [directorNotes, setDirectorNotes] = useState('');
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setForm({
+      email: contact?.email || '',
+      company: contact?.company || '',
+      notes: contact?.notes || '',
+      lead_stage: contact?.lead_stage || 'nuevo',
+    });
+  }, [contact?.id, contact?.email, contact?.company, contact?.notes, contact?.lead_stage]);
+
+  useEffect(() => {
+    setDirectorNotes(conversation.director_notes || '');
+  }, [conversation.director_notes]);
 
   async function handleSave() {
     if (!contact) return;
@@ -89,8 +112,27 @@ export default function ContactPanel({ conversation, contact, personas, onClose 
     toast.success('Agente asignado');
   }
 
+  async function markAsReviewed() {
+    await supabase
+      .from('whatsapp_conversations')
+      .update({
+        director_reviewed_at: new Date().toISOString(),
+        needs_director_attention: false,
+      })
+      .eq('id', conversation.id);
+    toast.success('Marcado como revisado');
+  }
+
+  async function saveDirectorNotes() {
+    await supabase
+      .from('whatsapp_conversations')
+      .update({ director_notes: directorNotes })
+      .eq('id', conversation.id);
+    toast.success('Notas guardadas');
+  }
+
   const name = contact?.display_name || contact?.profile_name || 'Desconocido';
-  const currentStage = LEAD_STAGES.find((s) => s.value === (contact?.lead_stage || 'vacio'));
+  const currentStage = LEAD_STAGES.find((s) => s.value === (contact?.lead_stage || 'nuevo'));
 
   return (
     <div className="flex flex-col h-full">
@@ -119,6 +161,18 @@ export default function ContactPanel({ conversation, contact, personas, onClose 
             </span>
           </div>
         </div>
+
+        {conversation.needs_director_attention && (
+          <div className="mx-4 mb-3">
+            <button
+              onClick={markAsReviewed}
+              className="w-full flex items-center justify-center gap-2 px-3 py-2.5 bg-amber-500/10 hover:bg-amber-500/15 border border-amber-500/20 text-amber-400 text-xs font-medium rounded-lg transition-all"
+            >
+              <Eye className="w-3.5 h-3.5" />
+              Marcar como revisado
+            </button>
+          </div>
+        )}
 
         <div className="px-4 space-y-1">
           <button
@@ -173,8 +227,8 @@ export default function ContactPanel({ conversation, contact, personas, onClose 
                     <textarea
                       value={form.notes}
                       onChange={(e) => setForm({ ...form, notes: e.target.value })}
-                      rows={3}
-                      className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-emerald-500/30 resize-none"
+                      rows={4}
+                      className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-emerald-500/30 resize-none font-mono text-xs"
                       placeholder="Notas sobre este contacto..."
                     />
                   </div>
@@ -205,10 +259,14 @@ export default function ContactPanel({ conversation, contact, personas, onClose 
                     <Building2 className="w-4 h-4 text-slate-500 flex-shrink-0" />
                     <span className="text-slate-300">{contact?.company || '--'}</span>
                   </div>
-                  <div className="flex items-start gap-3 text-sm">
-                    <StickyNote className="w-4 h-4 text-slate-500 flex-shrink-0 mt-0.5" />
-                    <span className="text-slate-300">{contact?.notes || 'Sin notas'}</span>
-                  </div>
+                  {contact?.notes && (
+                    <div className="flex items-start gap-3 text-sm">
+                      <StickyNote className="w-4 h-4 text-slate-500 flex-shrink-0 mt-0.5" />
+                      <pre className="text-slate-300 text-xs whitespace-pre-wrap font-sans leading-relaxed">
+                        {contact.notes}
+                      </pre>
+                    </div>
+                  )}
                   <button
                     onClick={() => setEditMode(true)}
                     className="w-full px-3 py-2 text-xs font-medium text-slate-400 hover:text-emerald-400 border border-white/[0.06] hover:border-emerald-500/20 rounded-lg transition-all"
@@ -288,6 +346,43 @@ export default function ContactPanel({ conversation, contact, personas, onClose 
                   ID: {conversation.id.slice(0, 8)}
                 </span>
               </div>
+            </div>
+          )}
+
+          <div className="h-px bg-white/[0.04]" />
+
+          <button
+            onClick={() => setShowDirector(!showDirector)}
+            className="w-full flex items-center justify-between py-2 text-xs font-medium text-slate-400 hover:text-slate-200 transition-colors"
+          >
+            <div className="flex items-center gap-1.5">
+              <Calendar className="w-3.5 h-3.5" />
+              <span>Notas del Director</span>
+            </div>
+            {showDirector ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+          </button>
+
+          {showDirector && (
+            <div className="space-y-3 pb-4 animate-fade-in">
+              <textarea
+                value={directorNotes}
+                onChange={(e) => setDirectorNotes(e.target.value)}
+                rows={4}
+                className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-emerald-500/30 resize-none"
+                placeholder="Notas privadas del director sobre esta conversacion..."
+              />
+              <button
+                onClick={saveDirectorNotes}
+                className="w-full flex items-center justify-center gap-1.5 px-3 py-2 bg-white/[0.06] hover:bg-white/[0.08] text-slate-300 text-xs font-medium rounded-lg transition-all"
+              >
+                <Save className="w-3.5 h-3.5" />
+                Guardar notas
+              </button>
+              {conversation.director_reviewed_at && (
+                <p className="text-[10px] text-slate-600">
+                  Ultima revision: {new Date(conversation.director_reviewed_at).toLocaleString('es-PA')}
+                </p>
+              )}
             </div>
           )}
         </div>

@@ -1,8 +1,8 @@
 import { useState, useMemo } from 'react';
-import { Search, Bot, User, Filter, MessageCircle } from 'lucide-react';
+import { Search, Bot, User, Filter, MessageCircle, AlertCircle, Eye } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { es } from 'date-fns/locale';
-import type { WhatsAppConversation, ConversationCategory } from '../../lib/types';
+import type { WhatsAppConversation, ConversationCategory, LeadStage } from '../../lib/types';
 
 const CATEGORY_LABELS: Record<ConversationCategory, string> = {
   new_lead: 'Nuevos',
@@ -20,6 +20,19 @@ const CATEGORY_COLORS: Record<ConversationCategory, string> = {
   archived: 'bg-slate-500/20 text-slate-400',
 };
 
+const STAGE_CONFIG: Record<string, { label: string; color: string; short: string }> = {
+  nuevo: { label: 'Nuevo', color: 'bg-slate-500/20 text-slate-400', short: 'N' },
+  interesado: { label: 'Interesado', color: 'bg-blue-500/20 text-blue-400', short: 'I' },
+  calificado: { label: 'Calificado', color: 'bg-cyan-500/20 text-cyan-400', short: 'C' },
+  reunion_agendada: { label: 'Reunion', color: 'bg-amber-500/20 text-amber-400', short: 'R' },
+  reunion_completada: { label: 'Post-reunion', color: 'bg-teal-500/20 text-teal-400', short: 'PR' },
+  propuesta_enviada: { label: 'Propuesta', color: 'bg-sky-500/20 text-sky-400', short: 'P' },
+  negociacion: { label: 'Negociacion', color: 'bg-orange-500/20 text-orange-400', short: 'Ng' },
+  cerrado_ganado: { label: 'Ganado', color: 'bg-emerald-500/20 text-emerald-400', short: 'G' },
+  cerrado_perdido: { label: 'Perdido', color: 'bg-red-500/20 text-red-400', short: 'X' },
+  inactivo: { label: 'Inactivo', color: 'bg-slate-600/20 text-slate-500', short: '-' },
+};
+
 interface Props {
   conversations: WhatsAppConversation[];
   activeId: string | null;
@@ -29,12 +42,16 @@ interface Props {
 export default function ConversationList({ conversations, activeId, onSelect }: Props) {
   const [search, setSearch] = useState('');
   const [filterCategory, setFilterCategory] = useState<ConversationCategory | 'all'>('all');
+  const [filterStage, setFilterStage] = useState<LeadStage | 'all'>('all');
   const [showFilters, setShowFilters] = useState(false);
 
   const filtered = useMemo(() => {
     let result = conversations;
     if (filterCategory !== 'all') {
       result = result.filter((c) => c.category === filterCategory);
+    }
+    if (filterStage !== 'all') {
+      result = result.filter((c) => c.contact?.lead_stage === filterStage);
     }
     if (search.trim()) {
       const q = search.toLowerCase();
@@ -46,8 +63,14 @@ export default function ConversationList({ conversations, activeId, onSelect }: 
           c.last_message_preview?.toLowerCase().includes(q)
       );
     }
-    return result;
-  }, [conversations, filterCategory, search]);
+    return result.sort((a, b) => {
+      if (a.needs_director_attention && !b.needs_director_attention) return -1;
+      if (!a.needs_director_attention && b.needs_director_attention) return 1;
+      if (a.unread_count > 0 && b.unread_count === 0) return -1;
+      if (a.unread_count === 0 && b.unread_count > 0) return 1;
+      return new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime();
+    });
+  }, [conversations, filterCategory, filterStage, search]);
 
   const categoryCounts = useMemo(() => {
     const counts: Record<string, number> = { all: conversations.length };
@@ -56,6 +79,11 @@ export default function ConversationList({ conversations, activeId, onSelect }: 
     });
     return counts;
   }, [conversations]);
+
+  const needsAttentionCount = useMemo(
+    () => conversations.filter((c) => c.needs_director_attention).length,
+    [conversations]
+  );
 
   function getInitials(name: string) {
     return name
@@ -75,15 +103,25 @@ export default function ConversationList({ conversations, activeId, onSelect }: 
     }
   }
 
+  const stageInfo = (stage: string) => STAGE_CONFIG[stage] || STAGE_CONFIG.nuevo;
+
   return (
     <div className="flex flex-col h-full">
       <div className="p-4 space-y-3 flex-shrink-0">
         <div className="flex items-center justify-between">
-          <h2 className="text-lg font-bold text-white">Conversaciones</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-lg font-bold text-white">Conversaciones</h2>
+            {needsAttentionCount > 0 && (
+              <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400 text-[10px] font-medium">
+                <AlertCircle className="w-3 h-3" />
+                {needsAttentionCount}
+              </span>
+            )}
+          </div>
           <button
             onClick={() => setShowFilters(!showFilters)}
             className={`p-2 rounded-xl transition-all ${
-              showFilters || filterCategory !== 'all'
+              showFilters || filterCategory !== 'all' || filterStage !== 'all'
                 ? 'bg-emerald-500/10 text-emerald-400'
                 : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.04]'
             }`}
@@ -104,30 +142,53 @@ export default function ConversationList({ conversations, activeId, onSelect }: 
         </div>
 
         {showFilters && (
-          <div className="flex flex-wrap gap-1.5 animate-fade-in">
-            <button
-              onClick={() => setFilterCategory('all')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-                filterCategory === 'all'
-                  ? 'bg-white/[0.08] text-white'
-                  : 'text-slate-500 hover:text-slate-300 hover:bg-white/[0.04]'
-              }`}
-            >
-              Todos ({categoryCounts.all || 0})
-            </button>
-            {(Object.keys(CATEGORY_LABELS) as ConversationCategory[]).map((cat) => (
+          <div className="space-y-2 animate-fade-in">
+            <div className="flex flex-wrap gap-1.5">
               <button
-                key={cat}
-                onClick={() => setFilterCategory(cat)}
+                onClick={() => setFilterCategory('all')}
                 className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-                  filterCategory === cat
-                    ? CATEGORY_COLORS[cat]
+                  filterCategory === 'all'
+                    ? 'bg-white/[0.08] text-white'
                     : 'text-slate-500 hover:text-slate-300 hover:bg-white/[0.04]'
                 }`}
               >
-                {CATEGORY_LABELS[cat]} ({categoryCounts[cat] || 0})
+                Todos ({categoryCounts.all || 0})
               </button>
-            ))}
+              {(Object.keys(CATEGORY_LABELS) as ConversationCategory[]).map((cat) => (
+                <button
+                  key={cat}
+                  onClick={() => setFilterCategory(cat)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                    filterCategory === cat
+                      ? CATEGORY_COLORS[cat]
+                      : 'text-slate-500 hover:text-slate-300 hover:bg-white/[0.04]'
+                  }`}
+                >
+                  {CATEGORY_LABELS[cat]} ({categoryCounts[cat] || 0})
+                </button>
+              ))}
+            </div>
+            <div className="flex flex-wrap gap-1">
+              <button
+                onClick={() => setFilterStage('all')}
+                className={`px-2 py-1 rounded text-[10px] font-medium transition-all ${
+                  filterStage === 'all' ? 'bg-white/[0.08] text-white' : 'text-slate-500 hover:text-slate-300'
+                }`}
+              >
+                Todas etapas
+              </button>
+              {Object.entries(STAGE_CONFIG).map(([key, cfg]) => (
+                <button
+                  key={key}
+                  onClick={() => setFilterStage(key as LeadStage)}
+                  className={`px-2 py-1 rounded text-[10px] font-medium transition-all ${
+                    filterStage === key ? cfg.color : 'text-slate-500 hover:text-slate-300'
+                  }`}
+                >
+                  {cfg.label}
+                </button>
+              ))}
+            </div>
           </div>
         )}
       </div>
@@ -146,6 +207,9 @@ export default function ConversationList({ conversations, activeId, onSelect }: 
           const contact = conv.contact;
           const name = contact?.display_name || contact?.profile_name || contact?.phone_number || 'Desconocido';
           const isActive = conv.id === activeId;
+          const stage = stageInfo(contact?.lead_stage || 'nuevo');
+          const isReviewed = !!conv.director_reviewed_at;
+          const needsAttention = conv.needs_director_attention;
 
           return (
             <button
@@ -154,7 +218,9 @@ export default function ConversationList({ conversations, activeId, onSelect }: 
               className={`w-full text-left px-4 py-3 flex items-start gap-3 transition-all border-l-2 ${
                 isActive
                   ? 'bg-emerald-500/[0.07] border-emerald-500'
-                  : 'border-transparent hover:bg-white/[0.03]'
+                  : needsAttention
+                    ? 'border-amber-500/50 hover:bg-white/[0.03]'
+                    : 'border-transparent hover:bg-white/[0.03]'
               }`}
             >
               <div className="relative flex-shrink-0">
@@ -175,10 +241,20 @@ export default function ConversationList({ conversations, activeId, onSelect }: 
 
               <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm font-medium text-white truncate">{name}</span>
-                  <span className="text-[10px] text-slate-500 flex-shrink-0">
-                    {formatTime(conv.last_message_at)}
-                  </span>
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="text-sm font-medium text-white truncate">{name}</span>
+                    <span className={`px-1 py-0.5 rounded text-[8px] font-semibold flex-shrink-0 ${stage.color}`}>
+                      {stage.short}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1 flex-shrink-0">
+                    {isReviewed && (
+                      <Eye className="w-3 h-3 text-slate-600" />
+                    )}
+                    <span className="text-[10px] text-slate-500">
+                      {formatTime(conv.last_message_at)}
+                    </span>
+                  </div>
                 </div>
                 <div className="flex items-center justify-between gap-2 mt-0.5">
                   <p className="text-xs text-slate-400 truncate">
@@ -193,6 +269,9 @@ export default function ConversationList({ conversations, activeId, onSelect }: 
                       <span className={`px-1.5 py-0.5 rounded text-[9px] font-medium ${CATEGORY_COLORS[conv.category]}`}>
                         {CATEGORY_LABELS[conv.category]}
                       </span>
+                    )}
+                    {needsAttention && (
+                      <span className="w-2 h-2 rounded-full bg-amber-500 flex-shrink-0" />
                     )}
                     {conv.unread_count > 0 && (
                       <span className="min-w-[18px] h-[18px] flex items-center justify-center rounded-full bg-emerald-500 text-white text-[10px] font-bold px-1">

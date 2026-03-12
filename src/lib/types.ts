@@ -272,21 +272,48 @@ export interface WhatsAppBusinessAccount {
   updated_at: string;
 }
 
+export type LeadStage =
+  | 'nuevo'
+  | 'interesado'
+  | 'calificado'
+  | 'reunion_agendada'
+  | 'reunion_completada'
+  | 'propuesta_enviada'
+  | 'negociacion'
+  | 'cerrado_ganado'
+  | 'cerrado_perdido'
+  | 'inactivo';
+
+export interface ClientProfile {
+  id: string;
+  display_name: string;
+  email: string;
+  company: string;
+  industry: string;
+  estimated_budget: string;
+  source: string;
+  notes: string;
+  crm_client_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface WhatsAppContact {
   id: string;
   wa_id: string;
   phone_number: string;
   display_name: string;
   profile_name: string;
-  lead_status: 'new' | 'contacted' | 'qualified' | 'proposal_sent' | 'won' | 'lost';
+  lead_stage: LeadStage;
   notes: string;
   email: string;
   company: string;
-  lead_stage: string;
   crm_client_id: string | null;
+  client_profile_id: string | null;
   assigned_team_member: string | null;
   created_at: string;
   updated_at: string;
+  client_profile?: ClientProfile;
 }
 
 export type AgentMode = 'ai' | 'manual' | 'supervised';
@@ -303,6 +330,10 @@ export interface WhatsAppConversation {
   category: ConversationCategory;
   last_message_preview: string;
   is_agent_typing: boolean;
+  director_reviewed_at: string | null;
+  director_notes: string;
+  needs_director_attention: boolean;
+  priority_score: number;
   created_at: string;
   updated_at: string;
   contact?: WhatsAppContact;
@@ -402,4 +433,21 @@ export interface SalesAgentActionLog {
   error_message: string;
   metadata: Record<string, unknown>;
   created_at: string;
+}
+
+export interface SalesMeeting {
+  id: string;
+  conversation_id: string | null;
+  contact_id: string | null;
+  google_event_id: string | null;
+  title: string;
+  start_time: string;
+  end_time: string;
+  meet_link: string;
+  recall_bot_id: string | null;
+  transcript: string | null;
+  summary: string | null;
+  status: string;
+  created_at: string;
+  updated_at: string;
 }

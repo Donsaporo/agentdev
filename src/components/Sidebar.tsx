@@ -55,27 +55,24 @@ export default function Sidebar() {
   }, []);
 
   async function checkAgentStatus() {
-    const { data } = await supabase
-      .from('agent_heartbeat')
-      .select('last_seen, status')
-      .eq('id', 1)
-      .maybeSingle();
+    const [{ data: devData }, { data: salesData }] = await Promise.all([
+      supabase.from('agent_heartbeat').select('last_seen, status').eq('id', 1).maybeSingle(),
+      supabase.from('sales_agent_heartbeat').select('last_seen, status').eq('id', 'sales-agent').maybeSingle(),
+    ]);
 
-    if (data) {
-      const lastSeen = new Date(data.last_seen);
-      const diffMs = Date.now() - lastSeen.getTime();
-      setAgentOnline(diffMs < 180000 && data.status === 'online');
-      return;
+    let online = false;
+
+    if (devData) {
+      const diffMs = Date.now() - new Date(devData.last_seen).getTime();
+      if (diffMs < 180000 && devData.status === 'online') online = true;
     }
 
-    const twoMinutesAgo = new Date(Date.now() - 120000).toISOString();
-    const { data: logData } = await supabase
-      .from('agent_logs')
-      .select('id')
-      .gte('created_at', twoMinutesAgo)
-      .limit(1)
-      .maybeSingle();
-    setAgentOnline(!!logData);
+    if (salesData) {
+      const diffMs = Date.now() - new Date(salesData.last_seen).getTime();
+      if (diffMs < 120000 && salesData.status === 'online') online = true;
+    }
+
+    setAgentOnline(online);
   }
 
   async function loadBadges() {
