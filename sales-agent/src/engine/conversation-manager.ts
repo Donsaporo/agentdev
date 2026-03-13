@@ -84,6 +84,7 @@ async function processMessage(
     log.debug('Conversation already being processed, requeueing', {
       conversationId: msg.conversationId,
     });
+    handleIncomingMessage(supabase, msg).catch(() => {});
     return;
   }
 
@@ -259,7 +260,6 @@ async function recordOutbound(
     .update({
       last_message_at: new Date().toISOString(),
       last_message_preview: content.slice(0, 100),
-      needs_director_attention: true,
     })
     .eq('id', conversationId);
 }
@@ -400,11 +400,11 @@ async function executeActions(
         case 'update_client_profile': {
           const field = action.params.field;
           const value = action.params.value;
-          const allowedFields = ['email', 'company', 'industry', 'estimated_budget', 'source'];
+          const allowedFields = ['email', 'company', 'industry', 'estimated_budget', 'source', 'display_name'];
 
           if (!allowedFields.includes(field) || !value) break;
 
-          const contactFields = ['email', 'company'];
+          const contactFields = ['email', 'company', 'display_name'];
           if (contactFields.includes(field)) {
             await supabase
               .from('whatsapp_contacts')
@@ -449,17 +449,25 @@ async function executeActions(
           break;
 
         case 'schedule_meeting': {
+          if (!action.params.datetime || isNaN(new Date(action.params.datetime).getTime())) {
+            log.warn('Invalid or missing datetime for schedule_meeting', { datetime: action.params.datetime });
+            break;
+          }
+
           const contactData = await supabase
             .from('whatsapp_contacts')
             .select('display_name, email')
             .eq('id', contactId)
             .maybeSingle();
 
+          const isPresencial = action.params.meeting_type === 'presencial';
+
           const meeting = await scheduleMeeting(
             action.params.title || `Reunion Obzide - ${contactData?.data?.display_name || 'Cliente'}`,
             action.params.datetime,
             parseInt(action.params.duration || '30', 10),
-            contactData?.data?.email || action.params.email
+            contactData?.data?.email || action.params.email,
+            isPresencial
           );
 
           if (meeting) {
@@ -478,7 +486,7 @@ async function executeActions(
               title: meeting.title,
               start_time: meeting.start,
               end_time: meeting.end,
-              meet_link: meeting.meetLink,
+              meet_link: meeting.meetLink || null,
               recall_bot_id: recallBotId,
               status: 'scheduled',
             });
@@ -492,19 +500,23 @@ async function executeActions(
                 endTime: meeting.end,
                 meetLink: meeting.meetLink,
                 googleEventId: meeting.eventId,
+                meetingType: isPresencial ? 'presencial' : 'virtual',
               });
               await crm.addTimelineEvent({
                 clientId: meetingContact.crm_client_id,
                 eventType: 'reunion_programada',
                 title: `Reunion agendada: ${meeting.title}`,
-                description: `Google Meet: ${meeting.meetLink || 'Presencial'}`,
-                metadata: { google_event_id: meeting.eventId, recall_bot_id: recallBotId, source: 'whatsapp_sales_agent' },
+                description: isPresencial
+                  ? 'Reunion presencial en PH Plaza Real, Costa del Este, Panama'
+                  : `Google Meet: ${meeting.meetLink}`,
+                metadata: { google_event_id: meeting.eventId, recall_bot_id: recallBotId, meeting_type: isPresencial ? 'presencial' : 'virtual', source: 'whatsapp_sales_agent' },
               });
             }
 
             log.info('Meeting scheduled and recorded', {
               eventId: meeting.eventId,
               meetLink: meeting.meetLink,
+              type: isPresencial ? 'presencial' : 'virtual',
               recallBotId,
             });
           }

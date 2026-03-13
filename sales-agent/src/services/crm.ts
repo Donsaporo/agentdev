@@ -16,12 +16,16 @@ const VALID_EVENT_TYPES = [
   'demo_completada', 'lead_cerrado', 'otro',
 ] as const;
 
+function stripAccents(str: string): string {
+  return str.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
 const PERSONA_TO_SALESPERSON: Record<string, string> = {
-  'Tatiana Velazquez': 'ace63d9d-ce98-4f87-b822-bdd2b0bcebfc',
-  'Julieta Casanova': 'ace63d9d-ce98-4f87-b822-bdd2b0bcebfc',
-  'Hugo Sanchez': '46493789-3fb2-4d3d-80c1-b0e7edc89a41',
-  'Maria Fernanda Rodriguez': '263d984a-35d5-4d9d-bb7e-0e20f5eb9ba8',
-  'Danna Almirante': '263d984a-35d5-4d9d-bb7e-0e20f5eb9ba8',
+  'tatiana velazquez': 'ace63d9d-ce98-4f87-b822-bdd2b0bcebfc',
+  'julieta casanova': 'ace63d9d-ce98-4f87-b822-bdd2b0bcebfc',
+  'hugo sanchez': '46493789-3fb2-4d3d-80c1-b0e7edc89a41',
+  'maria fernanda rodriguez': '263d984a-35d5-4d9d-bb7e-0e20f5eb9ba8',
+  'danna almirante': '263d984a-35d5-4d9d-bb7e-0e20f5eb9ba8',
 };
 
 export interface CrmLeadParams {
@@ -54,6 +58,7 @@ export interface CrmMeetingParams {
   meetLink?: string;
   googleEventId?: string;
   description?: string;
+  meetingType?: 'virtual' | 'presencial';
 }
 
 function isAvailable(): boolean {
@@ -82,7 +87,8 @@ function validateEventType(eventType: string): string {
 }
 
 export function getSalespersonId(personaName: string): string | null {
-  return PERSONA_TO_SALESPERSON[personaName] || null;
+  const normalized = stripAccents(personaName).toLowerCase();
+  return PERSONA_TO_SALESPERSON[normalized] || null;
 }
 
 export async function findClientByPhone(phone: string): Promise<string | null> {
@@ -270,7 +276,7 @@ export async function addMeeting(params: CrmMeetingParams): Promise<string | nul
       client_id: params.clientId,
       title: params.title,
       description: params.description || null,
-      meeting_type: 'virtual',
+      meeting_type: params.meetingType || 'virtual',
       start_time: params.startTime,
       end_time: params.endTime,
       meeting_link: params.meetLink || null,
@@ -369,7 +375,7 @@ export async function syncStageToCrm(
   if (validStage === 'ganado') {
     await updateCrmClient(clientId, { status_tag: 'Ganado' });
   } else if (validStage === 'perdido') {
-    await updateCrmClient(clientId, { status_tag: 'Cerrado' });
+    await updateCrmClient(clientId, { status_tag: 'Perdido' });
   }
 }
 

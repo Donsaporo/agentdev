@@ -70,7 +70,7 @@ async function findContactPersona(
     .from('sales_agent_assignments')
     .select('persona_id, conversation_id')
     .eq('contact_id', contactId)
-    .order('created_at', { ascending: false })
+    .order('assigned_at', { ascending: false })
     .limit(1)
     .maybeSingle();
 

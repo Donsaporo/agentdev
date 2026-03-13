@@ -2,6 +2,7 @@ import { config } from './core/config.js';
 import { createLogger } from './core/logger.js';
 import { getSupabase } from './core/supabase.js';
 import { handleIncomingMessage } from './engine/conversation-manager.js';
+import { isDirectorPhone, handleDirectorCommand } from './engine/director-commands.js';
 import { loadPersonas, getOrAssignPersona } from './engine/persona-engine.js';
 import { invalidateInstructionsCache } from './engine/knowledge-search.js';
 import { sendTextMessage, setTypingIndicator } from './services/whatsapp.js';
@@ -34,6 +35,35 @@ async function setOffline(supabase: ReturnType<typeof getSupabase>) {
     .eq('id', 'sales-agent');
 }
 
+async function routeMessage(supabase: ReturnType<typeof getSupabase>, msg: Record<string, string>) {
+  if (config.director.phones.length > 0) {
+    const { data: contact } = await supabase
+      .from('whatsapp_contacts')
+      .select('wa_id')
+      .eq('id', msg.contact_id)
+      .maybeSingle();
+
+    if (contact?.wa_id && isDirectorPhone(contact.wa_id, config.director.phones)) {
+      log.info('Director message detected, routing to command handler', { waId: contact.wa_id });
+      await handleDirectorCommand(supabase, {
+        conversationId: msg.conversation_id,
+        contactId: msg.contact_id,
+        content: msg.content || '',
+        directorWaId: contact.wa_id,
+      });
+      return;
+    }
+  }
+
+  await handleIncomingMessage(supabase, {
+    id: msg.id,
+    conversationId: msg.conversation_id,
+    contactId: msg.contact_id,
+    content: msg.content || '',
+    messageType: msg.message_type || 'text',
+  });
+}
+
 function subscribeToMessages(supabase: ReturnType<typeof getSupabase>) {
   realtimeChannel = supabase
     .channel('sales-agent-messages')
@@ -52,13 +82,7 @@ function subscribeToMessages(supabase: ReturnType<typeof getSupabase>) {
           type: msg.message_type,
         });
 
-        handleIncomingMessage(supabase, {
-          id: msg.id,
-          conversationId: msg.conversation_id,
-          contactId: msg.contact_id,
-          content: msg.content || '',
-          messageType: msg.message_type || 'text',
-        }).catch((err) => {
+        routeMessage(supabase, msg).catch((err) => {
           log.error('Message handling failed', {
             error: err instanceof Error ? err.message : String(err),
           });

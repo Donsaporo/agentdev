@@ -44,6 +44,9 @@ export const config = {
     supabaseUrl: optional('SUPABASE_URL'),
     supabaseAnonKey: optional('SUPABASE_ANON_KEY'),
   },
+  director: {
+    phones: optional('DIRECTOR_PHONES', '').split(',').map(p => p.trim()).filter(Boolean),
+  },
   agent: {
     heartbeatInterval: 60_000,
     minResponseDelay: 4_000,

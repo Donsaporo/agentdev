@@ -8,6 +8,9 @@ import {
   MoreVertical,
   ChevronLeft,
   Loader2,
+  Wand2,
+  X,
+  RotateCcw,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { useToast } from '../../contexts/ToastContext';
@@ -34,6 +37,9 @@ export default function ChatPanel({
   const { messages, loading } = useConversationMessages(conversation.id);
   const [newMessage, setNewMessage] = useState('');
   const [sending, setSending] = useState(false);
+  const [toneEnabled, setToneEnabled] = useState(true);
+  const [transformedPreview, setTransformedPreview] = useState<string | null>(null);
+  const [transforming, setTransforming] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -49,11 +55,56 @@ export default function ChatPanel({
     inputRef.current?.focus();
   }, [conversation.id]);
 
+  useEffect(() => {
+    setTransformedPreview(null);
+  }, [conversation.id]);
+
+  async function transformMessage(text: string): Promise<string> {
+    const apiUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/compose-as-persona`;
+    const res = await fetch(apiUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        text,
+        persona_id: conversation.agent_persona_id,
+        conversation_id: conversation.id,
+      }),
+    });
+
+    if (!res.ok) throw new Error('Error al transformar mensaje');
+    const data = await res.json();
+    return data.transformed || text;
+  }
+
   async function handleSend() {
     if (!newMessage.trim() || sending) return;
 
     const text = newMessage.trim();
+
+    if (toneEnabled && !transformedPreview && conversation.agent_persona_id) {
+      setTransforming(true);
+      try {
+        const transformed = await transformMessage(text);
+        setTransformedPreview(transformed);
+      } catch {
+        toast.error('No se pudo transformar el mensaje. Enviando original.');
+        await sendMessage(text);
+      } finally {
+        setTransforming(false);
+      }
+      return;
+    }
+
+    const messageToSend = transformedPreview || text;
+    await sendMessage(messageToSend);
+  }
+
+  async function sendMessage(text: string) {
     setNewMessage('');
+    setTransformedPreview(null);
     setSending(true);
 
     try {
@@ -110,7 +161,37 @@ export default function ChatPanel({
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      handleSend();
+      if (transformedPreview) {
+        sendMessage(transformedPreview);
+      } else {
+        handleSend();
+      }
+    }
+    if (e.key === 'Escape' && transformedPreview) {
+      setTransformedPreview(null);
+    }
+  }
+
+  function handleCancelPreview() {
+    setTransformedPreview(null);
+  }
+
+  function handleSendOriginal() {
+    const text = newMessage.trim();
+    if (text) sendMessage(text);
+  }
+
+  async function handleRetransform() {
+    const text = newMessage.trim();
+    if (!text) return;
+    setTransforming(true);
+    try {
+      const transformed = await transformMessage(text);
+      setTransformedPreview(transformed);
+    } catch {
+      toast.error('No se pudo transformar el mensaje');
+    } finally {
+      setTransforming(false);
     }
   }
 
@@ -128,6 +209,7 @@ export default function ChatPanel({
   }
 
   const name = contact?.display_name || contact?.profile_name || contact?.phone_number || 'Desconocido';
+  const personaName = conversation.persona?.first_name || conversation.persona?.full_name;
 
   return (
     <div className="flex flex-col h-full">
@@ -224,33 +306,97 @@ export default function ChatPanel({
         <div ref={messagesEndRef} />
       </div>
 
-      <div className="flex-shrink-0 px-4 py-3 border-t border-white/[0.06]">
-        <div className="flex items-end gap-2">
-          <textarea
-            ref={inputRef}
-            value={newMessage}
-            onChange={(e) => setNewMessage(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={
-              conversation.agent_mode === 'ai'
-                ? 'El agente IA esta respondiendo... (escribe para enviar manualmente)'
-                : 'Escribe un mensaje...'
-            }
-            rows={1}
-            className="flex-1 bg-white/[0.04] border border-white/[0.08] rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-emerald-500/30 transition-all resize-none max-h-32"
-            style={{ minHeight: '42px' }}
-          />
-          <button
-            onClick={handleSend}
-            disabled={!newMessage.trim() || sending}
-            className="flex-shrink-0 w-10 h-10 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 disabled:text-slate-500 text-white flex items-center justify-center transition-all active:scale-95"
-          >
-            {sending ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <Send className="w-4 h-4" />
-            )}
-          </button>
+      <div className="flex-shrink-0 border-t border-white/[0.06]">
+        {transformedPreview && (
+          <div className="px-4 pt-3 pb-1">
+            <div className="bg-emerald-500/[0.07] border border-emerald-500/20 rounded-xl p-3">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[11px] font-medium text-emerald-400/80 uppercase tracking-wider">
+                  Vista previa como {personaName || 'persona'}
+                </span>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={handleRetransform}
+                    disabled={transforming}
+                    className="p-1 rounded-md text-slate-400 hover:text-emerald-400 hover:bg-white/[0.04] transition-all"
+                    title="Regenerar"
+                  >
+                    <RotateCcw className={`w-3.5 h-3.5 ${transforming ? 'animate-spin' : ''}`} />
+                  </button>
+                  <button
+                    onClick={handleCancelPreview}
+                    className="p-1 rounded-md text-slate-400 hover:text-red-400 hover:bg-white/[0.04] transition-all"
+                    title="Cancelar"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+              <p className="text-sm text-emerald-50 leading-relaxed">{transformedPreview}</p>
+              <div className="flex items-center gap-2 mt-2.5">
+                <button
+                  onClick={() => sendMessage(transformedPreview)}
+                  disabled={sending}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-medium transition-all"
+                >
+                  {sending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
+                  Enviar
+                </button>
+                <button
+                  onClick={handleSendOriginal}
+                  disabled={sending}
+                  className="px-3 py-1.5 rounded-lg bg-white/[0.05] hover:bg-white/[0.08] text-slate-300 text-xs font-medium transition-all"
+                >
+                  Enviar original
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="px-4 py-3">
+          <div className="flex items-end gap-2">
+            <div className="flex-1 relative">
+              <textarea
+                ref={inputRef}
+                value={newMessage}
+                onChange={(e) => setNewMessage(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder={
+                  conversation.agent_mode === 'ai'
+                    ? 'El agente IA esta respondiendo... (escribe para enviar manualmente)'
+                    : 'Escribe un mensaje...'
+                }
+                rows={1}
+                className="w-full bg-white/[0.04] border border-white/[0.08] rounded-xl px-4 py-2.5 pr-12 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-emerald-500/30 transition-all resize-none max-h-32"
+                style={{ minHeight: '42px' }}
+              />
+              {conversation.agent_persona_id && (
+                <button
+                  onClick={() => setToneEnabled(!toneEnabled)}
+                  className={`absolute right-2 bottom-2 p-1.5 rounded-lg transition-all ${
+                    toneEnabled
+                      ? 'text-emerald-400 bg-emerald-500/15 hover:bg-emerald-500/25'
+                      : 'text-slate-500 hover:text-slate-400 hover:bg-white/[0.04]'
+                  }`}
+                  title={toneEnabled ? `Tono de ${personaName || 'persona'} activado` : 'Tono de persona desactivado'}
+                >
+                  <Wand2 className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+            <button
+              onClick={transformedPreview ? () => sendMessage(transformedPreview) : handleSend}
+              disabled={!newMessage.trim() || sending || transforming}
+              className="flex-shrink-0 w-10 h-10 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 disabled:text-slate-500 text-white flex items-center justify-center transition-all active:scale-95"
+            >
+              {sending || transforming ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Send className="w-4 h-4" />
+              )}
+            </button>
+          </div>
         </div>
       </div>
     </div>

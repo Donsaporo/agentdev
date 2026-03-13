@@ -1,5 +1,6 @@
 import { config } from '../core/config.js';
 import { createLogger } from '../core/logger.js';
+import { callClaude } from './claude.js';
 
 const log = createLogger('recall');
 
@@ -29,6 +30,8 @@ export async function joinMeeting(meetUrl: string): Promise<string | null> {
     return null;
   }
 
+  const webhookUrl = `${config.supabase.url}/functions/v1/recall-webhook`;
+
   const res = await fetch(`${RECALL_BASE}/bot`, {
     method: 'POST',
     headers: headers(),
@@ -39,7 +42,7 @@ export async function joinMeeting(meetUrl: string): Promise<string | null> {
         provider: 'default',
       },
       real_time_transcription: {
-        destination_url: '',
+        destination_url: webhookUrl,
         partial_results: false,
       },
     }),
@@ -105,10 +108,36 @@ export async function getTranscript(botId: string): Promise<TranscriptResult | n
 
   log.info('Transcript retrieved', { botId, segments: segments.length, duration });
 
+  const transcriptText = lines.join('\n');
+  const { summary, actionItems } = await summarizeTranscript(transcriptText);
+
   return {
-    transcript: lines.join('\n'),
-    summary: '',
-    actionItems: [],
+    transcript: transcriptText,
+    summary,
+    actionItems,
     duration: Math.round(duration),
   };
+}
+
+async function summarizeTranscript(transcript: string): Promise<{ summary: string; actionItems: string[] }> {
+  try {
+    const prompt = `Eres un asistente de reuniones de Obzide Tech. Analiza la siguiente transcripcion y devuelve JSON con:
+- "summary": Resumen ejecutivo en espanol (3-5 oraciones)
+- "action_items": Array de compromisos y proximos pasos identificados
+
+Responde SOLO con JSON valido.`;
+
+    const response = await callClaude(prompt, [
+      { role: 'user', content: transcript.slice(0, 10_000) },
+    ], { maxTokens: 512, temperature: 0.3 });
+
+    const parsed = JSON.parse(response.text.replace(/```json|```/g, '').trim());
+    return {
+      summary: parsed.summary || '',
+      actionItems: Array.isArray(parsed.action_items) ? parsed.action_items : [],
+    };
+  } catch (err) {
+    log.warn('Failed to summarize transcript', { error: err instanceof Error ? err.message : String(err) });
+    return { summary: '', actionItems: [] };
+  }
 }

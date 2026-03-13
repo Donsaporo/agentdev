@@ -24,19 +24,19 @@ export function calculateDelay(responseText: string, isShortReply = false): numb
 
   const total = thinkingTime + readTime * 0.3 + typingTime * 0.4;
 
+  const jittered = total * (0.85 + Math.random() * 0.3);
+
   const clamped = Math.max(
     config.agent.minResponseDelay,
-    Math.min(total, config.agent.maxResponseDelay)
+    Math.min(jittered, config.agent.maxResponseDelay)
   );
-
-  const jitter = clamped * (0.85 + Math.random() * 0.3);
 
   log.debug('Delay calculated', {
     words: wordCount,
-    delayMs: Math.round(jitter),
+    delayMs: Math.round(clamped),
   });
 
-  return Math.round(jitter);
+  return Math.round(clamped);
 }
 
 export function sleep(ms: number): Promise<void> {

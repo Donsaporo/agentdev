@@ -127,7 +127,8 @@ export async function scheduleMeeting(
   title: string,
   start: string,
   durationMinutes: number,
-  attendeeEmail?: string
+  attendeeEmail?: string,
+  presencial = false
 ): Promise<ScheduledMeeting | null> {
   if (!isConfigured()) {
     log.warn('Calendar integration not configured');
@@ -150,20 +151,26 @@ export async function scheduleMeeting(
       dateTime: endDate.toISOString(),
       timeZone: 'America/Panama',
     },
-    conferenceData: {
+  };
+
+  if (presencial) {
+    event.location = 'PH Plaza Real, Costa del Este, Ciudad de Panama, Panama';
+  } else {
+    event.conferenceData = {
       createRequest: {
         requestId: `obzide-${Date.now()}`,
         conferenceSolutionKey: { type: 'hangoutsMeet' },
       },
-    },
-  };
+    };
+  }
 
   if (attendeeEmail) {
     event.attendees = [{ email: attendeeEmail }];
   }
 
+  const conferenceVersion = presencial ? '' : 'conferenceDataVersion=1&';
   const res = await fetch(
-    `${CALENDAR_BASE}/calendars/${calendarId}/events?conferenceDataVersion=1&sendUpdates=all`,
+    `${CALENDAR_BASE}/calendars/${calendarId}/events?${conferenceVersion}sendUpdates=all`,
     {
       method: 'POST',
       headers: {
@@ -181,11 +188,14 @@ export async function scheduleMeeting(
   }
 
   const created = await res.json();
-  const meetLink = created.hangoutLink || created.conferenceData?.entryPoints?.[0]?.uri || '';
+  const meetLink = presencial
+    ? ''
+    : (created.hangoutLink || created.conferenceData?.entryPoints?.[0]?.uri || '');
 
   log.info('Meeting scheduled', {
     eventId: created.id,
     start: startDate.toISOString(),
+    type: presencial ? 'presencial' : 'virtual',
     meetLink,
   });
 

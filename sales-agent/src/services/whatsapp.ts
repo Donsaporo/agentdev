@@ -28,17 +28,23 @@ export async function sendTextMessage(to: string, text: string): Promise<SendRes
     body: JSON.stringify(payload),
   });
 
-  const data = await res.json();
-
   if (!res.ok) {
-    const errMsg =
-      data.errors?.[0]?.details ||
-      data.error?.message ||
-      data.meta?.developer_message ||
-      JSON.stringify(data);
+    let errMsg: string;
+    try {
+      const errData = await res.json();
+      errMsg =
+        errData.errors?.[0]?.details ||
+        errData.error?.message ||
+        errData.meta?.developer_message ||
+        JSON.stringify(errData);
+    } catch {
+      errMsg = await res.text().catch(() => `HTTP ${res.status}`);
+    }
     log.error('Failed to send message', { to: recipient, error: errMsg });
     throw new Error(errMsg);
   }
+
+  const data = await res.json();
 
   const messageId = data.messages?.[0]?.id || '';
   log.info('Message sent', { to: recipient, messageId });

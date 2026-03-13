@@ -29,8 +29,9 @@ export async function buildContext(
   incomingMessage: string,
   persona: Persona
 ): Promise<ConversationContext> {
-  const [contact, messages, knowledge, instructions] = await Promise.all([
+  const [contact, conversation, messages, knowledge, instructions] = await Promise.all([
     loadContact(supabase, contactId),
+    loadConversation(supabase, conversationId),
     loadRecentMessages(supabase, conversationId),
     searchKnowledge(supabase, incomingMessage),
     getAllInstructions(supabase, persona.id),
@@ -90,7 +91,7 @@ export async function buildContext(
     contactEmail: contact?.email || '',
     contactCompany: contact?.company || '',
     leadStage: contact?.lead_stage || 'nuevo',
-    conversationCategory: 'new_lead',
+    conversationCategory: conversation?.category || 'new_lead',
     messageHistory: messages.map((m) => ({
       role: m.direction === 'inbound' ? 'user' : 'assistant',
       content: m.content || `[${m.message_type}]`,
@@ -112,6 +113,15 @@ export async function buildContext(
   });
 
   return context;
+}
+
+async function loadConversation(supabase: SupabaseClient, conversationId: string) {
+  const { data } = await supabase
+    .from('whatsapp_conversations')
+    .select('category')
+    .eq('id', conversationId)
+    .maybeSingle();
+  return data;
 }
 
 async function loadContact(supabase: SupabaseClient, contactId: string) {
