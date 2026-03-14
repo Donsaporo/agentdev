@@ -33,6 +33,16 @@ async function handleVerification(url: URL): Promise<Response> {
   return new Response("Forbidden", { status: 403, headers: corsHeaders });
 }
 
+function computeWindowStatus(lastInboundAt: Date): 'open' | 'closing_soon' | 'closed' {
+  const now = new Date();
+  const diffMs = now.getTime() - lastInboundAt.getTime();
+  const diffHours = diffMs / (1000 * 60 * 60);
+
+  if (diffHours < 20) return 'open';
+  if (diffHours <= 24) return 'closing_soon';
+  return 'closed';
+}
+
 async function upsertContact(
   supabase: ReturnType<typeof createClient>,
   waId: string,
@@ -47,7 +57,11 @@ async function upsertContact(
   if (existing) {
     await supabase
       .from("whatsapp_contacts")
-      .update({ profile_name: profileName, updated_at: new Date().toISOString() })
+      .update({
+        profile_name: profileName,
+        updated_at: new Date().toISOString(),
+        last_message_direction: 'inbound',
+      })
       .eq("id", existing.id);
     return { id: existing.id, isNew: false };
   }
@@ -61,6 +75,7 @@ async function upsertContact(
       profile_name: profileName,
       intro_sent: false,
       is_imported: false,
+      last_message_direction: 'inbound',
     })
     .select("id")
     .maybeSingle();
@@ -73,6 +88,9 @@ async function getOrCreateConversation(
   contactId: string,
   messagePreview: string
 ) {
+  const now = new Date();
+  const windowExpiresAt = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+
   const { data: existing } = await supabase
     .from("whatsapp_conversations")
     .select("id, unread_count")
@@ -84,9 +102,12 @@ async function getOrCreateConversation(
     await supabase
       .from("whatsapp_conversations")
       .update({
-        last_message_at: new Date().toISOString(),
+        last_message_at: now.toISOString(),
         last_message_preview: messagePreview.slice(0, 100),
         unread_count: (existing.unread_count || 0) + 1,
+        last_inbound_at: now.toISOString(),
+        window_expires_at: windowExpiresAt.toISOString(),
+        window_status: computeWindowStatus(now),
       })
       .eq("id", existing.id);
     return existing.id;
@@ -98,6 +119,9 @@ async function getOrCreateConversation(
       contact_id: contactId,
       last_message_preview: messagePreview.slice(0, 100),
       unread_count: 1,
+      last_inbound_at: now.toISOString(),
+      window_expires_at: windowExpiresAt.toISOString(),
+      window_status: 'open',
     })
     .select("id")
     .maybeSingle();
@@ -114,6 +138,7 @@ function extractMessageContent(message: Record<string, unknown>) {
         content: (message.text as Record<string, string>)?.body || "",
         media_url: "",
         media_mime_type: "",
+        media_id: "",
       };
     case "image":
     case "video":
@@ -124,6 +149,7 @@ function extractMessageContent(message: Record<string, unknown>) {
         content: media?.caption || "",
         media_url: media?.id || "",
         media_mime_type: media?.mime_type || "",
+        media_id: media?.id || "",
       };
     }
     case "location": {
@@ -132,10 +158,11 @@ function extractMessageContent(message: Record<string, unknown>) {
         content: `${loc?.latitude},${loc?.longitude}`,
         media_url: "",
         media_mime_type: "",
+        media_id: "",
       };
     }
     default:
-      return { content: "", media_url: "", media_mime_type: "" };
+      return { content: "[" + type + "]", media_url: "", media_mime_type: "", media_id: "" };
   }
 }
 
@@ -180,6 +207,89 @@ function normalize360Payload(body: Record<string, unknown>): Record<string, unkn
   };
 }
 
+function getExtensionFromMimeType(mimeType: string): string {
+  const map: Record<string, string> = {
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+    "image/gif": "gif",
+    "video/mp4": "mp4",
+    "video/3gpp": "3gp",
+    "audio/ogg": "ogg",
+    "audio/ogg; codecs=opus": "ogg",
+    "audio/mpeg": "mp3",
+    "audio/amr": "amr",
+    "audio/aac": "aac",
+    "application/pdf": "pdf",
+    "application/vnd.ms-excel": "xls",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+    "application/msword": "doc",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "application/vnd.ms-powerpoint": "ppt",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+    "text/plain": "txt",
+  };
+  return map[mimeType] || "bin";
+}
+
+async function downloadAndStoreMedia(
+  supabase: ReturnType<typeof createClient>,
+  messageId: string,
+  mediaId: string,
+  mimeType: string,
+  provider: string,
+  apiKey: string
+) {
+  try {
+    const response = await fetch(`https://waba-v2.360dialog.io/media/${mediaId}`, {
+      method: "GET",
+      headers: {
+        "D360-API-KEY": apiKey,
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Media download failed with status ${response.status}`);
+    }
+
+    const blob = await response.blob();
+    const ext = getExtensionFromMimeType(mimeType);
+    const storagePath = `whatsapp-media/${messageId}.${ext}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from("media")
+      .upload(storagePath, blob, {
+        contentType: mimeType,
+        upsert: true,
+      });
+
+    if (uploadError) {
+      throw new Error(`Storage upload failed: ${uploadError.message}`);
+    }
+
+    const { data: publicUrlData } = supabase.storage
+      .from("media")
+      .getPublicUrl(storagePath);
+
+    await supabase
+      .from("whatsapp_messages")
+      .update({
+        media_local_path: publicUrlData.publicUrl,
+        media_download_status: "downloaded",
+        media_file_size: blob.size,
+      })
+      .eq("id", messageId);
+  } catch (err) {
+    console.error("downloadAndStoreMedia error:", err);
+    await supabase
+      .from("whatsapp_messages")
+      .update({
+        media_download_status: "failed",
+      })
+      .eq("id", messageId);
+  }
+}
+
 async function processIncomingMessages(body: Record<string, unknown>, provider: string) {
   const supabase = getSupabase();
 
@@ -204,6 +314,26 @@ async function processIncomingMessages(body: Record<string, unknown>, provider: 
         contactMap[c.wa_id as string] = profile?.name || "";
       }
 
+      let accessToken = "";
+      if (provider === "360dialog" && phoneNumberId) {
+        const { data: account } = await supabase
+          .from("whatsapp_business_accounts")
+          .select("access_token")
+          .eq("phone_number_id", phoneNumberId)
+          .maybeSingle();
+        accessToken = account?.access_token || "";
+      }
+
+      if (!accessToken && provider === "360dialog") {
+        const { data: account } = await supabase
+          .from("whatsapp_business_accounts")
+          .select("access_token")
+          .eq("provider", "360dialog")
+          .limit(1)
+          .maybeSingle();
+        accessToken = account?.access_token || "";
+      }
+
       for (const message of messages) {
         const waId = message.from as string;
         const profileName = contactMap[waId] || waId;
@@ -224,34 +354,57 @@ async function processIncomingMessages(body: Record<string, unknown>, provider: 
             .eq("id", conversationId);
         }
 
-        const { content, media_url, media_mime_type } = extractMessageContent(message);
+        const { content, media_url, media_mime_type, media_id: mediaId } = extractMessageContent(message);
 
         const waMessageId = message.id as string;
-        const { data: existing } = await supabase
+
+        const { data: inserted, error: insertError } = await supabase
           .from("whatsapp_messages")
+          .insert({
+            conversation_id: conversationId,
+            contact_id: contactId,
+            wa_message_id: waMessageId,
+            direction: "inbound",
+            message_type: message.type as string,
+            content,
+            media_url,
+            media_mime_type,
+            metadata: {
+              phone_number_id: phoneNumberId,
+              timestamp: message.timestamp,
+              provider,
+              is_new_contact: isNew,
+            },
+            status: "received",
+            media_download_status: mediaId ? "pending" : null,
+          })
           .select("id")
-          .eq("wa_message_id", waMessageId)
           .maybeSingle();
 
-        if (existing) continue;
+        if (insertError) {
+          if (
+            insertError.code === "23505" ||
+            insertError.message?.includes("duplicate") ||
+            insertError.message?.includes("unique")
+          ) {
+            continue;
+          }
+          console.error("Message insert error:", insertError);
+          continue;
+        }
 
-        await supabase.from("whatsapp_messages").insert({
-          conversation_id: conversationId,
-          contact_id: contactId,
-          wa_message_id: waMessageId,
-          direction: "inbound",
-          message_type: message.type as string,
-          content,
-          media_url,
-          media_mime_type,
-          metadata: {
-            phone_number_id: phoneNumberId,
-            timestamp: message.timestamp,
-            provider,
-            is_new_contact: isNew,
-          },
-          status: "received",
-        });
+        if (mediaId && inserted?.id && accessToken) {
+          EdgeRuntime.waitUntil(
+            downloadAndStoreMedia(
+              supabase,
+              inserted.id,
+              mediaId,
+              media_mime_type,
+              provider,
+              accessToken
+            ).catch((err) => console.error("Media download error:", err))
+          );
+        }
       }
 
       const statuses = (value.statuses as Array<Record<string, unknown>>) || [];

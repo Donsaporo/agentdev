@@ -335,6 +335,9 @@ export interface WhatsAppConversation {
   director_notes: string;
   needs_director_attention: boolean;
   priority_score: number;
+  last_inbound_at: string | null;
+  window_expires_at: string | null;
+  window_status: 'open' | 'closing_soon' | 'closed';
   created_at: string;
   updated_at: string;
   contact?: WhatsAppContact;
@@ -351,9 +354,20 @@ export interface WhatsAppMessage {
   content: string;
   media_url: string;
   media_mime_type: string;
+  media_local_path: string | null;
+  media_download_status: 'pending' | 'downloaded' | 'failed' | 'expired' | null;
+  media_file_size: number | null;
   metadata: Record<string, unknown>;
   status: 'sent' | 'delivered' | 'read' | 'failed' | 'received';
   sender_name: string;
+  created_at: string;
+}
+
+export interface InternalPhoneNumber {
+  id: string;
+  phone_number: string;
+  role: string;
+  name: string;
   created_at: string;
 }
 

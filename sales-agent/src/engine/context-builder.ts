@@ -14,7 +14,9 @@ export interface ConversationContext {
   contactCompany: string;
   leadStage: string;
   conversationCategory: string;
-  messageHistory: { role: string; content: string; timestamp: string }[];
+  windowStatus: 'open' | 'closing_soon' | 'closed';
+  windowExpiresAt: string | null;
+  messageHistory: { role: string; content: string; timestamp: string; messageType?: string; hasMedia?: boolean }[];
   knowledge: { title: string; content: string }[];
   instructions: { instruction: string; priority: string }[];
   crmNotes: string;
@@ -92,10 +94,14 @@ export async function buildContext(
     contactCompany: contact?.company || '',
     leadStage: contact?.lead_stage || 'nuevo',
     conversationCategory: conversation?.category || 'new_lead',
+    windowStatus: conversation?.window_status || 'closed',
+    windowExpiresAt: conversation?.window_expires_at || null,
     messageHistory: messages.map((m) => ({
       role: m.direction === 'inbound' ? 'user' : 'assistant',
       content: m.content || `[${m.message_type}]`,
       timestamp: m.created_at,
+      messageType: m.message_type,
+      hasMedia: !!m.media_url,
     })),
     knowledge: knowledge.map((k) => ({ title: k.title, content: k.content })),
     instructions: instructions.map((i) => ({ instruction: i.instruction, priority: i.priority })),
@@ -118,7 +124,7 @@ export async function buildContext(
 async function loadConversation(supabase: SupabaseClient, conversationId: string) {
   const { data } = await supabase
     .from('whatsapp_conversations')
-    .select('category')
+    .select('category, window_status, window_expires_at')
     .eq('id', conversationId)
     .maybeSingle();
   return data;
@@ -136,7 +142,7 @@ async function loadContact(supabase: SupabaseClient, contactId: string) {
 async function loadRecentMessages(supabase: SupabaseClient, conversationId: string, limit = 30) {
   const { data } = await supabase
     .from('whatsapp_messages')
-    .select('direction, content, message_type, created_at')
+    .select('direction, content, message_type, media_url, media_mime_type, created_at')
     .eq('conversation_id', conversationId)
     .order('created_at', { ascending: true })
     .limit(limit);

@@ -105,6 +105,76 @@ const TEMPLATES: Record<string, ProjectTypeChecklist> = {
     requiredFeatures: ['Authentication', 'Push Notifications', 'Offline Support', 'Install Prompt', 'Responsive Navigation'],
     commonComponents: ['Navbar', 'BottomNavigation', 'InstallBanner', 'OfflineBanner', 'PullToRefresh', 'Footer'],
   },
+  restaurant: {
+    requiredPages: [
+      'Home/Landing', 'Menu', 'Menu Item Detail', 'Reservations', 'About',
+      'Gallery', 'Contact', 'Order Online', 'Cart/Checkout', 'Order Confirmation',
+      'Login', 'User Profile', 'Order History',
+      'Admin Dashboard', 'Admin Menu (CRUD)', 'Admin Reservations', 'Admin Orders',
+      'Settings', '404', 'Terms', 'Privacy',
+    ],
+    requiredDataModels: [
+      'users', 'menu_categories', 'menu_items', 'reservations', 'orders',
+      'order_items', 'reviews', 'gallery_images', 'restaurant_info',
+    ],
+    requiredFeatures: [
+      'Authentication', 'Menu CRUD', 'Online Ordering', 'Reservation System',
+      'Gallery', 'Contact Form', 'Order Tracking', 'Search/Filter', 'Reviews',
+    ],
+    commonComponents: [
+      'Navbar', 'Footer', 'Hero', 'MenuCard', 'MenuCategoryNav', 'ReservationForm',
+      'CartSidebar', 'GalleryGrid', 'ReviewCard', 'OrderStatusBadge', 'ContactMap',
+    ],
+  },
+  clinica: {
+    requiredPages: [
+      'Home/Landing', 'Services', 'Service Detail', 'Doctors/Team', 'Doctor Profile',
+      'Appointments', 'Book Appointment', 'Appointment Confirmation',
+      'Patient Portal/Login', 'Patient Dashboard', 'Medical History', 'Prescriptions',
+      'About', 'Contact', 'Testimonials', 'Blog/Health Tips',
+      'Admin Dashboard', 'Admin Appointments', 'Admin Patients', 'Admin Doctors',
+      'Admin Services (CRUD)', 'Settings', '404', 'Terms', 'Privacy',
+    ],
+    requiredDataModels: [
+      'users', 'doctors', 'specialties', 'services', 'appointments', 'patients',
+      'medical_records', 'prescriptions', 'testimonials', 'blog_posts', 'schedules',
+    ],
+    requiredFeatures: [
+      'Authentication', 'Appointment Booking', 'Doctor Directory', 'Patient Portal',
+      'Medical Records', 'Service CRUD', 'Schedule Management', 'Search/Filter',
+      'Testimonials', 'Blog', 'Contact Form',
+    ],
+    commonComponents: [
+      'Navbar', 'Footer', 'Hero', 'DoctorCard', 'ServiceCard', 'AppointmentForm',
+      'CalendarPicker', 'TimeSlotGrid', 'PatientSidebar', 'TestimonialCarousel',
+      'SpecialtyBadge', 'ContactMap',
+    ],
+  },
+  inmobiliaria: {
+    requiredPages: [
+      'Home/Landing', 'Property Listing/Search', 'Property Detail', 'Map View',
+      'Agents/Team', 'Agent Profile', 'Contact Agent', 'Property Comparison',
+      'Favorites/Saved', 'Login', 'Register', 'User Profile',
+      'Submit Property', 'My Properties',
+      'About', 'Contact', 'Blog/News',
+      'Admin Dashboard', 'Admin Properties (CRUD)', 'Admin Agents', 'Admin Inquiries',
+      'Settings', '404', 'Terms', 'Privacy',
+    ],
+    requiredDataModels: [
+      'users', 'properties', 'property_images', 'property_types', 'agents',
+      'inquiries', 'favorites', 'neighborhoods', 'amenities', 'blog_posts',
+    ],
+    requiredFeatures: [
+      'Authentication', 'Property CRUD', 'Advanced Search/Filter', 'Map Integration',
+      'Property Comparison', 'Favorites', 'Inquiry System', 'Agent Directory',
+      'Image Gallery', 'Blog', 'Contact Form', 'Responsive Navigation',
+    ],
+    commonComponents: [
+      'Navbar', 'Footer', 'Hero', 'PropertyCard', 'PropertyGallery', 'SearchFilters',
+      'MapView', 'AgentCard', 'InquiryForm', 'ComparisonTable', 'PriceRangeSlider',
+      'AmenityBadge', 'NeighborhoodCard', 'FavoriteButton',
+    ],
+  },
   custom: {
     requiredPages: ['Home', 'Login', 'Dashboard', 'Settings', '404'],
     requiredDataModels: ['users'],
@@ -113,13 +183,40 @@ const TEMPLATES: Record<string, ProjectTypeChecklist> = {
   },
 };
 
+const ALIASES: Record<string, string> = {
+  restaurante: 'restaurant',
+  restaurantes: 'restaurant',
+  clinic: 'clinica',
+  medical: 'clinica',
+  hospital: 'clinica',
+  doctor: 'clinica',
+  realestate: 'inmobiliaria',
+  realstate: 'inmobiliaria',
+  property: 'inmobiliaria',
+  properties: 'inmobiliaria',
+  bienes: 'inmobiliaria',
+  bienesraices: 'inmobiliaria',
+};
+
 export function getProjectTemplate(projectType: string): ProjectTypeChecklist | null {
   const normalized = projectType.toLowerCase().replace(/[^a-z]/g, '');
+
+  if (ALIASES[normalized]) {
+    return TEMPLATES[ALIASES[normalized]] || null;
+  }
+
   for (const [key, template] of Object.entries(TEMPLATES)) {
     if (normalized.includes(key) || key.includes(normalized)) {
       return template;
     }
   }
+
+  for (const [alias, key] of Object.entries(ALIASES)) {
+    if (normalized.includes(alias)) {
+      return TEMPLATES[key] || null;
+    }
+  }
+
   return null;
 }
 

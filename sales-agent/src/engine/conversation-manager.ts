@@ -6,7 +6,9 @@ import { buildContext } from './context-builder.js';
 import { decide, AgentAction } from './decision-engine.js';
 import { calculateDelay, sleep, shouldSplitMessage } from './human-simulator.js';
 import { sanitizeResponse } from './response-sanitizer.js';
-import { sendTextMessage, setTypingIndicator } from '../services/whatsapp.js';
+import { sendTextMessage, sendTemplateMessage, setTypingIndicator } from '../services/whatsapp.js';
+import type { SendResult } from '../services/whatsapp.js';
+import { notifyDirector } from '../services/director-notifier.js';
 import { scheduleMeeting } from '../services/calendar.js';
 import { joinMeeting } from '../services/recall.js';
 import * as crm from '../services/crm.js';
@@ -176,7 +178,15 @@ async function processMessage(
         await sleep(delay);
         await setTypingIndicator(supabase, msg.conversationId, false);
 
-        const result = await sendTextMessage(recipientPhone, chunks[i]);
+        const result: SendResult = await sendTextMessage(recipientPhone, chunks[i]);
+
+        if (!result.success && result.reason === 'window_expired') {
+          log.warn('Window expired, falling back to template', { conversationId: msg.conversationId });
+          const tplResult = await sendTemplateMessage(recipientPhone, 'seguimiento_amigable', 'es');
+          await recordOutbound(supabase, msg.conversationId, msg.contactId, tplResult.messageId, '[Template: seguimiento_amigable]', persona.full_name);
+          break;
+        }
+
         await recordOutbound(supabase, msg.conversationId, msg.contactId, result.messageId, chunks[i], persona.full_name);
 
         if (i < chunks.length - 1) {
@@ -319,6 +329,16 @@ async function handleEscalation(
     log.warn('Failed to send escalation email', { error: err instanceof Error ? err.message : String(err) });
   });
 
+  const escContactForNotify = await loadContactForCrm(supabase, contactId);
+  notifyDirector({
+    type: 'escalation',
+    contactName: escContactForNotify?.display_name || 'Desconocido',
+    contactPhone: escContactForNotify?.phone_number || '',
+    reason,
+  }).catch((err) => {
+    log.warn('Failed to notify director via WhatsApp', { error: err instanceof Error ? err.message : String(err) });
+  });
+
   log.warn('Conversation escalated', { conversationId, reason });
 }
 
@@ -389,6 +409,16 @@ async function executeActions(
           const contact = await getContact();
           if (contact?.crm_client_id) {
             await crm.syncStageToCrm(contact.crm_client_id, action.params.stage, 'Sales Agent');
+          }
+
+          if (action.params.stage === 'ganado' || action.params.stage === 'perdido') {
+            notifyDirector({
+              type: action.params.stage === 'ganado' ? 'lead_won' : 'lead_lost',
+              contactName: contact?.display_name || 'Desconocido',
+              contactPhone: contact?.phone_number || '',
+              reason: action.params.stage === 'perdido' ? (action.params.reason || 'Sin especificar') : undefined,
+              details: action.params.stage === 'ganado' ? (action.params.details || '') : undefined,
+            }).catch(() => {});
           }
           break;
         }
@@ -528,6 +558,13 @@ async function executeActions(
                 metadata: { google_event_id: meeting.eventId, recall_bot_id: recallBotId, meeting_type: isPresencial ? 'presencial' : 'virtual', source: 'whatsapp_sales_agent' },
               });
             }
+
+            const meetContact = await getContact();
+            notifyDirector({
+              type: 'meeting_scheduled',
+              contactName: meetContact?.display_name || contactData?.data?.display_name || 'Desconocido',
+              details: `${meeting.title}\n${isPresencial ? 'Presencial - PH Plaza Real' : `Virtual: ${meeting.meetLink}`}\nFecha: ${action.params.datetime}`,
+            }).catch(() => {});
 
             log.info('Meeting scheduled and recorded', {
               eventId: meeting.eventId,

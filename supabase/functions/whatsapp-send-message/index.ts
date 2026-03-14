@@ -82,15 +82,19 @@ function buildTextPayload(to: string, message: string) {
   };
 }
 
-function buildTemplatePayload(to: string, templateName: string, languageCode: string) {
+function buildTemplatePayload(to: string, templateName: string, languageCode: string, templateComponents?: Record<string, unknown>[]) {
+  const template: Record<string, unknown> = {
+    name: templateName,
+    language: { code: languageCode },
+  };
+  if (templateComponents && templateComponents.length > 0) {
+    template.components = templateComponents;
+  }
   return {
     messaging_product: "whatsapp",
     to,
     type: "template",
-    template: {
-      name: templateName,
-      language: { code: languageCode },
-    },
+    template,
   };
 }
 
@@ -104,12 +108,87 @@ async function sendMessage(
   return await graphFetch(account.access_token, account.phone_number_id, payload);
 }
 
+function isWindowExpiredError(err: Error): boolean {
+  const msg = err.message.toLowerCase();
+  return msg.includes("24 hour") || msg.includes("outside") || msg.includes("allowed window") || msg.includes("131026");
+}
+
+function isRetryableError(err: Error): boolean {
+  const msg = err.message;
+  return /429|500|502|503|504/.test(msg);
+}
+
+async function sendWithRetry(
+  account: Record<string, string>,
+  payload: Record<string, unknown>
+): Promise<Record<string, unknown>> {
+  const maxAttempts = 3;
+  const backoffDelays = [1000, 2000, 4000];
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      return await sendMessage(account, payload);
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+
+      if (isWindowExpiredError(error)) {
+        return { window_expired: true };
+      }
+
+      if (!isRetryableError(error) || attempt === maxAttempts - 1) {
+        throw error;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, backoffDelays[attempt]));
+    }
+  }
+
+  throw new Error("sendWithRetry: all attempts exhausted");
+}
+
+async function checkWindowStatus(
+  supabase: ReturnType<typeof createClient>,
+  recipientPhone: string
+): Promise<{ window_open: boolean; window_status: string; window_expires_at: string | null }> {
+  const { data: contact } = await supabase
+    .from("whatsapp_contacts")
+    .select("id")
+    .eq("wa_id", recipientPhone)
+    .maybeSingle();
+
+  if (!contact) {
+    return { window_open: false, window_status: "no_contact", window_expires_at: null };
+  }
+
+  const { data: conversation } = await supabase
+    .from("whatsapp_conversations")
+    .select("id, window_expires_at, window_status")
+    .eq("contact_id", contact.id)
+    .eq("status", "active")
+    .maybeSingle();
+
+  if (!conversation) {
+    return { window_open: false, window_status: "no_conversation", window_expires_at: null };
+  }
+
+  const expiresAt = conversation.window_expires_at;
+  const windowOpen = expiresAt ? new Date(expiresAt) > new Date() : false;
+  const windowStatus = conversation.window_status || (windowOpen ? "open" : "closed");
+
+  return {
+    window_open: windowOpen,
+    window_status: windowStatus,
+    window_expires_at: expiresAt || null,
+  };
+}
+
 async function recordOutboundMessage(
   supabase: ReturnType<typeof createClient>,
   to: string,
   waMessageId: string,
   messageType: string,
-  content: string
+  content: string,
+  senderName?: string
 ) {
   const { data: contact } = await supabase
     .from("whatsapp_contacts")
@@ -127,6 +206,11 @@ async function recordOutboundMessage(
     contactId = created?.id;
   }
   if (!contactId) return;
+
+  await supabase
+    .from("whatsapp_contacts")
+    .update({ last_message_direction: "outbound" })
+    .eq("id", contactId);
 
   const { data: conversation } = await supabase
     .from("whatsapp_conversations")
@@ -146,7 +230,7 @@ async function recordOutboundMessage(
   }
   if (!conversationId) return;
 
-  await supabase.from("whatsapp_messages").insert({
+  const messageInsert: Record<string, unknown> = {
     conversation_id: conversationId,
     contact_id: contactId,
     wa_message_id: waMessageId,
@@ -154,7 +238,13 @@ async function recordOutboundMessage(
     message_type: messageType,
     content,
     status: "sent",
-  });
+  };
+
+  if (senderName) {
+    messageInsert.sender_name = senderName;
+  }
+
+  await supabase.from("whatsapp_messages").insert(messageInsert);
 
   await supabase
     .from("whatsapp_conversations")
@@ -164,8 +254,6 @@ async function recordOutboundMessage(
     })
     .eq("id", conversationId);
 }
-
-// --- Cloud API specific actions ---
 
 async function handleCloudApiAction(account: Record<string, string>, action: string, body: Record<string, string>) {
   if (action === "register") {
@@ -270,8 +358,6 @@ async function handleRefreshToken(supabase: ReturnType<typeof createClient>, acc
   });
 }
 
-// --- 360dialog specific actions ---
-
 async function handle360Action(account: Record<string, string>, action: string) {
   if (action === "check_status") {
     const health = await d360Fetch(account.access_token, "/configs/webhook");
@@ -297,7 +383,7 @@ Deno.serve(async (req: Request) => {
 
     const supabase = getSupabase();
     const body = await req.json();
-    const { action, account_id, to, message, type = "text", template_name, language_code = "en_US" } = body;
+    const { action, account_id, to, message, type = "text", template_name, language_code = "en_US", template_components, sender_name } = body;
 
     if (!account_id) {
       return jsonRes({ error: "account_id is required" }, 400);
@@ -308,6 +394,13 @@ Deno.serve(async (req: Request) => {
     }
 
     const account = await getAccount(supabase, account_id);
+
+    if (action === "check_window") {
+      if (!to) return jsonRes({ error: "to is required" }, 400);
+      const recipient = to.replace(/[\s\-\+\(\)]/g, "");
+      const windowInfo = await checkWindowStatus(supabase, recipient);
+      return jsonRes({ success: true, ...windowInfo });
+    }
 
     if (action && action !== "send") {
       if (account.provider === "360dialog") {
@@ -328,22 +421,47 @@ Deno.serve(async (req: Request) => {
     const recipient = to.replace(/[\s\-\+\(\)]/g, "");
     let payload: Record<string, unknown>;
     let content = "";
+    let usedTemplate = false;
+
+    const windowInfo = await checkWindowStatus(supabase, recipient);
 
     if (type === "template") {
       const tplName = template_name || "hello_world";
-      payload = buildTemplatePayload(recipient, tplName, language_code);
+      payload = buildTemplatePayload(recipient, tplName, language_code, template_components);
       content = `[Template: ${tplName}]`;
+      usedTemplate = true;
     } else {
       if (!message) return jsonRes({ error: "message is required for text type" }, 400);
-      payload = buildTextPayload(recipient, message);
-      content = message;
+
+      if (!windowInfo.window_open) {
+        const fallbackTemplateName = template_name || "seguimiento_amigable";
+        console.log(`Window closed for ${recipient}, falling back to template: ${fallbackTemplateName}`);
+        payload = buildTemplatePayload(recipient, fallbackTemplateName, language_code, template_components);
+        content = `[Template: ${fallbackTemplateName}]`;
+        usedTemplate = true;
+      } else {
+        payload = buildTextPayload(recipient, message);
+        content = message;
+      }
     }
 
-    const result = await sendMessage(account, payload);
-    const waMessageId = result.messages?.[0]?.id || "";
+    const result = await sendWithRetry(account, payload);
+
+    if (result.window_expired) {
+      return jsonRes({
+        success: false,
+        error: "Message window has expired",
+        window_expired: true,
+        window_open: false,
+        window_expires_at: windowInfo.window_expires_at,
+        used_template: usedTemplate,
+      }, 400);
+    }
+
+    const waMessageId = (result.messages as Record<string, string>[])?.[0]?.id || "";
 
     EdgeRuntime.waitUntil(
-      recordOutboundMessage(supabase, recipient, waMessageId, type, content).catch(
+      recordOutboundMessage(supabase, recipient, waMessageId, usedTemplate ? "template" : type, content, sender_name).catch(
         (err) => console.error("Record outbound error:", err)
       )
     );
@@ -351,7 +469,10 @@ Deno.serve(async (req: Request) => {
     return jsonRes({
       success: true,
       message_id: waMessageId,
-      messaging_product: result.messaging_product,
+      messaging_product: result.messaging_product as string,
+      window_open: windowInfo.window_open,
+      window_expires_at: windowInfo.window_expires_at,
+      used_template: usedTemplate,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Internal server error";

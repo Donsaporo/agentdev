@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { Search, Bot, User, Filter, MessageCircle, AlertCircle, Eye } from 'lucide-react';
+import { Search, Bot, User, Filter, MessageCircle, AlertCircle, Eye, Clock, Lock } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { es } from 'date-fns/locale';
 import type { WhatsAppConversation, ConversationCategory, LeadStage } from '../../lib/types';
@@ -222,7 +222,13 @@ export default function ConversationList({ conversations, activeId, onSelect }: 
               }`}
             >
               <div className="relative flex-shrink-0">
-                <div className="w-11 h-11 rounded-full bg-gradient-to-br from-slate-700 to-slate-800 flex items-center justify-center text-xs font-bold text-white ring-1 ring-white/[0.06]">
+                <div className={`w-11 h-11 rounded-full bg-gradient-to-br from-slate-700 to-slate-800 flex items-center justify-center text-xs font-bold text-white ring-1 ${
+                  conv.window_status === 'closed'
+                    ? 'ring-red-500/30'
+                    : conv.window_status === 'closing_soon'
+                      ? 'ring-amber-500/30'
+                      : 'ring-white/[0.06]'
+                }`}>
                   {getInitials(name)}
                 </div>
                 {conv.agent_mode === 'ai' && (
@@ -233,6 +239,16 @@ export default function ConversationList({ conversations, activeId, onSelect }: 
                 {conv.agent_mode === 'manual' && (
                   <div className="absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full bg-blue-500/20 flex items-center justify-center border border-[#0d1117]">
                     <User className="w-2.5 h-2.5 text-blue-400" />
+                  </div>
+                )}
+                {conv.window_status === 'closed' && (
+                  <div className="absolute -top-0.5 -right-0.5 w-4 h-4 rounded-full bg-red-500/20 flex items-center justify-center border border-[#0d1117]">
+                    <Lock className="w-2.5 h-2.5 text-red-400" />
+                  </div>
+                )}
+                {conv.window_status === 'closing_soon' && (
+                  <div className="absolute -top-0.5 -right-0.5 w-4 h-4 rounded-full bg-amber-500/20 flex items-center justify-center border border-[#0d1117]">
+                    <Clock className="w-2.5 h-2.5 text-amber-400" />
                   </div>
                 )}
               </div>

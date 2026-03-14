@@ -11,6 +11,9 @@ import {
   Wand2,
   X,
   RotateCcw,
+  Clock,
+  AlertTriangle,
+  Lock,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { useToast } from '../../contexts/ToastContext';
@@ -268,6 +271,23 @@ export default function ChatPanel({
           </button>
         </div>
       </div>
+
+      {conversation.window_status === 'closed' && (
+        <div className="flex-shrink-0 px-4 py-2 bg-red-500/10 border-b border-red-500/20 flex items-center gap-2">
+          <Lock className="w-4 h-4 text-red-400 flex-shrink-0" />
+          <p className="text-xs text-red-400">
+            Ventana de 24h cerrada. Solo se pueden enviar mensajes con plantillas aprobadas.
+          </p>
+        </div>
+      )}
+      {conversation.window_status === 'closing_soon' && conversation.window_expires_at && (
+        <div className="flex-shrink-0 px-4 py-2 bg-amber-500/10 border-b border-amber-500/20 flex items-center gap-2">
+          <Clock className="w-4 h-4 text-amber-400 flex-shrink-0" />
+          <p className="text-xs text-amber-400">
+            Ventana de mensajeria cierra {new Date(conversation.window_expires_at).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' })}
+          </p>
+        </div>
+      )}
 
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
         {loading && (
