@@ -5,6 +5,7 @@ import { getOrAssignPersona } from './persona-engine.js';
 import { buildContext } from './context-builder.js';
 import { decide, AgentAction } from './decision-engine.js';
 import { calculateDelay, sleep, shouldSplitMessage } from './human-simulator.js';
+import { sanitizeResponse } from './response-sanitizer.js';
 import { sendTextMessage, setTypingIndicator } from '../services/whatsapp.js';
 import { scheduleMeeting } from '../services/calendar.js';
 import { joinMeeting } from '../services/recall.js';
@@ -150,7 +151,22 @@ async function processMessage(
     await executeActions(supabase, msg.conversationId, msg.contactId, decision.actions);
 
     if (decision.responseText) {
-      const chunks = shouldSplitMessage(decision.responseText);
+      const sanitized = sanitizeResponse(decision.responseText);
+
+      if (sanitized.blocked) {
+        log.warn('Response blocked by sanitizer', {
+          conversationId: msg.conversationId,
+          reason: sanitized.reason,
+        });
+        await handleEscalation(
+          supabase,
+          msg.conversationId,
+          msg.contactId,
+          `Respuesta bloqueada por filtro tecnico: ${sanitized.reason}`
+        );
+      }
+
+      const chunks = shouldSplitMessage(sanitized.text);
       const recipientPhone = contact.wa_id || contact.phone_number;
 
       for (let i = 0; i < chunks.length; i++) {
