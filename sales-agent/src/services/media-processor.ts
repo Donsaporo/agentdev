@@ -10,6 +10,36 @@ const FALLBACK_LABELS: Record<string, string> = {
   document: 'El cliente envio un documento',
 };
 
+const MAX_SIZE_BYTES: Record<string, number> = {
+  image: 10 * 1024 * 1024,
+  audio: 25 * 1024 * 1024,
+  document: 20 * 1024 * 1024,
+  video: 20 * 1024 * 1024,
+};
+
+const MAX_CONCURRENT_MEDIA = 3;
+let activeMediaProcessing = 0;
+const mediaQueue: Array<() => void> = [];
+
+async function acquireMediaSlot(): Promise<void> {
+  if (activeMediaProcessing < MAX_CONCURRENT_MEDIA) {
+    activeMediaProcessing++;
+    return;
+  }
+  return new Promise((resolve) => {
+    mediaQueue.push(() => {
+      activeMediaProcessing++;
+      resolve();
+    });
+  });
+}
+
+function releaseMediaSlot(): void {
+  activeMediaProcessing--;
+  const next = mediaQueue.shift();
+  if (next) next();
+}
+
 export async function processMediaContent(
   messageType: string,
   mediaId: string,
@@ -19,6 +49,7 @@ export async function processMediaContent(
 ): Promise<string | null> {
   const fallback = FALLBACK_LABELS[messageType] || `[${messageType}]`;
 
+  await acquireMediaSlot();
   try {
     let buffer: Buffer;
     let resolvedMime = mimeType;
@@ -38,6 +69,16 @@ export async function processMediaContent(
     if (buffer.length === 0) {
       log.warn('Downloaded media is empty', { messageType, mediaId });
       return fallback;
+    }
+
+    const maxSize = MAX_SIZE_BYTES[messageType] || 20 * 1024 * 1024;
+    if (buffer.length > maxSize) {
+      log.warn('Media exceeds size limit', {
+        messageType,
+        size: buffer.length,
+        maxSize,
+      });
+      return `${fallback} (archivo demasiado grande para procesar)`;
     }
 
     switch (messageType) {
@@ -77,5 +118,7 @@ export async function processMediaContent(
       error: err instanceof Error ? err.message : String(err),
     });
     return fallback;
+  } finally {
+    releaseMediaSlot();
   }
 }

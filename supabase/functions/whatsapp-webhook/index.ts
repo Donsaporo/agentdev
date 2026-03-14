@@ -130,8 +130,15 @@ async function getOrCreateConversation(
   return created?.id;
 }
 
+function extractReplyContext(message: Record<string, unknown>): string | null {
+  const context = message.context as Record<string, string> | undefined;
+  if (context?.id) return context.id;
+  return null;
+}
+
 function extractMessageContent(message: Record<string, unknown>) {
   const type = message.type as string;
+  const replyToWaMessageId = extractReplyContext(message);
 
   switch (type) {
     case "text":
@@ -140,6 +147,7 @@ function extractMessageContent(message: Record<string, unknown>) {
         media_url: "",
         media_mime_type: "",
         media_id: "",
+        reply_to_wa_message_id: replyToWaMessageId,
       };
     case "image":
     case "video":
@@ -157,6 +165,29 @@ function extractMessageContent(message: Record<string, unknown>) {
         media_url: media?.id || "",
         media_mime_type: media?.mime_type || "",
         media_id: media?.id || "",
+        reply_to_wa_message_id: replyToWaMessageId,
+      };
+    }
+    case "interactive": {
+      const interactive = message.interactive as Record<string, Record<string, string>> | undefined;
+      const buttonReply = interactive?.button_reply?.title;
+      const listReply = interactive?.list_reply?.title || interactive?.list_reply?.description;
+      return {
+        content: buttonReply || listReply || "[interactivo]",
+        media_url: "",
+        media_mime_type: "",
+        media_id: "",
+        reply_to_wa_message_id: replyToWaMessageId,
+      };
+    }
+    case "button": {
+      const button = message.button as Record<string, string> | undefined;
+      return {
+        content: button?.text || "[boton]",
+        media_url: "",
+        media_mime_type: "",
+        media_id: "",
+        reply_to_wa_message_id: replyToWaMessageId,
       };
     }
     case "sticker": {
@@ -166,6 +197,7 @@ function extractMessageContent(message: Record<string, unknown>) {
         media_url: sticker?.id || "",
         media_mime_type: sticker?.mime_type || "image/webp",
         media_id: sticker?.id || "",
+        reply_to_wa_message_id: replyToWaMessageId,
       };
     }
     case "reaction": {
@@ -176,6 +208,7 @@ function extractMessageContent(message: Record<string, unknown>) {
         media_url: "",
         media_mime_type: "",
         media_id: "",
+        reply_to_wa_message_id: replyToWaMessageId,
       };
     }
     case "location": {
@@ -185,10 +218,11 @@ function extractMessageContent(message: Record<string, unknown>) {
         media_url: "",
         media_mime_type: "",
         media_id: "",
+        reply_to_wa_message_id: replyToWaMessageId,
       };
     }
     default:
-      return { content: "[" + type + "]", media_url: "", media_mime_type: "", media_id: "" };
+      return { content: "[" + type + "]", media_url: "", media_mime_type: "", media_id: "", reply_to_wa_message_id: replyToWaMessageId };
   }
 }
 
@@ -258,6 +292,28 @@ function getExtensionFromMimeType(mimeType: string): string {
   return map[mimeType] || "bin";
 }
 
+async function fetchMediaWithRetry(mediaId: string, apiKey: string, maxRetries = 2): Promise<Blob> {
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await fetch(`https://waba-v2.360dialog.io/media/${mediaId}`, {
+        method: "GET",
+        headers: { "D360-API-KEY": apiKey },
+      });
+      if (!response.ok) {
+        throw new Error(`Media download failed with status ${response.status}`);
+      }
+      return await response.blob();
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      if (attempt < maxRetries) {
+        await new Promise((r) => setTimeout(r, 5000));
+      }
+    }
+  }
+  throw lastError!;
+}
+
 async function downloadAndStoreMedia(
   supabase: ReturnType<typeof createClient>,
   messageId: string,
@@ -267,18 +323,7 @@ async function downloadAndStoreMedia(
   apiKey: string
 ) {
   try {
-    const response = await fetch(`https://waba-v2.360dialog.io/media/${mediaId}`, {
-      method: "GET",
-      headers: {
-        "D360-API-KEY": apiKey,
-      },
-    });
-
-    if (!response.ok) {
-      throw new Error(`Media download failed with status ${response.status}`);
-    }
-
-    const blob = await response.blob();
+    const blob = await fetchMediaWithRetry(mediaId, apiKey);
     const ext = getExtensionFromMimeType(mimeType);
     const storagePath = `whatsapp-media/${messageId}.${ext}`;
 
@@ -380,9 +425,19 @@ async function processIncomingMessages(body: Record<string, unknown>, provider: 
             .eq("id", conversationId);
         }
 
-        const { content, media_url, media_mime_type, media_id: mediaId } = extractMessageContent(message);
+        const { content, media_url, media_mime_type, media_id: mediaId, reply_to_wa_message_id } = extractMessageContent(message);
 
         const waMessageId = message.id as string;
+
+        const msgMetadata: Record<string, unknown> = {
+          phone_number_id: phoneNumberId,
+          timestamp: message.timestamp,
+          provider,
+          is_new_contact: isNew,
+        };
+        if (reply_to_wa_message_id) {
+          msgMetadata.reply_to_wa_message_id = reply_to_wa_message_id;
+        }
 
         const { data: inserted, error: insertError } = await supabase
           .from("whatsapp_messages")
@@ -395,12 +450,7 @@ async function processIncomingMessages(body: Record<string, unknown>, provider: 
             content,
             media_url,
             media_mime_type,
-            metadata: {
-              phone_number_id: phoneNumberId,
-              timestamp: message.timestamp,
-              provider,
-              is_new_contact: isNew,
-            },
+            metadata: msgMetadata,
             status: "received",
             media_download_status: mediaId ? "pending" : null,
           })
@@ -487,7 +537,7 @@ Deno.serve(async (req: Request) => {
   } catch (error) {
     console.error("Webhook error:", error);
     return new Response(JSON.stringify({ error: "Internal server error" }), {
-      status: 200,
+      status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }

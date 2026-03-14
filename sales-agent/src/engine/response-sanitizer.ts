@@ -39,11 +39,13 @@ const SOURCE_CODE_PATTERNS = [
 ];
 
 function looksLikeInternalJson(text: string): boolean {
-  const trimmed = text.trim();
-  if (!trimmed.startsWith('{') && !trimmed.includes('```')) return false;
-
   const matchCount = INTERNAL_JSON_KEYS.filter((key) => text.includes(`"${key}"`)).length;
-  return matchCount >= 2;
+  if (matchCount >= 2) return true;
+
+  const trimmed = text.trim();
+  if ((trimmed.startsWith('{') || trimmed.includes('```')) && matchCount >= 1) return true;
+
+  return false;
 }
 
 function containsRuntimeError(text: string): boolean {
@@ -52,7 +54,17 @@ function containsRuntimeError(text: string): boolean {
 
 function containsSourceCode(text: string): boolean {
   const matches = SOURCE_CODE_PATTERNS.filter((pattern) => pattern.test(text));
-  return matches.length >= 2;
+  return matches.length >= 3;
+}
+
+const REASONING_PREFIXES = /^(Let me|I'll|I will|Based on|Here is|Here's|Analizando|Basandome en|Voy a analizar|Reasoning:)[^\n]*/im;
+
+function stripReasoningPrefix(text: string): string {
+  let result = text;
+  while (REASONING_PREFIXES.test(result)) {
+    result = result.replace(REASONING_PREFIXES, '').trim();
+  }
+  return result;
 }
 
 function isEmptyOrWhitespace(text: string): boolean {
@@ -78,6 +90,15 @@ export function sanitizeResponse(text: string): SanitizeResult {
   if (containsSourceCode(text)) {
     log.warn('Blocked source code leak', { preview: text.slice(0, 120) });
     return { text: FALLBACK_MESSAGE, blocked: true, reason: 'source_code' };
+  }
+
+  const cleaned = stripReasoningPrefix(text);
+  if (cleaned !== text) {
+    log.debug('Stripped reasoning prefix from response');
+    if (cleaned.length < 5) {
+      return { text: FALLBACK_MESSAGE, blocked: true, reason: 'reasoning_only' };
+    }
+    return { text: cleaned, blocked: false };
   }
 
   return { text, blocked: false };

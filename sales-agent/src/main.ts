@@ -375,7 +375,7 @@ async function processFollowUps(supabase: ReturnType<typeof getSupabase>) {
 
       await supabase
         .from('whatsapp_contacts')
-        .update({ follow_up_count: newFollowUpCount })
+        .update({ follow_up_count: newFollowUpCount, last_message_direction: 'outbound' })
         .eq('id', contact.id);
 
       await supabase

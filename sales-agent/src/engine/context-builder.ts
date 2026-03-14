@@ -96,13 +96,26 @@ export async function buildContext(
     conversationCategory: conversation?.category || 'new_lead',
     windowStatus: conversation?.window_status || 'closed',
     windowExpiresAt: conversation?.window_expires_at || null,
-    messageHistory: messages.map((m) => ({
-      role: m.direction === 'inbound' ? 'user' : 'assistant',
-      content: m.content || `[${m.message_type}]`,
-      timestamp: m.created_at,
-      messageType: m.message_type,
-      hasMedia: !!m.media_url,
-    })),
+    messageHistory: messages.map((m) => {
+      let content = m.content || `[${m.message_type}]`;
+
+      const replyToId = (m.metadata as Record<string, unknown>)?.reply_to_wa_message_id as string | undefined;
+      if (replyToId) {
+        const replyTarget = messages.find((r) => r.wa_message_id === replyToId);
+        if (replyTarget) {
+          const preview = (replyTarget.content || '').slice(0, 80);
+          content = `[En respuesta a: "${preview}"]\n${content}`;
+        }
+      }
+
+      return {
+        role: m.direction === 'inbound' ? 'user' : 'assistant',
+        content,
+        timestamp: m.created_at,
+        messageType: m.message_type,
+        hasMedia: !!m.media_url,
+      };
+    }),
     knowledge: knowledge.map((k) => ({ title: k.title, content: k.content })),
     instructions: instructions.map((i) => ({ instruction: i.instruction, priority: i.priority })),
     crmNotes: contact?.notes || '',
@@ -142,7 +155,7 @@ async function loadContact(supabase: SupabaseClient, contactId: string) {
 async function loadRecentMessages(supabase: SupabaseClient, conversationId: string, limit = 30) {
   const { data } = await supabase
     .from('whatsapp_messages')
-    .select('direction, content, message_type, media_url, media_mime_type, created_at')
+    .select('direction, content, message_type, media_url, media_mime_type, created_at, wa_message_id, metadata')
     .eq('conversation_id', conversationId)
     .order('created_at', { ascending: true })
     .limit(limit);

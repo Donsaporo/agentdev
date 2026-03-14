@@ -18,6 +18,8 @@ const log = createLogger('conversation-manager');
 
 const processingLock = new Set<string>();
 const pendingMessages = new Map<string, { messages: IncomingMessage[]; timer: ReturnType<typeof setTimeout> }>();
+const requeueCount = new Map<string, number>();
+const MAX_REQUEUE = 3;
 
 interface IncomingMessage {
   id: string;
@@ -64,12 +66,43 @@ async function processBatch(supabase: SupabaseClient, conversationId: string): P
 
   if (!batch || batch.messages.length === 0) return;
 
+  const mediaTypes = ['image', 'audio', 'document', 'video'];
+  const enrichedContents: string[] = [];
+
+  for (const m of batch.messages) {
+    if (mediaTypes.includes(m.messageType)) {
+      const { data: dbMsg } = await supabase
+        .from('whatsapp_messages')
+        .select('media_url, media_mime_type, media_local_path, media_download_status')
+        .eq('id', m.id)
+        .maybeSingle();
+
+      const mediaId = dbMsg?.media_url || m.mediaUrl || '';
+      const mimeType = dbMsg?.media_mime_type || m.mediaMimeType || '';
+      const localPath = dbMsg?.media_local_path || '';
+      const downloadStatus = dbMsg?.media_download_status || '';
+
+      if (mediaId || localPath) {
+        const enriched = await processMediaContent(m.messageType, mediaId, mimeType, localPath, downloadStatus);
+        if (enriched) {
+          enrichedContents.push(enriched);
+          await supabase
+            .from('whatsapp_messages')
+            .update({ metadata: { media_description: enriched } })
+            .eq('id', m.id);
+          continue;
+        }
+      }
+    }
+    enrichedContents.push(m.content || `[${m.messageType}]`);
+  }
+
   const combined: IncomingMessage = {
     id: batch.messages[batch.messages.length - 1].id,
     conversationId,
     contactId: batch.messages[0].contactId,
-    content: batch.messages.map((m) => m.content || `[${m.messageType}]`).filter(Boolean).join('\n'),
-    messageType: batch.messages[batch.messages.length - 1].messageType,
+    content: enrichedContents.filter(Boolean).join('\n'),
+    messageType: 'text',
   };
 
   if (batch.messages.length > 1) {
@@ -87,8 +120,19 @@ async function processMessage(
   msg: IncomingMessage
 ): Promise<void> {
   if (processingLock.has(msg.conversationId)) {
+    const count = (requeueCount.get(msg.conversationId) || 0) + 1;
+    if (count > MAX_REQUEUE) {
+      log.warn('Max requeue attempts reached, dropping message', {
+        conversationId: msg.conversationId,
+        attempts: count,
+      });
+      requeueCount.delete(msg.conversationId);
+      return;
+    }
+    requeueCount.set(msg.conversationId, count);
     log.debug('Conversation already being processed, requeueing', {
       conversationId: msg.conversationId,
+      attempt: count,
     });
     handleIncomingMessage(supabase, msg).catch(() => {});
     return;
@@ -185,8 +229,6 @@ async function processMessage(
       );
     }
 
-    await executeActions(supabase, msg.conversationId, msg.contactId, decision.actions);
-
     if (decision.responseText) {
       const sanitized = sanitizeResponse(decision.responseText);
 
@@ -201,7 +243,10 @@ async function processMessage(
           msg.contactId,
           `Respuesta bloqueada por filtro tecnico: ${sanitized.reason}`
         );
+        return;
       }
+
+      await executeActions(supabase, msg.conversationId, msg.contactId, decision.actions);
 
       const chunks = shouldSplitMessage(sanitized.text);
       const recipientPhone = contact.wa_id || contact.phone_number;
@@ -267,6 +312,8 @@ async function processMessage(
           await sleep(1_500 + Math.random() * 3_000);
         }
       }
+    } else if (decision.actions.length > 0) {
+      await executeActions(supabase, msg.conversationId, msg.contactId, decision.actions);
     }
 
     await logAction(supabase, msg.conversationId, msg.contactId, persona.id, {
@@ -297,6 +344,7 @@ async function processMessage(
     });
   } finally {
     processingLock.delete(msg.conversationId);
+    requeueCount.delete(msg.conversationId);
     await setTypingIndicator(supabase, msg.conversationId, false).catch(() => {});
   }
 }
@@ -362,6 +410,11 @@ async function recordOutbound(
       last_message_preview: content.slice(0, 100),
     })
     .eq('id', conversationId);
+
+  await supabase
+    .from('whatsapp_contacts')
+    .update({ last_message_direction: 'outbound' })
+    .eq('id', contactId);
 }
 
 async function handleEscalation(

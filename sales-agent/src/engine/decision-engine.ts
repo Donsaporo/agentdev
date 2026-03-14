@@ -319,12 +319,30 @@ export async function decide(
     log.warn('Failed to parse Claude response as JSON, using raw text', {
       responsePreview: response.text.slice(0, 200),
     });
+
+    let cleaned = response.text.replace(/```json|```/g, '').trim();
+
+    const reasoningPrefixes = /^(Let me|I'll|I will|Based on|Reasoning:|Actions:|Analizando|Basandome en|Voy a|Analizar|Here is|Here's)[^\n]*/gim;
+    cleaned = cleaned.replace(reasoningPrefixes, '').trim();
+
+    const jsonBlockStart = cleaned.indexOf('{');
+    if (jsonBlockStart > 0) {
+      const maybeJson = cleaned.slice(jsonBlockStart);
+      if (/"response_text"|"actions"|"should_escalate"/.test(maybeJson)) {
+        cleaned = cleaned.slice(0, jsonBlockStart).trim();
+      }
+    }
+
+    if (cleaned.length < 10 || /"response_text"|"actions"|"should_escalate"/.test(cleaned)) {
+      cleaned = 'Dame un momento por favor.';
+    }
+
     return {
-      responseText: response.text.replace(/```json|```/g, '').trim(),
+      responseText: cleaned,
       actions: [],
       reasoning: 'Fallback: could not parse structured response',
-      shouldEscalate: false,
-      escalationReason: '',
+      shouldEscalate: true,
+      escalationReason: 'Respuesta del modelo no pudo ser parseada como JSON',
       inputTokens: response.inputTokens,
       outputTokens: response.outputTokens,
       model: response.model,
