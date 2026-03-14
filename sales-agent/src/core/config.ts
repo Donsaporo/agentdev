@@ -21,7 +21,7 @@ export const config = {
   },
   anthropic: {
     apiKey: required('ANTHROPIC_API_KEY'),
-    model: optional('ANTHROPIC_MODEL', 'claude-sonnet-4-20250514'),
+    model: optional('ANTHROPIC_MODEL', 'claude-opus-4-20250514'),
     maxTokens: parseInt(optional('ANTHROPIC_MAX_TOKENS', '1024'), 10),
   },
   openai: {

@@ -251,65 +251,98 @@ async function processMessage(
       const chunks = shouldSplitMessage(sanitized.text);
       const recipientPhone = contact.wa_id || contact.phone_number;
 
-      for (let i = 0; i < chunks.length; i++) {
-        const isShort = chunks[i].split(/\s+/).length <= 5;
-        const delay = calculateDelay(chunks[i], isShort);
-        await setTypingIndicator(supabase, msg.conversationId, true);
-        await sleep(delay);
-        await setTypingIndicator(supabase, msg.conversationId, false);
+      const { data: convWindow } = await supabase
+        .from('whatsapp_conversations')
+        .select('window_expires_at')
+        .eq('id', msg.conversationId)
+        .maybeSingle();
 
-        let result: SendResult;
+      const windowExpiresAt = convWindow?.window_expires_at
+        ? new Date(convWindow.window_expires_at as string).getTime()
+        : 0;
+      const windowOpen = windowExpiresAt > Date.now();
+
+      if (!windowOpen) {
+        log.warn('Window closed before send, sending template directly', { conversationId: msg.conversationId });
         try {
-          result = await sendTextMessage(recipientPhone, chunks[i]);
-        } catch (sendErr) {
-          log.error('Message send failed after retries', {
-            conversationId: msg.conversationId,
-            error: sendErr instanceof Error ? sendErr.message : String(sendErr),
-          });
-          await recordOutbound(supabase, msg.conversationId, msg.contactId, '', chunks[i], persona.full_name);
-          await supabase
-            .from('whatsapp_messages')
-            .update({ status: 'failed' })
-            .eq('conversation_id', msg.conversationId)
-            .eq('content', chunks[i])
-            .eq('direction', 'outbound');
-
-          const failContact = await loadContactForCrm(supabase, msg.contactId);
-          notifyDirector({
-            type: 'escalation',
-            contactName: failContact?.display_name || 'Desconocido',
-            contactPhone: failContact?.phone_number || recipientPhone,
-            reason: `Envio de mensaje fallo: ${sendErr instanceof Error ? sendErr.message : String(sendErr)}`,
-          }).catch(() => {});
-          break;
+          const tplResult = await sendTemplateMessage(recipientPhone, 'seguimiento_amigable', 'es');
+          if (tplResult.success) {
+            await recordOutbound(supabase, msg.conversationId, msg.contactId, tplResult.messageId, '[Template: seguimiento_amigable]', persona.full_name);
+          } else {
+            throw new Error(tplResult.reason || 'Template send failed');
+          }
+        } catch (tplErr) {
+          log.error('Template send failed (window closed)', { error: tplErr instanceof Error ? tplErr.message : String(tplErr) });
         }
 
-        if (!result.success && result.reason === 'window_expired') {
-          log.warn('Window expired, falling back to template', { conversationId: msg.conversationId });
+        const failContact = await loadContactForCrm(supabase, msg.contactId);
+        notifyDirector({
+          type: 'send_failed',
+          contactName: failContact?.display_name || 'Desconocido',
+          contactPhone: failContact?.phone_number || recipientPhone,
+          reason: `Ventana de 24h cerrada. Se envio template. Mensaje pendiente: "${sanitized.text.slice(0, 120)}"`,
+        }).catch(() => {});
+      } else {
+        for (let i = 0; i < chunks.length; i++) {
+          const isShort = chunks[i].split(/\s+/).length <= 5;
+          const delay = calculateDelay(chunks[i], isShort);
+          await setTypingIndicator(supabase, msg.conversationId, true);
+          await sleep(delay);
+          await setTypingIndicator(supabase, msg.conversationId, false);
+
+          let result: SendResult;
           try {
-            const tplResult = await sendTemplateMessage(recipientPhone, 'seguimiento_amigable', 'es');
-            if (tplResult.success) {
-              await recordOutbound(supabase, msg.conversationId, msg.contactId, tplResult.messageId, '[Template: seguimiento_amigable]', persona.full_name);
-            } else {
-              throw new Error(tplResult.reason || 'Template send failed');
-            }
-          } catch (tplErr) {
-            log.error('Template fallback also failed', { error: tplErr instanceof Error ? tplErr.message : String(tplErr) });
+            result = await sendTextMessage(recipientPhone, chunks[i]);
+          } catch (sendErr) {
+            log.error('Message send failed after retries', {
+              conversationId: msg.conversationId,
+              error: sendErr instanceof Error ? sendErr.message : String(sendErr),
+            });
+            await recordOutbound(supabase, msg.conversationId, msg.contactId, '', chunks[i], persona.full_name);
+            await supabase
+              .from('whatsapp_messages')
+              .update({ status: 'failed' })
+              .eq('conversation_id', msg.conversationId)
+              .eq('content', chunks[i])
+              .eq('direction', 'outbound');
+
             const failContact = await loadContactForCrm(supabase, msg.contactId);
             notifyDirector({
               type: 'escalation',
               contactName: failContact?.display_name || 'Desconocido',
               contactPhone: failContact?.phone_number || recipientPhone,
-              reason: 'No se pudo enviar mensaje ni template (ventana de 24h cerrada)',
+              reason: `Envio de mensaje fallo: ${sendErr instanceof Error ? sendErr.message : String(sendErr)}`,
             }).catch(() => {});
+            break;
           }
-          break;
-        }
 
-        await recordOutbound(supabase, msg.conversationId, msg.contactId, result.messageId, chunks[i], persona.full_name);
+          if (!result.success && result.reason === 'window_expired') {
+            log.warn('Window expired mid-send, falling back to template', { conversationId: msg.conversationId });
+            try {
+              const tplResult = await sendTemplateMessage(recipientPhone, 'seguimiento_amigable', 'es');
+              if (tplResult.success) {
+                await recordOutbound(supabase, msg.conversationId, msg.contactId, tplResult.messageId, '[Template: seguimiento_amigable]', persona.full_name);
+              } else {
+                throw new Error(tplResult.reason || 'Template send failed');
+              }
+            } catch (tplErr) {
+              log.error('Template fallback also failed', { error: tplErr instanceof Error ? tplErr.message : String(tplErr) });
+              const failContact = await loadContactForCrm(supabase, msg.contactId);
+              notifyDirector({
+                type: 'send_failed',
+                contactName: failContact?.display_name || 'Desconocido',
+                contactPhone: failContact?.phone_number || recipientPhone,
+                reason: 'No se pudo enviar mensaje ni template (ventana de 24h cerrada)',
+              }).catch(() => {});
+            }
+            break;
+          }
 
-        if (i < chunks.length - 1) {
-          await sleep(1_500 + Math.random() * 3_000);
+          await recordOutbound(supabase, msg.conversationId, msg.contactId, result.messageId, chunks[i], persona.full_name);
+
+          if (i < chunks.length - 1) {
+            await sleep(1_500 + Math.random() * 3_000);
+          }
         }
       }
     } else if (decision.actions.length > 0) {

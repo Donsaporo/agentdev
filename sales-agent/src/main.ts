@@ -6,7 +6,7 @@ import { isDirectorPhone, handleDirectorCommand } from './engine/director-comman
 import { loadPersonas, getOrAssignPersona } from './engine/persona-engine.js';
 import { invalidateInstructionsCache } from './engine/knowledge-search.js';
 import { sendTextMessage, sendTemplateMessage, setTypingIndicator } from './services/whatsapp.js';
-import { notifyDirector } from './services/director-notifier.js';
+import { notifyDirector, flushPendingNotifications } from './services/director-notifier.js';
 import { callClaude } from './services/claude.js';
 import { calculateDelay, sleep } from './engine/human-simulator.js';
 
@@ -71,6 +71,9 @@ async function routeMessage(supabase: ReturnType<typeof getSupabase>, msg: Recor
   if (waId) {
     if (config.director.phones.length > 0 && isDirectorPhone(waId, config.director.phones)) {
       log.info('Director message detected (env config), routing to command handler', { waId });
+      flushPendingNotifications(waId).catch((err) => {
+        log.warn('Failed to flush pending notifications', { error: err instanceof Error ? err.message : String(err) });
+      });
       await handleDirectorCommand(supabase, {
         conversationId: msg.conversation_id,
         contactId: msg.contact_id,
@@ -85,6 +88,9 @@ async function routeMessage(supabase: ReturnType<typeof getSupabase>, msg: Recor
 
     if (role === 'director') {
       log.info('Director message detected (DB), routing to command handler', { waId });
+      flushPendingNotifications(waId).catch((err) => {
+        log.warn('Failed to flush pending notifications', { error: err instanceof Error ? err.message : String(err) });
+      });
       await handleDirectorCommand(supabase, {
         conversationId: msg.conversation_id,
         contactId: msg.contact_id,
