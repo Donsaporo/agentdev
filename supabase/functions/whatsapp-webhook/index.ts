@@ -61,6 +61,7 @@ async function upsertContact(
         profile_name: profileName,
         updated_at: new Date().toISOString(),
         last_message_direction: 'inbound',
+        last_inbound_at: new Date().toISOString(),
       })
       .eq("id", existing.id);
     return { id: existing.id, isNew: false };
@@ -145,11 +146,36 @@ function extractMessageContent(message: Record<string, unknown>) {
     case "audio":
     case "document": {
       const media = message[type] as Record<string, string>;
+      const fallbackLabel: Record<string, string> = {
+        image: "[imagen]",
+        video: "[video]",
+        audio: "[audio]",
+        document: "[documento]",
+      };
       return {
-        content: media?.caption || "",
+        content: media?.caption || fallbackLabel[type] || `[${type}]`,
         media_url: media?.id || "",
         media_mime_type: media?.mime_type || "",
         media_id: media?.id || "",
+      };
+    }
+    case "sticker": {
+      const sticker = message.sticker as Record<string, string>;
+      return {
+        content: "[sticker]",
+        media_url: sticker?.id || "",
+        media_mime_type: sticker?.mime_type || "image/webp",
+        media_id: sticker?.id || "",
+      };
+    }
+    case "reaction": {
+      const reaction = message.reaction as Record<string, string>;
+      const emoji = reaction?.emoji || "";
+      return {
+        content: emoji ? `[reaccion: ${emoji}]` : "[reaccion]",
+        media_url: "",
+        media_mime_type: "",
+        media_id: "",
       };
     }
     case "location": {

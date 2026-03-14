@@ -24,6 +24,9 @@ export const config = {
     model: optional('ANTHROPIC_MODEL', 'claude-sonnet-4-20250514'),
     maxTokens: parseInt(optional('ANTHROPIC_MAX_TOKENS', '1024'), 10),
   },
+  openai: {
+    apiKey: optional('OPENAI_KEY'),
+  },
   d360: {
     apiKey: required('D360_API_KEY'),
     channelId: optional('D360_CHANNEL_ID'),

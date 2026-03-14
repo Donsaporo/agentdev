@@ -4,7 +4,7 @@ import { sendTextMessage } from './whatsapp.js';
 
 const log = createLogger('director-notifier');
 
-type NotificationType = 'escalation' | 'new_lead' | 'meeting_scheduled' | 'window_closing' | 'lead_won' | 'lead_lost';
+type NotificationType = 'escalation' | 'new_lead' | 'meeting_scheduled' | 'window_closing' | 'lead_won' | 'lead_lost' | 'send_failed';
 
 interface NotificationPayload {
   type: NotificationType;
@@ -27,6 +27,8 @@ const TEMPLATES: Record<NotificationType, (p: NotificationPayload) => string> = 
     `*LEAD GANADO*\nContacto: ${p.contactName || 'Desconocido'}\nTel: ${p.contactPhone || 'N/A'}${p.details ? `\n${p.details}` : ''}`,
   lead_lost: (p) =>
     `*LEAD PERDIDO*\nContacto: ${p.contactName || 'Desconocido'}\nTel: ${p.contactPhone || 'N/A'}${p.reason ? `\nRazon: ${p.reason}` : ''}`,
+  send_failed: (p) =>
+    `*ENVIO FALLIDO*\nContacto: ${p.contactName || 'Desconocido'}\nTel: ${p.contactPhone || 'N/A'}\nRazon: ${p.reason || 'Error desconocido'}`,
 };
 
 export async function notifyDirector(payload: NotificationPayload): Promise<void> {

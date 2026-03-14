@@ -9,6 +9,7 @@ import { sanitizeResponse } from './response-sanitizer.js';
 import { sendTextMessage, sendTemplateMessage, setTypingIndicator } from '../services/whatsapp.js';
 import type { SendResult } from '../services/whatsapp.js';
 import { notifyDirector } from '../services/director-notifier.js';
+import { processMediaContent } from '../services/media-processor.js';
 import { scheduleMeeting } from '../services/calendar.js';
 import { joinMeeting } from '../services/recall.js';
 import * as crm from '../services/crm.js';
@@ -24,6 +25,8 @@ interface IncomingMessage {
   contactId: string;
   content: string;
   messageType: string;
+  mediaUrl?: string;
+  mediaMimeType?: string;
 }
 
 export async function handleIncomingMessage(
@@ -65,8 +68,8 @@ async function processBatch(supabase: SupabaseClient, conversationId: string): P
     id: batch.messages[batch.messages.length - 1].id,
     conversationId,
     contactId: batch.messages[0].contactId,
-    content: batch.messages.map((m) => m.content).filter(Boolean).join('\n'),
-    messageType: batch.messages[0].messageType,
+    content: batch.messages.map((m) => m.content || `[${m.messageType}]`).filter(Boolean).join('\n'),
+    messageType: batch.messages[batch.messages.length - 1].messageType,
   };
 
   if (batch.messages.length > 1) {
@@ -131,6 +134,38 @@ async function processMessage(
       await sendIntroMessage(supabase, msg.conversationId, msg.contactId, contact.wa_id || contact.phone_number, persona);
     }
 
+    const mediaTypes = ['image', 'audio', 'document', 'video'];
+    if (mediaTypes.includes(msg.messageType)) {
+      const { data: dbMsg } = await supabase
+        .from('whatsapp_messages')
+        .select('media_url, media_mime_type, media_local_path, media_download_status')
+        .eq('id', msg.id)
+        .maybeSingle();
+
+      const mediaId = dbMsg?.media_url || msg.mediaUrl || '';
+      const mimeType = dbMsg?.media_mime_type || msg.mediaMimeType || '';
+      const localPath = dbMsg?.media_local_path || '';
+      const downloadStatus = dbMsg?.media_download_status || '';
+
+      if (mediaId || localPath) {
+        const enriched = await processMediaContent(
+          msg.messageType,
+          mediaId,
+          mimeType,
+          localPath,
+          downloadStatus
+        );
+
+        if (enriched) {
+          msg.content = enriched;
+          await supabase
+            .from('whatsapp_messages')
+            .update({ metadata: { media_description: enriched } })
+            .eq('id', msg.id);
+        }
+      }
+    }
+
     const context = await buildContext(
       supabase,
       msg.conversationId,
@@ -178,12 +213,51 @@ async function processMessage(
         await sleep(delay);
         await setTypingIndicator(supabase, msg.conversationId, false);
 
-        const result: SendResult = await sendTextMessage(recipientPhone, chunks[i]);
+        let result: SendResult;
+        try {
+          result = await sendTextMessage(recipientPhone, chunks[i]);
+        } catch (sendErr) {
+          log.error('Message send failed after retries', {
+            conversationId: msg.conversationId,
+            error: sendErr instanceof Error ? sendErr.message : String(sendErr),
+          });
+          await recordOutbound(supabase, msg.conversationId, msg.contactId, '', chunks[i], persona.full_name);
+          await supabase
+            .from('whatsapp_messages')
+            .update({ status: 'failed' })
+            .eq('conversation_id', msg.conversationId)
+            .eq('content', chunks[i])
+            .eq('direction', 'outbound');
+
+          const failContact = await loadContactForCrm(supabase, msg.contactId);
+          notifyDirector({
+            type: 'escalation',
+            contactName: failContact?.display_name || 'Desconocido',
+            contactPhone: failContact?.phone_number || recipientPhone,
+            reason: `Envio de mensaje fallo: ${sendErr instanceof Error ? sendErr.message : String(sendErr)}`,
+          }).catch(() => {});
+          break;
+        }
 
         if (!result.success && result.reason === 'window_expired') {
           log.warn('Window expired, falling back to template', { conversationId: msg.conversationId });
-          const tplResult = await sendTemplateMessage(recipientPhone, 'seguimiento_amigable', 'es');
-          await recordOutbound(supabase, msg.conversationId, msg.contactId, tplResult.messageId, '[Template: seguimiento_amigable]', persona.full_name);
+          try {
+            const tplResult = await sendTemplateMessage(recipientPhone, 'seguimiento_amigable', 'es');
+            if (tplResult.success) {
+              await recordOutbound(supabase, msg.conversationId, msg.contactId, tplResult.messageId, '[Template: seguimiento_amigable]', persona.full_name);
+            } else {
+              throw new Error(tplResult.reason || 'Template send failed');
+            }
+          } catch (tplErr) {
+            log.error('Template fallback also failed', { error: tplErr instanceof Error ? tplErr.message : String(tplErr) });
+            const failContact = await loadContactForCrm(supabase, msg.contactId);
+            notifyDirector({
+              type: 'escalation',
+              contactName: failContact?.display_name || 'Desconocido',
+              contactPhone: failContact?.phone_number || recipientPhone,
+              reason: 'No se pudo enviar mensaje ni template (ventana de 24h cerrada)',
+            }).catch(() => {});
+          }
           break;
         }
 

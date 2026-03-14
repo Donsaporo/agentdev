@@ -5,11 +5,35 @@ import { handleIncomingMessage } from './engine/conversation-manager.js';
 import { isDirectorPhone, handleDirectorCommand } from './engine/director-commands.js';
 import { loadPersonas, getOrAssignPersona } from './engine/persona-engine.js';
 import { invalidateInstructionsCache } from './engine/knowledge-search.js';
-import { sendTextMessage, setTypingIndicator } from './services/whatsapp.js';
+import { sendTextMessage, sendTemplateMessage, setTypingIndicator } from './services/whatsapp.js';
+import { notifyDirector } from './services/director-notifier.js';
 import { callClaude } from './services/claude.js';
 import { calculateDelay, sleep } from './engine/human-simulator.js';
 
 const log = createLogger('main');
+
+let internalPhonesCache: { phones: Map<string, string>; fetchedAt: number } | null = null;
+const INTERNAL_PHONES_CACHE_TTL = 5 * 60_000;
+
+async function getInternalPhones(supabase: ReturnType<typeof getSupabase>): Promise<Map<string, string>> {
+  if (internalPhonesCache && Date.now() - internalPhonesCache.fetchedAt < INTERNAL_PHONES_CACHE_TTL) {
+    return internalPhonesCache.phones;
+  }
+
+  const { data } = await supabase
+    .from('internal_phones')
+    .select('phone_number, role');
+
+  const map = new Map<string, string>();
+  if (data) {
+    for (const row of data) {
+      map.set(row.phone_number, row.role);
+    }
+  }
+
+  internalPhonesCache = { phones: map, fetchedAt: Date.now() };
+  return map;
+}
 
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let followUpTimer: ReturnType<typeof setInterval> | null = null;
@@ -36,21 +60,46 @@ async function setOffline(supabase: ReturnType<typeof getSupabase>) {
 }
 
 async function routeMessage(supabase: ReturnType<typeof getSupabase>, msg: Record<string, string>) {
-  if (config.director.phones.length > 0) {
-    const { data: contact } = await supabase
-      .from('whatsapp_contacts')
-      .select('wa_id')
-      .eq('id', msg.contact_id)
-      .maybeSingle();
+  const { data: contact } = await supabase
+    .from('whatsapp_contacts')
+    .select('wa_id')
+    .eq('id', msg.contact_id)
+    .maybeSingle();
 
-    if (contact?.wa_id && isDirectorPhone(contact.wa_id, config.director.phones)) {
-      log.info('Director message detected, routing to command handler', { waId: contact.wa_id });
+  const waId = contact?.wa_id || '';
+
+  if (waId) {
+    if (config.director.phones.length > 0 && isDirectorPhone(waId, config.director.phones)) {
+      log.info('Director message detected (env config), routing to command handler', { waId });
       await handleDirectorCommand(supabase, {
         conversationId: msg.conversation_id,
         contactId: msg.contact_id,
         content: msg.content || '',
-        directorWaId: contact.wa_id,
+        directorWaId: waId,
       });
+      return;
+    }
+
+    const internalPhones = await getInternalPhones(supabase);
+    const role = internalPhones.get(waId);
+
+    if (role === 'director') {
+      log.info('Director message detected (DB), routing to command handler', { waId });
+      await handleDirectorCommand(supabase, {
+        conversationId: msg.conversation_id,
+        contactId: msg.contact_id,
+        content: msg.content || '',
+        directorWaId: waId,
+      });
+      return;
+    }
+
+    if (role === 'team_member') {
+      log.info('Team member message detected, setting to manual mode', { waId });
+      await supabase
+        .from('whatsapp_conversations')
+        .update({ agent_mode: 'manual' })
+        .eq('id', msg.conversation_id);
       return;
     }
   }
@@ -61,6 +110,8 @@ async function routeMessage(supabase: ReturnType<typeof getSupabase>, msg: Recor
     contactId: msg.contact_id,
     content: msg.content || '',
     messageType: msg.message_type || 'text',
+    mediaUrl: msg.media_url || '',
+    mediaMimeType: msg.media_mime_type || '',
   });
 }
 
@@ -224,24 +275,99 @@ async function processFollowUps(supabase: ReturnType<typeof getSupabase>) {
         newFollowUpCount
       );
 
-      await setTypingIndicator(supabase, conv.id, true);
-      await sleep(calculateDelay(followUpText, false));
-      await setTypingIndicator(supabase, conv.id, false);
+      const { data: contactLastInbound } = await supabase
+        .from('whatsapp_contacts')
+        .select('last_inbound_at')
+        .eq('id', contact.id)
+        .maybeSingle();
 
-      const result = await sendTextMessage(waId, followUpText).catch((err) => {
-        log.warn('Follow-up send failed', { conversationId: conv.id, error: err instanceof Error ? err.message : String(err) });
-        return null;
-      });
+      const lastInboundAt = contactLastInbound?.last_inbound_at
+        ? new Date(contactLastInbound.last_inbound_at)
+        : null;
+      const hoursSinceInbound = lastInboundAt
+        ? (Date.now() - lastInboundAt.getTime()) / (1000 * 60 * 60)
+        : 999;
+      const windowOpen = hoursSinceInbound < 24;
 
-      if (!result) continue;
+      const TEMPLATE_NAMES = ['seguimiento_amigable', 'seguimiento_checkin', 'seguimiento_final'];
+
+      let sentContent: string;
+      let sentMessageId: string;
+
+      if (windowOpen) {
+        await setTypingIndicator(supabase, conv.id, true);
+        await sleep(calculateDelay(followUpText, false));
+        await setTypingIndicator(supabase, conv.id, false);
+
+        const result = await sendTextMessage(waId, followUpText).catch((err) => {
+          log.warn('Follow-up text send failed', { conversationId: conv.id, error: err instanceof Error ? err.message : String(err) });
+          return null;
+        });
+
+        if (!result || (!result.success && result.reason === 'window_expired')) {
+          const templateName = TEMPLATE_NAMES[Math.min(newFollowUpCount - 1, TEMPLATE_NAMES.length - 1)];
+          const tplResult = await sendTemplateMessage(waId, templateName, 'es').catch((err) => {
+            log.error('Follow-up template also failed', { conversationId: conv.id, error: err instanceof Error ? err.message : String(err) });
+            return null;
+          });
+
+          if (!tplResult || !tplResult.success) {
+            notifyDirector({
+              type: 'send_failed',
+              contactName: String(contact.display_name || 'Desconocido'),
+              contactPhone: waId,
+              reason: 'Follow-up fallido: texto y template fallaron',
+            }).catch(() => {});
+            continue;
+          }
+
+          sentContent = `[Template: ${templateName}]`;
+          sentMessageId = tplResult.messageId;
+        } else {
+          sentContent = followUpText;
+          sentMessageId = result.messageId;
+        }
+      } else {
+        const templateName = TEMPLATE_NAMES[Math.min(newFollowUpCount - 1, TEMPLATE_NAMES.length - 1)];
+
+        const tplResult = await sendTemplateMessage(waId, templateName, 'es').catch((err) => {
+          log.error('Follow-up template send failed', { conversationId: conv.id, error: err instanceof Error ? err.message : String(err) });
+          return null;
+        });
+
+        if (!tplResult || !tplResult.success) {
+          await supabase.from('whatsapp_messages').insert({
+            conversation_id: conv.id,
+            contact_id: conv.contact_id,
+            wa_message_id: '',
+            direction: 'outbound',
+            message_type: 'text',
+            content: `[Template fallido: ${templateName}]`,
+            status: 'failed',
+            sender_name: persona.full_name,
+            metadata: { auto_follow_up: true, follow_up_number: newFollowUpCount, template_failed: true },
+          });
+
+          notifyDirector({
+            type: 'send_failed',
+            contactName: String(contact.display_name || 'Desconocido'),
+            contactPhone: waId,
+            reason: `Follow-up con template ${templateName} fallo (ventana cerrada, ${Math.round(hoursSinceInbound)}h sin respuesta)`,
+          }).catch(() => {});
+          continue;
+        }
+
+        sentContent = `[Template: ${templateName}]`;
+        sentMessageId = tplResult.messageId;
+      }
 
       await supabase.from('whatsapp_messages').insert({
         conversation_id: conv.id,
         contact_id: conv.contact_id,
-        wa_message_id: result.messageId || '',
+        wa_message_id: sentMessageId || '',
         direction: 'outbound',
         message_type: 'text',
-        content: followUpText,
+        content: sentContent,
         status: 'sent',
         sender_name: persona.full_name,
         metadata: { auto_follow_up: true, follow_up_number: newFollowUpCount },
@@ -256,15 +382,17 @@ async function processFollowUps(supabase: ReturnType<typeof getSupabase>) {
         .from('whatsapp_conversations')
         .update({
           last_message_at: new Date().toISOString(),
-          last_message_preview: followUpText.slice(0, 100),
+          last_message_preview: sentContent.slice(0, 100),
         })
         .eq('id', conv.id);
 
-      log.info('AI follow-up sent', {
+      log.info('Follow-up sent', {
         conversationId: conv.id,
         contact: contact.display_name,
         followUpNumber: newFollowUpCount,
         persona: persona.full_name,
+        windowOpen,
+        usedTemplate: !windowOpen || sentContent.startsWith('[Template'),
       });
     }
   } catch (err) {
