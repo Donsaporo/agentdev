@@ -1,6 +1,6 @@
 import { config } from './core/config.js';
 import { createLogger } from './core/logger.js';
-import { getSupabase } from './core/supabase.js';
+import { getSupabase, getCrmSupabase } from './core/supabase.js';
 import { handleIncomingMessage } from './engine/conversation-manager.js';
 import { isDirectorPhone, handleDirectorCommand } from './engine/director-commands.js';
 import { loadPersonas, getOrAssignPersona } from './engine/persona-engine.js';
@@ -501,6 +501,98 @@ async function processFollowUps(supabase: ReturnType<typeof getSupabase>) {
   }
 }
 
+async function recoverMissedMessages(supabase: ReturnType<typeof getSupabase>) {
+  try {
+    const { data: heartbeat } = await supabase
+      .from('sales_agent_heartbeat')
+      .select('last_seen')
+      .eq('id', 'sales-agent')
+      .maybeSingle();
+
+    if (!heartbeat?.last_seen) {
+      log.info('No previous heartbeat found, skipping message recovery');
+      return;
+    }
+
+    const bufferMs = 5 * 60_000;
+    const recoverFrom = new Date(new Date(heartbeat.last_seen).getTime() - bufferMs).toISOString();
+
+    const { data: missed } = await supabase
+      .from('whatsapp_messages')
+      .select('*')
+      .eq('direction', 'inbound')
+      .gt('created_at', recoverFrom)
+      .order('created_at', { ascending: true })
+      .limit(50);
+
+    if (!missed || missed.length === 0) {
+      log.info('No missed messages to recover');
+      return;
+    }
+
+    const unanswered: typeof missed = [];
+    for (const msg of missed) {
+      const { data: hasResponse } = await supabase
+        .from('whatsapp_messages')
+        .select('id')
+        .eq('conversation_id', msg.conversation_id)
+        .eq('direction', 'outbound')
+        .gt('created_at', msg.created_at)
+        .limit(1)
+        .maybeSingle();
+
+      if (!hasResponse) {
+        unanswered.push(msg);
+      }
+    }
+
+    if (unanswered.length === 0) {
+      log.info(`Checked ${missed.length} messages since last shutdown, all have responses`);
+      return;
+    }
+
+    log.info(`Recovering ${unanswered.length} unanswered messages from downtime`);
+    lastPolledAt = missed[missed.length - 1].created_at;
+
+    for (const msg of unanswered) {
+      if (processingMessages.has(msg.id)) continue;
+      processingMessages.add(msg.id);
+
+      routeMessage(supabase, msg).catch((err) => {
+        log.error('Recovery message handling failed', {
+          conversationId: msg.conversation_id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }).finally(() => {
+        setTimeout(() => processingMessages.delete(msg.id), 60_000);
+      });
+
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  } catch (err) {
+    log.error('Message recovery failed', { error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+async function checkCrmConnection() {
+  const crm = getCrmSupabase();
+  if (!crm) {
+    log.warn('CRM not configured: CRM_SUPABASE_URL or CRM_SUPABASE_SERVICE_ROLE_KEY is missing');
+    return;
+  }
+
+  try {
+    const { error } = await crm.from('tech_clients').select('id').limit(1);
+    if (error) {
+      log.error('CRM connection test failed', { error: error.message });
+    } else {
+      log.info('CRM connection verified (tech_clients table accessible)');
+    }
+  } catch (err) {
+    log.error('CRM connection error', { error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
 async function startup() {
   log.info('=== Obzide Sales Agent v1.0.0 ===');
   log.info('Initializing...');
@@ -509,6 +601,10 @@ async function startup() {
 
   const personas = await loadPersonas(supabase);
   log.info(`Loaded ${personas.length} personas`);
+
+  await checkCrmConnection();
+
+  await recoverMissedMessages(supabase);
 
   await updateHeartbeat(supabase);
   heartbeatTimer = setInterval(() => {

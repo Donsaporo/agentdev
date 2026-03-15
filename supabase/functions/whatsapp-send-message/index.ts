@@ -408,7 +408,7 @@ Deno.serve(async (req: Request) => {
 
     const supabase = getSupabase();
     const body = await req.json();
-    const { action, account_id, to, message, type = "text", template_name, language_code = "en_US", template_components, sender_name, document_url, filename, caption } = body;
+    const { action, account_id, to, message, type = "text", template_name, language_code = "es_PA", template_components, sender_name, document_url, filename, caption } = body;
 
     if (!account_id) {
       return jsonRes({ error: "account_id is required" }, 400);
@@ -504,11 +504,11 @@ Deno.serve(async (req: Request) => {
 
     const waMessageId = (result.messages as Record<string, string>[])?.[0]?.id || "";
 
-    EdgeRuntime.waitUntil(
-      recordOutboundMessage(supabase, recipient, waMessageId, usedTemplate ? "template" : type, content, sender_name, outboundMediaUrl, outboundMimeType).catch(
-        (err) => console.error("Record outbound error:", err)
-      )
-    );
+    try {
+      await recordOutboundMessage(supabase, recipient, waMessageId, usedTemplate ? "template" : type, content, sender_name, outboundMediaUrl, outboundMimeType);
+    } catch (err) {
+      console.error("Record outbound error:", err);
+    }
 
     return jsonRes({
       success: true,

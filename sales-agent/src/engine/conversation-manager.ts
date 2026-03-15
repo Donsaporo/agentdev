@@ -248,7 +248,7 @@ async function processMessage(
         return;
       }
 
-      await executeActions(supabase, msg.conversationId, msg.contactId, decision.actions);
+      await executeActions(supabase, msg.conversationId, msg.contactId, decision.actions, persona.full_name);
 
       const chunks = shouldSplitMessage(sanitized.text);
       const recipientPhone = contact.wa_id || contact.phone_number;
@@ -349,7 +349,7 @@ async function processMessage(
         }
       }
     } else if (decision.actions.length > 0) {
-      await executeActions(supabase, msg.conversationId, msg.contactId, decision.actions);
+      await executeActions(supabase, msg.conversationId, msg.contactId, decision.actions, persona.full_name);
     }
 
     await logAction(supabase, msg.conversationId, msg.contactId, persona.id, {
@@ -553,7 +553,8 @@ async function executeActions(
   supabase: SupabaseClient,
   conversationId: string,
   contactId: string,
-  actions: AgentAction[]
+  actions: AgentAction[],
+  personaName = 'Sales Agent'
 ) {
   let cachedContact: Awaited<ReturnType<typeof loadContactForCrm>> = null;
 
@@ -575,7 +576,7 @@ async function executeActions(
 
           const contact = await getContact();
           if (contact?.crm_client_id) {
-            await crm.syncStageToCrm(contact.crm_client_id, action.params.stage, 'Sales Agent');
+            await crm.syncStageToCrm(contact.crm_client_id, action.params.stage, personaName);
           }
 
           if (action.params.stage === 'ganado' || action.params.stage === 'perdido') {
@@ -810,7 +811,7 @@ async function executeActions(
             email: contact?.email || action.params.email,
             company: contact?.company || action.params.company,
             notes: contact?.notes,
-          }, 'Sales Agent');
+          }, personaName);
 
           if (clientId) {
             await supabase
@@ -834,7 +835,7 @@ async function executeActions(
             email: contact.email,
             company: contact.company,
             notes: contact.notes,
-          }, 'Sales Agent');
+          }, personaName);
 
           if (syncClientId && !contact.crm_client_id) {
             await supabase

@@ -427,18 +427,9 @@ async function processIncomingMessages(body: Record<string, unknown>, provider: 
 
         const { id: contactId, isNew } = contactResult;
 
-        const { content: msgContent } = extractMessageContent(message);
-        const conversationId = await getOrCreateConversation(supabase, contactId, msgContent || `[${message.type}]`);
-        if (!conversationId) continue;
-
-        if (isNew) {
-          await supabase
-            .from("whatsapp_conversations")
-            .update({ category: "new_lead" })
-            .eq("id", conversationId);
-        }
-
         const { content, media_url, media_mime_type, media_id: mediaId, reply_to_wa_message_id } = extractMessageContent(message);
+        const conversationId = await getOrCreateConversation(supabase, contactId, content || `[${message.type}]`);
+        if (!conversationId) continue;
 
         const waMessageId = message.id as string;
 
@@ -480,6 +471,17 @@ async function processIncomingMessages(body: Record<string, unknown>, provider: 
           }
           console.error("Message insert error:", insertError);
           continue;
+        }
+
+        if (isNew) {
+          EdgeRuntime.waitUntil(
+            supabase
+              .from("whatsapp_conversations")
+              .update({ category: "new_lead" })
+              .eq("id", conversationId)
+              .then(() => {})
+              .catch((err: Error) => console.error("Category update error:", err))
+          );
         }
 
         if (mediaId && inserted?.id && accessToken) {

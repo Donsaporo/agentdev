@@ -14,6 +14,8 @@ import {
   Clock,
   Lock,
   RefreshCw,
+  Play,
+  AlertTriangle,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { useToast } from '../../contexts/ToastContext';
@@ -45,6 +47,8 @@ export default function ChatPanel({
   const [transforming, setTransforming] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [showRetryConfirm, setShowRetryConfirm] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -217,14 +221,23 @@ export default function ChatPanel({
     if (!contact) return;
     setResetting(true);
     try {
+      const now = new Date();
+      const windowExpires = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+
       await supabase
         .from('whatsapp_contacts')
-        .update({ intro_sent: false, lead_stage: 'nuevo' })
+        .update({ intro_sent: false, lead_stage: 'nuevo', last_inbound_at: now.toISOString() })
         .eq('id', contact.id);
 
       await supabase
         .from('whatsapp_conversations')
-        .update({ agent_mode: 'ai', category: 'new_lead' })
+        .update({
+          agent_mode: 'ai',
+          category: 'new_lead',
+          window_expires_at: windowExpires.toISOString(),
+          window_status: 'open',
+          last_inbound_at: now.toISOString(),
+        })
         .eq('id', conversation.id);
 
       await supabase.from('whatsapp_messages').insert({
@@ -247,6 +260,66 @@ export default function ChatPanel({
       setResetting(false);
     }
   }
+
+  async function handleRetryConversation() {
+    if (!contact) return;
+    setRetrying(true);
+    try {
+      const now = new Date();
+      const windowExpires = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+
+      await supabase
+        .from('whatsapp_contacts')
+        .update({ last_inbound_at: now.toISOString() })
+        .eq('id', contact.id);
+
+      await supabase
+        .from('whatsapp_conversations')
+        .update({
+          agent_mode: 'ai',
+          window_expires_at: windowExpires.toISOString(),
+          window_status: 'open',
+          last_inbound_at: now.toISOString(),
+        })
+        .eq('id', conversation.id);
+
+      if (!contact.intro_sent) {
+        await supabase.from('whatsapp_messages').insert({
+          conversation_id: conversation.id,
+          contact_id: contact.id,
+          wa_message_id: '',
+          direction: 'inbound',
+          message_type: 'text',
+          content: 'Hola',
+          status: 'received',
+          sender_name: contact.display_name || contact.profile_name || '',
+          metadata: { retry_trigger: true, needs_intro: true },
+        });
+      } else {
+        const lastInbound = messages.filter(m => m.direction === 'inbound').slice(-1)[0];
+        await supabase.from('whatsapp_messages').insert({
+          conversation_id: conversation.id,
+          contact_id: contact.id,
+          wa_message_id: '',
+          direction: 'inbound',
+          message_type: 'text',
+          content: lastInbound?.content || 'Hola',
+          status: 'received',
+          sender_name: contact.display_name || contact.profile_name || '',
+          metadata: { retry_trigger: true },
+        });
+      }
+
+      toast.success('Reintento enviado. El agente procesara la conversacion.');
+      setShowRetryConfirm(false);
+    } catch {
+      toast.error('Error al reintentar');
+    } finally {
+      setRetrying(false);
+    }
+  }
+
+  const hasMessagesGap = !loading && messages.length === 0 && conversation.last_message_preview;
 
   const name = contact?.display_name || contact?.profile_name || contact?.phone_number || 'Desconocido';
   const personaName = conversation.persona?.first_name || conversation.persona?.full_name;
@@ -298,6 +371,13 @@ export default function ChatPanel({
           )}
 
           <button
+            onClick={() => setShowRetryConfirm(true)}
+            className="p-2 rounded-xl text-slate-400 hover:text-teal-400 hover:bg-teal-500/10 transition-all"
+            title="Reintentar / Re-procesar"
+          >
+            <Play className="w-4 h-4" />
+          </button>
+          <button
             onClick={() => setShowResetConfirm(true)}
             className="p-2 rounded-xl text-slate-400 hover:text-amber-400 hover:bg-amber-500/10 transition-all"
             title="Reiniciar como nuevo"
@@ -330,6 +410,22 @@ export default function ChatPanel({
           <p className="text-xs text-amber-400">
             Ventana de mensajeria cierra {new Date(conversation.window_expires_at).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' })}
           </p>
+        </div>
+      )}
+
+      {hasMessagesGap && (
+        <div className="flex-shrink-0 px-4 py-2.5 bg-amber-500/10 border-b border-amber-500/20 flex items-center gap-2">
+          <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0" />
+          <p className="text-xs text-amber-400 flex-1">
+            Los mensajes de este cliente no se registraron correctamente. Presiona Reintentar para re-procesar.
+          </p>
+          <button
+            onClick={() => setShowRetryConfirm(true)}
+            className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 text-[11px] font-medium transition-all flex-shrink-0"
+          >
+            <Play className="w-3 h-3" />
+            Reintentar
+          </button>
         </div>
       )}
 
@@ -463,6 +559,44 @@ export default function ChatPanel({
           </div>
         </div>
       </div>
+
+      {showRetryConfirm && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-[#151b28] border border-white/[0.08] rounded-2xl p-6 mx-4 max-w-sm w-full shadow-2xl">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-xl bg-teal-500/10 flex items-center justify-center flex-shrink-0">
+                <Play className="w-5 h-5 text-teal-400" />
+              </div>
+              <div>
+                <h4 className="text-sm font-semibold text-white">Reintentar conversacion</h4>
+                <p className="text-[11px] text-slate-500">{name}</p>
+              </div>
+            </div>
+            <p className="text-sm text-slate-400 leading-relaxed mb-5">
+              {!contact?.intro_sent
+                ? 'El agente enviara el mensaje de bienvenida y retomara la conversacion desde cero.'
+                : 'El agente retomara donde quedo y respondera al ultimo mensaje sin responder.'}
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={handleRetryConversation}
+                disabled={retrying}
+                className="flex-1 flex items-center justify-center gap-1.5 px-4 py-2.5 bg-teal-600 hover:bg-teal-500 text-white text-sm font-medium rounded-xl transition-all"
+              >
+                {retrying ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+                {retrying ? 'Procesando...' : 'Reintentar'}
+              </button>
+              <button
+                onClick={() => setShowRetryConfirm(false)}
+                disabled={retrying}
+                className="px-4 py-2.5 text-slate-400 hover:text-slate-200 text-sm font-medium rounded-xl hover:bg-white/[0.04] transition-all"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showResetConfirm && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
