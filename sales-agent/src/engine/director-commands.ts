@@ -386,7 +386,19 @@ async function handleReiniciar(
     .update({ agent_mode: 'ai', category: 'new_lead' })
     .eq('id', target.conversationId);
 
-  await reply(directorWaId, `${target.display_name} reiniciado como nuevo. El agente enviara el intro automaticamente cuando escriba.`);
+  await supabase.from('whatsapp_messages').insert({
+    conversation_id: target.conversationId,
+    contact_id: target.id,
+    wa_message_id: '',
+    direction: 'inbound',
+    message_type: 'text',
+    content: 'Hola',
+    status: 'received',
+    sender_name: target.display_name || '',
+    metadata: { synthetic_reset: true },
+  });
+
+  await reply(directorWaId, `${target.display_name} reiniciado como nuevo. El agente ya esta enviando el intro.`);
   log.info('Director reset contact as new', { target: target.display_name, contactId: target.id });
 }
 

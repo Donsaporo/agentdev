@@ -227,7 +227,19 @@ export default function ChatPanel({
         .update({ agent_mode: 'ai', category: 'new_lead' })
         .eq('id', conversation.id);
 
-      toast.success('Contacto reiniciado. El agente enviara el intro automaticamente.');
+      await supabase.from('whatsapp_messages').insert({
+        conversation_id: conversation.id,
+        contact_id: contact.id,
+        wa_message_id: '',
+        direction: 'inbound',
+        message_type: 'text',
+        content: 'Hola',
+        status: 'received',
+        sender_name: contact.display_name || contact.profile_name || '',
+        metadata: { synthetic_reset: true },
+      });
+
+      toast.success('Contacto reiniciado. El agente enviara el intro ahora.');
       setShowResetConfirm(false);
     } catch {
       toast.error('Error al reiniciar contacto');
