@@ -93,6 +93,32 @@ function formatSummaries(summaries: ConversationContext['conversationSummaries']
   return lines.join('\n');
 }
 
+function formatMeetingHistory(meetings: ConversationContext['meetingHistory']): string {
+  if (!meetings || meetings.length === 0) return '';
+
+  const lines: string[] = ['\n=== REUNIONES COMPLETADAS (LO QUE SE HABLO) ==='];
+  for (const m of meetings) {
+    const date = new Date(m.date).toLocaleDateString('es-PA', { day: '2-digit', month: '2-digit', year: '2-digit' });
+    lines.push(`\n[${date}] ${m.title}`);
+    if (m.summary) {
+      lines.push(`Resumen: ${m.summary}`);
+    }
+    if (m.key_points.length > 0) {
+      lines.push(`Puntos clave: ${m.key_points.join('; ')}`);
+    }
+    if (m.decisions.length > 0) {
+      lines.push(`Decisiones: ${m.decisions.join('; ')}`);
+    }
+    if (m.action_items.length > 0) {
+      lines.push(`Pendientes: ${m.action_items.join('; ')}`);
+    }
+  }
+
+  lines.push('\nUSA esta informacion para dar seguimiento a lo discutido en reuniones. Si el cliente pregunta por algo que ya se hablo, referencialo naturalmente.');
+
+  return lines.join('\n');
+}
+
 function buildSystemPrompt(ctx: ConversationContext): string {
   const instructionBlock =
     ctx.instructions.length > 0
@@ -140,6 +166,7 @@ Vinculado al CRM: ${ctx.crmClientId ? 'Si (ID: ' + ctx.crmClientId + ')' : 'No'}
 ${ctx.crmHistory ? `\n=== HISTORIAL CRM ===\n${ctx.crmHistory}` : ''}
 ${formatInsights(ctx.insights)}
 ${formatSummaries(ctx.conversationSummaries)}
+${formatMeetingHistory(ctx.meetingHistory)}
 
 === INSTRUCCIONES DEL DIRECTOR ===
 ${instructionBlock}
@@ -268,9 +295,8 @@ Si recibes un mensaje no-texto como [image], [audio], [document], [video]:
 10. Si detectas que el cliente no es un lead real (spam, broma, proveedor vendiendote algo), marca como "perdido" y responde educadamente que no es algo que puedan ayudarle.
 
 === GESTION DE ETAPAS (PIPELINE CRM) ===
-Cambia la etapa del lead segun la conversacion. Estas son las UNICAS 8 etapas validas:
-- "nuevo" -> Contacto recien llegado, primera interaccion
-- "contactado" -> Ya se inicio conversacion, muestra interes, responde preguntas
+Cambia la etapa del lead segun la conversacion. Estas son las UNICAS 7 etapas validas:
+- "nuevo" -> Contacto recien llegado, primera interaccion o ya se inicio conversacion y muestra interes
 - "en_negociacion" -> Tiene necesidad real identificada, se estan discutiendo detalles del proyecto
 - "demo_solicitada" -> Se agendo o solicito una reunion/demo
 - "cotizacion_enviada" -> Se envio cotizacion o propuesta formal
@@ -289,7 +315,7 @@ Responde UNICAMENTE con JSON valido. Sin texto antes ni despues:
 }
 
 === ACCIONES DISPONIBLES ===
-- {"type": "update_lead_stage", "params": {"stage": "nuevo|contactado|en_negociacion|demo_solicitada|cotizacion_enviada|por_cerrar|ganado|perdido"}}
+- {"type": "update_lead_stage", "params": {"stage": "nuevo|en_negociacion|demo_solicitada|cotizacion_enviada|por_cerrar|ganado|perdido"}}
 - {"type": "schedule_meeting", "params": {"title": "...", "datetime": "ISO8601", "duration": "30", "meeting_type": "virtual|presencial"}}
 - {"type": "add_note", "params": {"note": "informacion importante extraida de la conversacion"}}
 - {"type": "update_client_profile", "params": {"field": "email|company|display_name|industry|estimated_budget|source", "value": "..."}}

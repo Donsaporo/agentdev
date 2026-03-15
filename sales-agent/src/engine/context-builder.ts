@@ -2,7 +2,7 @@ import { SupabaseClient } from '@supabase/supabase-js';
 import { createLogger } from '../core/logger.js';
 import { Persona } from './persona-engine.js';
 import { searchKnowledge, getAllInstructions } from './knowledge-search.js';
-import { getClientHistory, getCrmClientData } from '../services/crm.js';
+import { getClientHistory, getCrmClientData, getMeetingNotesFromCrm, CrmMeetingNote } from '../services/crm.js';
 import { getContactInsights, getConversationSummaries } from '../services/conversation-summarizer.js';
 
 const log = createLogger('context-builder');
@@ -40,6 +40,17 @@ export interface ConversationContext {
   crmHistory: string;
   insights: ClientInsight[];
   conversationSummaries: ConversationSummary[];
+  meetingHistory: MeetingHistoryEntry[];
+}
+
+export interface MeetingHistoryEntry {
+  title: string;
+  date: string;
+  summary: string;
+  key_points: string[];
+  decisions: string[];
+  action_items: string[];
+  source: 'local' | 'crm';
 }
 
 export async function buildContext(
@@ -61,12 +72,16 @@ export async function buildContext(
 
   const crmClientId = contact?.crm_client_id || null;
   let crmHistory = '';
+  let meetingHistory: MeetingHistoryEntry[] = [];
+
+  const localMeetings = await loadCompletedMeetings(supabase, contactId);
 
   if (crmClientId) {
     try {
-      const [clientData, history] = await Promise.all([
+      const [clientData, history, crmMeetingNotes] = await Promise.all([
         getCrmClientData(crmClientId),
         getClientHistory(crmClientId),
+        getMeetingNotesFromCrm(crmClientId),
       ]);
 
       const parts: string[] = [];
@@ -101,9 +116,37 @@ export async function buildContext(
       }
 
       crmHistory = parts.join('\n');
+
+      const crmEntries: MeetingHistoryEntry[] = crmMeetingNotes
+        .filter((n: CrmMeetingNote) => n.executive_summary)
+        .map((n: CrmMeetingNote) => ({
+          title: n.title,
+          date: n.start_time,
+          summary: n.executive_summary,
+          key_points: n.key_points,
+          decisions: n.decisions,
+          action_items: n.action_items.map((a) => `${a.description} (${a.assigned_to}) [${a.status}]`),
+          source: 'crm' as const,
+        }));
+
+      meetingHistory = [...localMeetings, ...crmEntries];
+
+      const seenTitles = new Set<string>();
+      meetingHistory = meetingHistory.filter((m) => {
+        const key = `${m.title}-${m.date}`;
+        if (seenTitles.has(key)) return false;
+        seenTitles.add(key);
+        return true;
+      });
+
+      meetingHistory.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      meetingHistory = meetingHistory.slice(0, 5);
     } catch (err) {
       log.warn('Failed to load CRM history', { crmClientId, error: err instanceof Error ? err.message : String(err) });
+      meetingHistory = localMeetings;
     }
+  } else {
+    meetingHistory = localMeetings;
   }
 
   const context: ConversationContext = {
@@ -143,6 +186,7 @@ export async function buildContext(
     crmHistory,
     insights,
     conversationSummaries: summaries,
+    meetingHistory,
   };
 
   log.debug('Context built', {
@@ -184,4 +228,48 @@ async function loadRecentMessages(supabase: SupabaseClient, conversationId: stri
     .order('created_at', { ascending: true })
     .limit(limit);
   return data || [];
+}
+
+async function loadCompletedMeetings(supabase: SupabaseClient, contactId: string): Promise<MeetingHistoryEntry[]> {
+  try {
+    const { data: meetings } = await supabase
+      .from('sales_meetings')
+      .select('id, title, start_time, summary, transcript')
+      .eq('contact_id', contactId)
+      .eq('status', 'completed')
+      .order('start_time', { ascending: false })
+      .limit(3);
+
+    if (!meetings || meetings.length === 0) return [];
+
+    const meetingIds = meetings.map((m) => m.id);
+    const { data: transcripts } = await supabase
+      .from('sales_meeting_transcripts')
+      .select('conversation_id, summary, action_items, client_commitments, next_steps, metadata')
+      .in('conversation_id', meetingIds);
+
+    const transcriptMap = new Map<string, Record<string, unknown>>();
+    for (const t of transcripts || []) {
+      transcriptMap.set(t.conversation_id, t);
+    }
+
+    return meetings
+      .filter((m) => m.summary || transcriptMap.has(m.id))
+      .map((m) => {
+        const t = transcriptMap.get(m.id) as Record<string, unknown> | undefined;
+        const metadata = (t?.metadata || {}) as Record<string, string[]>;
+        return {
+          title: m.title,
+          date: m.start_time,
+          summary: (t?.summary as string) || m.summary || '',
+          key_points: metadata.key_points || [],
+          decisions: metadata.decisions || [],
+          action_items: ((t?.action_items || []) as Array<{ description: string }>).map((a) => a.description),
+          source: 'local' as const,
+        };
+      });
+  } catch (err) {
+    log.warn('Failed to load local meetings', { contactId, error: err instanceof Error ? err.message : String(err) });
+    return [];
+  }
 }

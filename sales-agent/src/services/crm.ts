@@ -4,9 +4,13 @@ import { createLogger } from '../core/logger.js';
 const log = createLogger('crm');
 
 const VALID_LEAD_STAGES = [
-  'nuevo', 'contactado', 'en_negociacion', 'demo_solicitada',
+  'nuevo', 'en_negociacion', 'demo_solicitada',
   'cotizacion_enviada', 'por_cerrar', 'ganado', 'perdido',
 ] as const;
+
+const STAGE_ALIASES: Record<string, string> = {
+  contactado: 'en_negociacion',
+};
 
 const VALID_EVENT_TYPES = [
   'lead_creado', 'whatsapp', 'estado_cambio', 'reunion_programada',
@@ -71,8 +75,9 @@ function isAvailable(): boolean {
 }
 
 function validateStage(stage: string): string {
-  if (VALID_LEAD_STAGES.includes(stage as typeof VALID_LEAD_STAGES[number])) {
-    return stage;
+  const mapped = STAGE_ALIASES[stage] || stage;
+  if (VALID_LEAD_STAGES.includes(mapped as typeof VALID_LEAD_STAGES[number])) {
+    return mapped;
   }
   log.warn('Invalid lead stage, defaulting to nuevo', { stage });
   return 'nuevo';
@@ -443,5 +448,80 @@ export async function syncContactToCrm(contact: {
   } catch (err) {
     log.error('CRM syncContactToCrm error', { error: err instanceof Error ? err.message : String(err) });
     return null;
+  }
+}
+
+export interface CrmMeetingNote {
+  title: string;
+  start_time: string;
+  status: string;
+  executive_summary: string;
+  key_points: string[];
+  decisions: string[];
+  action_items: Array<{ description: string; assigned_to: string; status: string }>;
+}
+
+export async function getMeetingNotesFromCrm(clientId: string): Promise<CrmMeetingNote[]> {
+  if (!isAvailable()) return [];
+  const crm = getCrmSupabase()!;
+
+  try {
+    const { data: meetings } = await crm
+      .from('tech_lead_meetings')
+      .select('id, title, start_time, status')
+      .eq('client_id', clientId)
+      .in('status', ['completada', 'completed'])
+      .order('start_time', { ascending: false })
+      .limit(5);
+
+    if (!meetings || meetings.length === 0) return [];
+
+    const meetingIds = meetings.map((m) => m.id);
+
+    const [aiNotesRes, actionItemsRes] = await Promise.all([
+      crm
+        .from('meeting_ai_notes')
+        .select('meeting_id, executive_summary, key_points, decisions')
+        .in('meeting_id', meetingIds),
+      crm
+        .from('meeting_action_items')
+        .select('meeting_id, description, assigned_to, status')
+        .in('meeting_id', meetingIds),
+    ]);
+
+    const aiNotesMap = new Map<string, { executive_summary: string; key_points: string[]; decisions: string[] }>();
+    for (const note of aiNotesRes.data || []) {
+      aiNotesMap.set(note.meeting_id, {
+        executive_summary: note.executive_summary || '',
+        key_points: Array.isArray(note.key_points) ? note.key_points : [],
+        decisions: Array.isArray(note.decisions) ? note.decisions : [],
+      });
+    }
+
+    const actionItemsMap = new Map<string, Array<{ description: string; assigned_to: string; status: string }>>();
+    for (const item of actionItemsRes.data || []) {
+      if (!actionItemsMap.has(item.meeting_id)) actionItemsMap.set(item.meeting_id, []);
+      actionItemsMap.get(item.meeting_id)!.push({
+        description: item.description,
+        assigned_to: item.assigned_to || '',
+        status: item.status || 'pendiente',
+      });
+    }
+
+    return meetings.map((m) => {
+      const notes = aiNotesMap.get(m.id);
+      return {
+        title: m.title,
+        start_time: m.start_time,
+        status: m.status,
+        executive_summary: notes?.executive_summary || '',
+        key_points: notes?.key_points || [],
+        decisions: notes?.decisions || [],
+        action_items: actionItemsMap.get(m.id) || [],
+      };
+    });
+  } catch (err) {
+    log.error('CRM getMeetingNotesFromCrm error', { error: err instanceof Error ? err.message : String(err) });
+    return [];
   }
 }

@@ -124,6 +124,33 @@ export async function sendTemplateMessage(
   return sendWithRetry(recipient, payload);
 }
 
+export async function sendDocumentMessage(
+  to: string,
+  documentUrl: string,
+  filename: string,
+  caption?: string
+): Promise<SendResult> {
+  const recipient = to.replace(/[\s\-\+\(\)]/g, '');
+
+  const document: Record<string, string> = {
+    link: documentUrl,
+    filename,
+  };
+  if (caption) {
+    document.caption = caption;
+  }
+
+  const payload = {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to: recipient,
+    type: 'document',
+    document,
+  };
+
+  return sendWithRetry(recipient, payload);
+}
+
 export async function setTypingIndicator(
   supabase: ReturnType<typeof import('../core/supabase.js').getSupabase>,
   conversationId: string,

@@ -98,6 +98,23 @@ function buildTemplatePayload(to: string, templateName: string, languageCode: st
   };
 }
 
+function buildDocumentPayload(to: string, documentUrl: string, filename: string, caption?: string) {
+  const document: Record<string, string> = {
+    link: documentUrl,
+    filename,
+  };
+  if (caption) {
+    document.caption = caption;
+  }
+  return {
+    messaging_product: "whatsapp",
+    recipient_type: "individual",
+    to,
+    type: "document",
+    document,
+  };
+}
+
 async function sendMessage(
   account: Record<string, string>,
   payload: Record<string, unknown>
@@ -188,7 +205,9 @@ async function recordOutboundMessage(
   waMessageId: string,
   messageType: string,
   content: string,
-  senderName?: string
+  senderName?: string,
+  mediaUrl?: string,
+  mediaMimeType?: string
 ) {
   const { data: contact } = await supabase
     .from("whatsapp_contacts")
@@ -242,6 +261,12 @@ async function recordOutboundMessage(
 
   if (senderName) {
     messageInsert.sender_name = senderName;
+  }
+  if (mediaUrl) {
+    messageInsert.media_url = mediaUrl;
+  }
+  if (mediaMimeType) {
+    messageInsert.media_mime_type = mediaMimeType;
   }
 
   await supabase.from("whatsapp_messages").insert(messageInsert);
@@ -383,7 +408,7 @@ Deno.serve(async (req: Request) => {
 
     const supabase = getSupabase();
     const body = await req.json();
-    const { action, account_id, to, message, type = "text", template_name, language_code = "en_US", template_components, sender_name } = body;
+    const { action, account_id, to, message, type = "text", template_name, language_code = "en_US", template_components, sender_name, document_url, filename, caption } = body;
 
     if (!account_id) {
       return jsonRes({ error: "account_id is required" }, 400);
@@ -422,6 +447,8 @@ Deno.serve(async (req: Request) => {
     let payload: Record<string, unknown>;
     let content = "";
     let usedTemplate = false;
+    let outboundMediaUrl: string | undefined;
+    let outboundMimeType: string | undefined;
 
     const windowInfo = await checkWindowStatus(supabase, recipient);
 
@@ -430,6 +457,23 @@ Deno.serve(async (req: Request) => {
       payload = buildTemplatePayload(recipient, tplName, language_code, template_components);
       content = `[Template: ${tplName}]`;
       usedTemplate = true;
+    } else if (type === "document") {
+      if (!document_url || !filename) {
+        return jsonRes({ error: "document_url and filename are required for document type" }, 400);
+      }
+      if (!windowInfo.window_open) {
+        return jsonRes({
+          success: false,
+          error: "Cannot send document: messaging window is closed. The client must write first or send a template to reopen the window.",
+          window_expired: true,
+          window_open: false,
+          window_expires_at: windowInfo.window_expires_at,
+        }, 400);
+      }
+      payload = buildDocumentPayload(recipient, document_url, filename, caption);
+      content = caption || `[Document: ${filename}]`;
+      outboundMediaUrl = document_url;
+      outboundMimeType = "application/pdf";
     } else {
       if (!message) return jsonRes({ error: "message is required for text type" }, 400);
 
@@ -461,7 +505,7 @@ Deno.serve(async (req: Request) => {
     const waMessageId = (result.messages as Record<string, string>[])?.[0]?.id || "";
 
     EdgeRuntime.waitUntil(
-      recordOutboundMessage(supabase, recipient, waMessageId, usedTemplate ? "template" : type, content, sender_name).catch(
+      recordOutboundMessage(supabase, recipient, waMessageId, usedTemplate ? "template" : type, content, sender_name, outboundMediaUrl, outboundMimeType).catch(
         (err) => console.error("Record outbound error:", err)
       )
     );
