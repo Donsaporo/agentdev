@@ -11,7 +11,9 @@ export function getSupabase(): SupabaseClient {
       realtime: {
         params: {
           apikey: config.supabase.serviceRoleKey,
+          eventsPerSecond: 10,
         },
+        timeout: 30_000,
       },
     });
   }

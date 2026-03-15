@@ -179,8 +179,11 @@ function subscribeToMessages(supabase: ReturnType<typeof getSupabase>) {
     realtimeChannel = null;
   }
 
+  const channelName = `sales-agent-messages-${Date.now()}`;
+  log.info('Attempting Realtime subscription', { channel: channelName });
+
   realtimeChannel = supabase
-    .channel('sales-agent-messages')
+    .channel(channelName)
     .on(
       'postgres_changes',
       {
@@ -208,13 +211,16 @@ function subscribeToMessages(supabase: ReturnType<typeof getSupabase>) {
         });
       }
     )
-    .subscribe((status) => {
+    .subscribe((status, err) => {
+      log.info('Realtime status change', { status, error: err?.message });
       if (status === 'SUBSCRIBED') {
         realtimeConnected = true;
         log.info('Realtime connected (supplementing polling)');
       } else if (status === 'TIMED_OUT' || status === 'CHANNEL_ERROR') {
         realtimeConnected = false;
-        log.warn('Realtime unavailable, polling continues as primary', { status });
+        log.warn('Realtime failed, will retry in 60s', { status, error: err?.message });
+        supabase.removeChannel(realtimeChannel!);
+        realtimeChannel = null;
         setTimeout(() => subscribeToMessages(supabase), 60_000);
       } else if (status === 'CLOSED') {
         realtimeConnected = false;
@@ -228,8 +234,10 @@ function subscribeToInstructions(supabase: ReturnType<typeof getSupabase>) {
     instructionsChannel = null;
   }
 
+  const channelName = `sales-agent-instructions-${Date.now()}`;
+
   instructionsChannel = supabase
-    .channel('sales-agent-instructions')
+    .channel(channelName)
     .on(
       'postgres_changes',
       {
@@ -242,9 +250,13 @@ function subscribeToInstructions(supabase: ReturnType<typeof getSupabase>) {
         invalidateInstructionsCache();
       }
     )
-    .subscribe((status) => {
-      if (status === 'TIMED_OUT' || status === 'CHANNEL_ERROR') {
-        log.warn('Instructions realtime unavailable, retrying in 60s', { status });
+    .subscribe((status, err) => {
+      if (status === 'SUBSCRIBED') {
+        log.info('Instructions realtime connected');
+      } else if (status === 'TIMED_OUT' || status === 'CHANNEL_ERROR') {
+        log.warn('Instructions realtime failed, retrying in 60s', { status, error: err?.message });
+        supabase.removeChannel(instructionsChannel!);
+        instructionsChannel = null;
         setTimeout(() => subscribeToInstructions(supabase), 60_000);
       }
     });
