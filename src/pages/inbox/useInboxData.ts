@@ -15,39 +15,67 @@ export function useInboxData() {
   const personaCache = useRef<Record<string, SalesAgentPersona>>({});
 
   const loadConversations = useCallback(async () => {
-    const { data } = await supabase
-      .from('whatsapp_conversations')
-      .select('*, contact:whatsapp_contacts(*)')
-      .in('status', ['active', 'closed'])
-      .order('last_message_at', { ascending: false });
+    try {
+      const { data, error } = await supabase
+        .from('whatsapp_conversations')
+        .select('*, contact:whatsapp_contacts(*)')
+        .in('status', ['active', 'closed'])
+        .order('last_message_at', { ascending: false });
 
-    if (data) {
-      const enriched = data.map((c: WhatsAppConversation & { contact: WhatsAppContact }) => {
-        if (c.contact) contactCache.current[c.contact_id] = c.contact;
-        const persona = c.agent_persona_id ? personaCache.current[c.agent_persona_id] : undefined;
-        return { ...c, persona };
-      });
-      setConversations(enriched);
+      if (error) {
+        console.error('Failed to load conversations:', error);
+      } else if (data) {
+        const enriched = data.map((c: WhatsAppConversation & { contact: WhatsAppContact }) => {
+          if (c.contact) contactCache.current[c.contact_id] = c.contact;
+          const persona = c.agent_persona_id ? personaCache.current[c.agent_persona_id] : undefined;
+          return { ...c, persona };
+        });
+        setConversations(enriched);
+      }
+    } catch (e) {
+      console.error('Failed to load conversations:', e);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }, []);
 
   const loadPersonas = useCallback(async () => {
-    const { data } = await supabase
-      .from('sales_agent_personas')
-      .select('*')
-      .eq('is_active', true);
+    try {
+      const { data, error } = await supabase
+        .from('sales_agent_personas')
+        .select('*')
+        .eq('is_active', true);
 
-    if (data) {
-      setPersonas(data);
-      data.forEach((p: SalesAgentPersona) => {
-        personaCache.current[p.id] = p;
-      });
+      if (error) {
+        console.error('Failed to load personas:', error);
+        return;
+      }
+      if (data) {
+        setPersonas(data);
+        data.forEach((p: SalesAgentPersona) => {
+          personaCache.current[p.id] = p;
+        });
+      }
+    } catch (e) {
+      console.error('Failed to load personas:', e);
     }
   }, []);
 
   useEffect(() => {
-    loadPersonas().then(loadConversations);
+    async function init() {
+      try {
+        await loadPersonas();
+      } catch (e) {
+        console.error('Failed to load personas:', e);
+      }
+      try {
+        await loadConversations();
+      } catch (e) {
+        console.error('Failed to load conversations:', e);
+        setLoading(false);
+      }
+    }
+    init();
   }, [loadPersonas, loadConversations]);
 
   useEffect(() => {

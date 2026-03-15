@@ -37,14 +37,15 @@ async function getInternalPhones(supabase: ReturnType<typeof getSupabase>): Prom
 
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let followUpTimer: ReturnType<typeof setInterval> | null = null;
-let pollTimer: ReturnType<typeof setInterval> | null = null;
+let fallbackPollTimer: ReturnType<typeof setInterval> | null = null;
 let realtimeChannel: ReturnType<ReturnType<typeof getSupabase>['channel']> | null = null;
 let instructionsChannel: ReturnType<ReturnType<typeof getSupabase>['channel']> | null = null;
 let realtimeConnected = false;
 let lastPolledAt: string = new Date().toISOString();
-let lastInstructionsPollHash: string = '';
-const POLL_INTERVAL = 2_000;
-const INSTRUCTIONS_POLL_INTERVAL = 30_000;
+const FALLBACK_POLL_INTERVAL = 30_000;
+const REALTIME_RETRY_BASE = 5_000;
+const REALTIME_RETRY_MAX = 60_000;
+let realtimeRetryCount = 0;
 const processingMessages = new Set<string>();
 
 async function updateHeartbeat(supabase: ReturnType<typeof getSupabase>) {
@@ -128,7 +129,9 @@ async function routeMessage(supabase: ReturnType<typeof getSupabase>, msg: Recor
   });
 }
 
-async function pollForMessages(supabase: ReturnType<typeof getSupabase>) {
+async function fallbackPoll(supabase: ReturnType<typeof getSupabase>) {
+  if (realtimeConnected) return;
+
   try {
     const { data: messages, error } = await supabase
       .from('whatsapp_messages')
@@ -139,7 +142,7 @@ async function pollForMessages(supabase: ReturnType<typeof getSupabase>) {
       .limit(20);
 
     if (error) {
-      log.error('Poll query failed', { error: error.message });
+      log.error('Fallback poll query failed', { error: error.message });
       return;
     }
 
@@ -151,13 +154,13 @@ async function pollForMessages(supabase: ReturnType<typeof getSupabase>) {
       if (processingMessages.has(msg.id)) continue;
       processingMessages.add(msg.id);
 
-      log.info('Polled new inbound message', {
+      log.info('Fallback poll: new inbound message', {
         conversationId: msg.conversation_id,
         type: msg.message_type,
       });
 
       routeMessage(supabase, msg).catch((err) => {
-        log.error('Message handling failed (poll)', {
+        log.error('Message handling failed (fallback poll)', {
           error: err instanceof Error ? err.message : String(err),
         });
       }).finally(() => {
@@ -165,14 +168,8 @@ async function pollForMessages(supabase: ReturnType<typeof getSupabase>) {
       });
     }
   } catch (err) {
-    log.error('Poll cycle failed', { error: err instanceof Error ? err.message : String(err) });
+    log.error('Fallback poll cycle failed', { error: err instanceof Error ? err.message : String(err) });
   }
-}
-
-function startPolling(supabase: ReturnType<typeof getSupabase>) {
-  if (pollTimer) return;
-  log.info(`Polling active (primary mode, every ${POLL_INTERVAL / 1000}s)`);
-  pollTimer = setInterval(() => pollForMessages(supabase), POLL_INTERVAL);
 }
 
 function subscribeToMessages(supabase: ReturnType<typeof getSupabase>) {
@@ -198,6 +195,8 @@ function subscribeToMessages(supabase: ReturnType<typeof getSupabase>) {
         if (processingMessages.has(msg.id)) return;
         processingMessages.add(msg.id);
 
+        lastPolledAt = msg.created_at || new Date().toISOString();
+
         log.info('New inbound message (realtime)', {
           conversationId: msg.conversation_id,
           type: msg.message_type,
@@ -215,12 +214,16 @@ function subscribeToMessages(supabase: ReturnType<typeof getSupabase>) {
     .subscribe((status) => {
       if (status === 'SUBSCRIBED') {
         realtimeConnected = true;
-        log.info('Realtime connected (bonus mode)');
+        realtimeRetryCount = 0;
+        log.info('Realtime connected (primary mode)');
       } else if (status === 'TIMED_OUT' || status === 'CHANNEL_ERROR') {
         realtimeConnected = false;
         supabase.removeChannel(realtimeChannel!);
         realtimeChannel = null;
-        setTimeout(() => subscribeToMessages(supabase), 120_000);
+        realtimeRetryCount++;
+        const delay = Math.min(REALTIME_RETRY_BASE * Math.pow(2, realtimeRetryCount - 1), REALTIME_RETRY_MAX);
+        log.warn(`Realtime disconnected, retrying in ${Math.round(delay / 1000)}s (attempt ${realtimeRetryCount})`);
+        setTimeout(() => subscribeToMessages(supabase), delay);
       } else if (status === 'CLOSED') {
         realtimeConnected = false;
       }
@@ -255,7 +258,7 @@ function subscribeToInstructions(supabase: ReturnType<typeof getSupabase>) {
       } else if (status === 'TIMED_OUT' || status === 'CHANNEL_ERROR') {
         supabase.removeChannel(instructionsChannel!);
         instructionsChannel = null;
-        setTimeout(() => subscribeToInstructions(supabase), 120_000);
+        setTimeout(() => subscribeToInstructions(supabase), 10_000);
       }
     });
 }
@@ -498,27 +501,6 @@ async function processFollowUps(supabase: ReturnType<typeof getSupabase>) {
   }
 }
 
-let instructionsPollTimer: ReturnType<typeof setInterval> | null = null;
-
-async function pollInstructions(supabase: ReturnType<typeof getSupabase>) {
-  try {
-    const { data } = await supabase
-      .from('sales_agent_instructions')
-      .select('id, updated_at')
-      .order('updated_at', { ascending: false })
-      .limit(5);
-
-    const hash = JSON.stringify(data?.map(r => `${r.id}:${r.updated_at}`) || []);
-    if (lastInstructionsPollHash && hash !== lastInstructionsPollHash) {
-      log.info('Instructions changed (detected via poll), invalidating cache');
-      invalidateInstructionsCache();
-    }
-    lastInstructionsPollHash = hash;
-  } catch (err) {
-    log.error('Instructions poll failed', { error: err instanceof Error ? err.message : String(err) });
-  }
-}
-
 async function startup() {
   log.info('=== Obzide Sales Agent v1.0.0 ===');
   log.info('Initializing...');
@@ -535,17 +517,11 @@ async function startup() {
     );
   }, config.agent.heartbeatInterval);
 
-  startPolling(supabase);
+  subscribeToMessages(supabase);
+  subscribeToInstructions(supabase);
 
-  await pollInstructions(supabase);
-  instructionsPollTimer = setInterval(() => {
-    pollInstructions(supabase).catch(() => {});
-  }, INSTRUCTIONS_POLL_INTERVAL);
-
-  setTimeout(() => {
-    subscribeToMessages(supabase);
-    subscribeToInstructions(supabase);
-  }, 2_000);
+  fallbackPollTimer = setInterval(() => fallbackPoll(supabase), FALLBACK_POLL_INTERVAL);
+  log.info(`Fallback poll active (every ${FALLBACK_POLL_INTERVAL / 1000}s, only when realtime is down)`);
 
   followUpTimer = setInterval(() => {
     processFollowUps(supabase).catch((err) =>
@@ -571,14 +547,9 @@ async function shutdown() {
     followUpTimer = null;
   }
 
-  if (pollTimer) {
-    clearInterval(pollTimer);
-    pollTimer = null;
-  }
-
-  if (instructionsPollTimer) {
-    clearInterval(instructionsPollTimer);
-    instructionsPollTimer = null;
+  if (fallbackPollTimer) {
+    clearInterval(fallbackPollTimer);
+    fallbackPollTimer = null;
   }
 
   if (realtimeChannel) {
