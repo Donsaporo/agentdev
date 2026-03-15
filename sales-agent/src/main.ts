@@ -169,16 +169,8 @@ async function pollForMessages(supabase: ReturnType<typeof getSupabase>) {
 
 function startPolling(supabase: ReturnType<typeof getSupabase>) {
   if (pollTimer) return;
-  log.info('Starting poll-based message fallback (every 5s)');
+  log.info('Polling active (primary mode, every 5s)');
   pollTimer = setInterval(() => pollForMessages(supabase), POLL_INTERVAL);
-}
-
-function stopPolling() {
-  if (pollTimer) {
-    clearInterval(pollTimer);
-    pollTimer = null;
-    log.info('Stopped poll-based message fallback (Realtime connected)');
-  }
 }
 
 function subscribeToMessages(supabase: ReturnType<typeof getSupabase>) {
@@ -217,18 +209,15 @@ function subscribeToMessages(supabase: ReturnType<typeof getSupabase>) {
       }
     )
     .subscribe((status) => {
-      log.info('Realtime subscription status', { status });
       if (status === 'SUBSCRIBED') {
         realtimeConnected = true;
-        stopPolling();
+        log.info('Realtime connected (supplementing polling)');
       } else if (status === 'TIMED_OUT' || status === 'CHANNEL_ERROR') {
         realtimeConnected = false;
-        log.warn('Realtime connection failed, starting poll fallback and retrying in 30s...', { status });
-        startPolling(supabase);
-        setTimeout(() => subscribeToMessages(supabase), 30_000);
+        log.warn('Realtime unavailable, polling continues as primary', { status });
+        setTimeout(() => subscribeToMessages(supabase), 60_000);
       } else if (status === 'CLOSED') {
         realtimeConnected = false;
-        startPolling(supabase);
       }
     });
 }
@@ -255,8 +244,8 @@ function subscribeToInstructions(supabase: ReturnType<typeof getSupabase>) {
     )
     .subscribe((status) => {
       if (status === 'TIMED_OUT' || status === 'CHANNEL_ERROR') {
-        log.warn('Instructions realtime failed, retrying in 5s...', { status });
-        setTimeout(() => subscribeToInstructions(supabase), 5000);
+        log.warn('Instructions realtime unavailable, retrying in 60s', { status });
+        setTimeout(() => subscribeToInstructions(supabase), 60_000);
       }
     });
 }
@@ -516,8 +505,11 @@ async function startup() {
   }, config.agent.heartbeatInterval);
 
   startPolling(supabase);
-  subscribeToMessages(supabase);
-  subscribeToInstructions(supabase);
+
+  setTimeout(() => {
+    subscribeToMessages(supabase);
+    subscribeToInstructions(supabase);
+  }, 2_000);
 
   followUpTimer = setInterval(() => {
     processFollowUps(supabase).catch((err) =>
