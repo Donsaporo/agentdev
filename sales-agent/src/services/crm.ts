@@ -180,8 +180,8 @@ export async function createCrmLead(params: CrmLeadParams): Promise<string | nul
         .single());
     }
 
-    if (error) {
-      log.error('Failed to create CRM lead', { error: error.message });
+    if (error || !data) {
+      log.error('Failed to create CRM lead', { error: error?.message });
       return null;
     }
 
