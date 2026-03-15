@@ -18,11 +18,73 @@ interface ImportResult {
   errors: string[];
 }
 
-function parseCSV(text: string): ParsedRow[] {
-  const lines = text.trim().split('\n');
-  if (lines.length < 2) return [];
+function normalizePhone(raw: string): string {
+  return raw.replace(/[\s\-\(\)+]/g, '');
+}
 
-  const header = lines[0].toLowerCase().split(',').map((h) => h.trim().replace(/"/g, ''));
+function parseCSVLine(line: string): string[] {
+  const fields: string[] = [];
+  let current = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQuotes) {
+      if (ch === '"' && line[i + 1] === '"') {
+        current += '"';
+        i++;
+      } else if (ch === '"') {
+        inQuotes = false;
+      } else {
+        current += ch;
+      }
+    } else {
+      if (ch === '"') {
+        inQuotes = true;
+      } else if (ch === ',') {
+        fields.push(current.trim());
+        current = '';
+      } else {
+        current += ch;
+      }
+    }
+  }
+  fields.push(current.trim());
+  return fields;
+}
+
+function splitCSVRecords(text: string): string[] {
+  const records: string[] = [];
+  let current = '';
+  let inQuotes = false;
+
+  for (const line of text.split('\n')) {
+    if (!current && !inQuotes) {
+      current = line;
+      inQuotes = (line.match(/"/g) || []).length % 2 === 1;
+      if (!inQuotes) {
+        records.push(current);
+        current = '';
+      }
+    } else {
+      current += '\n' + line;
+      const quoteCount = (current.match(/"/g) || []).length;
+      inQuotes = quoteCount % 2 === 1;
+      if (!inQuotes) {
+        records.push(current);
+        current = '';
+      }
+    }
+  }
+  if (current) records.push(current);
+  return records;
+}
+
+function parseCSV(text: string): ParsedRow[] {
+  const records = splitCSVRecords(text.trim());
+  if (records.length < 2) return [];
+
+  const header = parseCSVLine(records[0]).map((h) => h.toLowerCase().replace(/"/g, ''));
 
   const phoneIdx = header.findIndex((h) =>
     ['phone', 'telefono', 'numero', 'whatsapp', 'phone_number'].includes(h)
@@ -43,14 +105,17 @@ function parseCSV(text: string): ParsedRow[] {
   if (phoneIdx === -1) return [];
 
   const rows: ParsedRow[] = [];
-  for (let i = 1; i < lines.length; i++) {
-    const cols = lines[i].split(',').map((c) => c.trim().replace(/^"|"$/g, ''));
-    const phone = cols[phoneIdx]?.replace(/[\s\-\(\)]/g, '') || '';
-    if (!phone) continue;
+  for (let i = 1; i < records.length; i++) {
+    const cols = parseCSVLine(records[i]);
+    const rawPhone = cols[phoneIdx] || '';
+    const phone = normalizePhone(rawPhone);
+    if (!phone || phone.length < 5) continue;
+
+    const name = (nameIdx >= 0 ? cols[nameIdx] || '' : '').replace(/\n/g, ' ').trim();
 
     rows.push({
       phone,
-      name: nameIdx >= 0 ? cols[nameIdx] || '' : '',
+      name,
       email: emailIdx >= 0 ? cols[emailIdx] || '' : '',
       company: companyIdx >= 0 ? cols[companyIdx] || '' : '',
       notes: notesIdx >= 0 ? cols[notesIdx] || '' : '',
@@ -100,15 +165,20 @@ export default function ImportPage() {
 
     const importResult: ImportResult = { total: parsed.length, created: 0, skipped: 0, errors: [] };
 
+    const { data: existingContacts } = await supabase
+      .from('whatsapp_contacts')
+      .select('wa_id, phone_number');
+
+    const existingPhones = new Set<string>();
+    for (const c of existingContacts || []) {
+      existingPhones.add(normalizePhone(c.wa_id || ''));
+      existingPhones.add(normalizePhone(c.phone_number || ''));
+    }
+
     for (const row of parsed) {
       try {
-        const { data: existing } = await supabase
-          .from('whatsapp_contacts')
-          .select('id')
-          .or(`wa_id.eq.${row.phone},phone_number.eq.${row.phone}`)
-          .maybeSingle();
-
-        if (existing) {
+        const stripped = row.phone.replace(/^0+/, '');
+        if (existingPhones.has(row.phone) || existingPhones.has(stripped)) {
           importResult.skipped++;
           continue;
         }
@@ -118,9 +188,9 @@ export default function ImportPage() {
           phone_number: row.phone,
           display_name: row.name || row.phone,
           profile_name: row.name || '',
-          email: row.email || null,
-          company: row.company || null,
-          notes: row.notes || null,
+          email: row.email || '',
+          company: row.company || '',
+          notes: row.notes || '',
           lead_stage: 'nuevo',
           is_imported: true,
           intro_sent: true,
@@ -129,6 +199,7 @@ export default function ImportPage() {
         if (error) {
           importResult.errors.push(`${row.phone}: ${error.message}`);
         } else {
+          existingPhones.add(row.phone);
           importResult.created++;
         }
       } catch (err) {
