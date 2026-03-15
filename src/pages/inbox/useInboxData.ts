@@ -18,6 +18,7 @@ export function useInboxData() {
     const { data } = await supabase
       .from('whatsapp_conversations')
       .select('*, contact:whatsapp_contacts(*)')
+      .in('status', ['active', 'closed'])
       .order('last_message_at', { ascending: false });
 
     if (data) {
@@ -87,6 +88,10 @@ export function useInboxData() {
         { event: 'UPDATE', schema: 'public', table: 'whatsapp_conversations' },
         (payload) => {
           const updated = payload.new as WhatsAppConversation;
+          if (updated.status === 'archived') {
+            setConversations((prev) => prev.filter((c) => c.id !== updated.id));
+            return;
+          }
           setConversations((prev) =>
             prev.map((c) =>
               c.id === updated.id ? { ...c, ...updated, contact: c.contact, persona: c.persona } : c
@@ -150,8 +155,9 @@ export function useConversationMessages(conversationId: string | null) {
     const pendingQueue: WhatsAppMessage[] = [];
     let initialLoadDone = false;
 
+    const channelId = `messages-${conversationId}-${Date.now()}`;
     const channel = supabase
-      .channel(`messages-${conversationId}`)
+      .channel(channelId)
       .on(
         'postgres_changes',
         {
