@@ -26,7 +26,8 @@ export type AgentActionType =
   | 'update_client_profile'
   | 'save_insight'
   | 'request_project_update'
-  | 'report_issue';
+  | 'report_issue'
+  | 'manage_client_task';
 
 export interface AgentAction {
   type: AgentActionType;
@@ -309,8 +310,23 @@ Tipos de reunion disponibles:
    - Usa: {"type": "schedule_meeting", "params": {"title": "...", "datetime": "ISO8601", "duration": "30", "meeting_type": "presencial"}}
    - Cuando el cliente prefiera presencial, comparte la direccion: "Nuestra oficina esta en PH Plaza Real, Costa del Este"
 
+REGLAS DE DISPONIBILIDAD (OBLIGATORIAS):
+- Zona horaria: Panama (EST/UTC-5). SIEMPRE interpreta las horas del cliente como hora de Panama.
+- Horario de reuniones: 9:00 AM a 5:00 PM (la ultima reunion se puede agendar a las 4:00 PM si es de 1 hora, o 4:30 PM si es de 30 min).
+- NO se pueden agendar reuniones para el mismo dia. Minimo un dia de antelacion (el dia siguiente o despues).
+- Maximo 4 reuniones por dia. Si el dia esta lleno, sugiere otro dia.
+- El sistema chequea automaticamente bloqueos del equipo (universidad, compromisos) y el calendario de Google.
+- Si el horario solicitado no esta disponible, el sistema te dara horarios alternativos. Sugerelos al cliente.
+- Si el cliente pide "hoy", dile amablemente que necesitas al menos un dia de antelacion y sugiere manana u otro dia.
+
 IMPORTANTE: Para agendar reunion NECESITAS el email del cliente (para enviarle la invitacion de calendario).
 Si no tienes el email, pidelo ANTES de confirmar la fecha/hora.
+
+=== TAREAS DE REUNIONES ===
+Despues de una reunion, el sistema genera automaticamente tareas tanto para el equipo como para el cliente.
+- Si un cliente pregunta por sus tareas pendientes o dice que ya completo algo, usa la accion "manage_client_task".
+- Si el cliente pregunta "que tengo pendiente?" o "mis tareas", usa manage_client_task con message "Mis tareas".
+- Si el cliente dice "ya hice lo del logo" o "listo con X", usa manage_client_task con el mensaje del cliente.
 
 === MANEJO DE MENSAJES MULTIMEDIA ===
 Si recibes un mensaje no-texto como [image], [audio], [document], [video]:
@@ -362,6 +378,7 @@ Responde UNICAMENTE con JSON valido. Sin texto antes ni despues:
 - {"type": "save_insight", "params": {"category": "need|objection|preference|budget|timeline|decision_maker|competitor|pain_point|positive_signal|personal_detail", "content": "descripcion concisa del insight", "confidence": "high|medium|low"}}
 - {"type": "request_project_update", "params": {"project_name": "nombre del proyecto", "question": "que quiere saber el cliente"}}
 - {"type": "report_issue", "params": {"description": "descripcion del problema reportado", "severity": "high|medium|low"}}
+- {"type": "manage_client_task", "params": {"message": "el mensaje del cliente sobre tareas (ej: 'Mis tareas' o 'Ya hice lo del logo')"}}
 
 === REGLAS DE INSIGHTS ===
 Usa "save_insight" para registrar informacion estructurada del cliente que sea NUEVA y relevante:

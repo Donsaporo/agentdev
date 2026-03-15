@@ -85,7 +85,7 @@ async function processTranscriptWithAI(
 ) {
   const { data: meeting } = await supabase
     .from("sales_meetings")
-    .select("id, contact_id, conversation_id, title, start_time, google_event_id")
+    .select("id, contact_id, conversation_id, title, start_time, end_time, google_event_id")
     .eq("recall_bot_id", botId)
     .maybeSingle();
 
@@ -166,43 +166,48 @@ async function processTranscriptWithAI(
 
   const crmUrl = Deno.env.get("CRM_SUPABASE_URL");
   const crmKey = Deno.env.get("CRM_SUPABASE_SERVICE_ROLE_KEY");
-  if (crmUrl && crmKey && meeting.google_event_id) {
+  if (crmUrl && crmKey) {
     try {
-      const crmSupabase = createClient(crmUrl, crmKey);
-
-      const { data: crmMeeting } = await crmSupabase
-        .from("tech_lead_meetings")
-        .select("id, client_id")
-        .eq("google_event_id", meeting.google_event_id)
+      const transcriptEndpoint = `${crmUrl}/functions/v1/receive-meeting-transcript`;
+      const { data: contactData } = await supabase
+        .from("whatsapp_contacts")
+        .select("email, display_name")
+        .eq("id", meeting.contact_id)
         .maybeSingle();
 
-      if (crmMeeting) {
-        await crmSupabase
-          .from("tech_lead_meetings")
-          .update({
-            status: "completada",
-            post_meeting_notes: analysis.summary,
-          })
-          .eq("id", crmMeeting.id);
+      const attendees = ["info@obzide.com"];
+      if (contactData?.email) attendees.push(contactData.email);
 
-        if (crmMeeting.client_id) {
-          await crmSupabase.from("tech_lead_timeline_events").insert({
-            client_id: crmMeeting.client_id,
-            event_type: "reunion",
-            title: `Reunion completada: ${meeting.title}`,
-            description: analysis.summary,
-            metadata: {
-              key_points: analysis.key_points,
-              decisions: analysis.decisions,
-              action_items_count: analysis.action_items.length,
-            },
-            reference_id: crmMeeting.id,
-            reference_table: "tech_lead_meetings",
-          });
-        }
+      const crmRes = await fetch(transcriptEndpoint, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${crmKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          google_event_id: meeting.google_event_id || undefined,
+          title: meeting.title,
+          attendees,
+          start_time: meeting.start_time,
+          end_time: meeting.end_time || meeting.start_time,
+          transcript_text: transcript,
+          auto_generate_notes: true,
+        }),
+      });
+
+      if (crmRes.ok) {
+        const crmResult = await crmRes.json();
+        console.log("CRM transcript pipeline completed", {
+          meetingId: crmResult.meeting_id,
+          notesGenerated: crmResult.notes_generated,
+          tasksCreated: crmResult.notes_result?.tasks_created || 0,
+        });
+      } else {
+        const errText = await crmRes.text();
+        console.error("CRM receive-meeting-transcript failed:", crmRes.status, errText);
       }
     } catch (err) {
-      console.error("CRM sync error:", err);
+      console.error("CRM transcript sync error:", err);
     }
   }
 

@@ -1,6 +1,7 @@
 import { SupabaseClient } from '@supabase/supabase-js';
 import { createLogger } from '../core/logger.js';
 import { callClaude } from './claude.js';
+import { addCrmClientInsight } from './crm-postventa.js';
 
 const log = createLogger('conversation-summarizer');
 
@@ -209,6 +210,25 @@ async function saveInsights(
   if (error) {
     log.error('Failed to save insights', { error: error.message, count: rows.length });
   }
+
+  const { data: contact } = await supabase
+    .from('whatsapp_contacts')
+    .select('crm_client_id')
+    .eq('id', contactId)
+    .maybeSingle();
+
+  if (contact?.crm_client_id) {
+    const confidenceMap: Record<string, number> = { high: 0.9, medium: 0.7, low: 0.4 };
+    for (const insight of insights) {
+      addCrmClientInsight(contact.crm_client_id, {
+        sourceType: 'whatsapp',
+        insightType: insight.category,
+        title: insight.category.replace(/_/g, ' '),
+        content: insight.content,
+        confidence: confidenceMap[insight.confidence] || 0.7,
+      }).catch(() => {});
+    }
+  }
 }
 
 export async function saveInsight(
@@ -264,6 +284,7 @@ export async function getConversationSummaries(
       .from('conversation_summaries')
       .select('summary, key_topics, message_count, created_at, conversation_id')
       .eq('contact_id', contactId)
+      .eq('conversation_id', conversationId)
       .order('created_at', { ascending: false })
       .limit(10);
   }

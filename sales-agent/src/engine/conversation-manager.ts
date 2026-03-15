@@ -10,8 +10,9 @@ import { sendTextMessage, sendTemplateMessage, setTypingIndicator } from '../ser
 import type { SendResult } from '../services/whatsapp.js';
 import { notifyDirector } from '../services/director-notifier.js';
 import { processMediaContent } from '../services/media-processor.js';
-import { scheduleMeeting } from '../services/calendar.js';
+import { scheduleMeeting, checkAvailability } from '../services/calendar.js';
 import { joinMeeting } from '../services/recall.js';
+import { addCrmClientInsight } from '../services/crm-postventa.js';
 import * as crm from '../services/crm.js';
 import { shouldSummarize, summarizeConversation, saveInsight } from '../services/conversation-summarizer.js';
 
@@ -665,6 +666,20 @@ async function executeActions(
             break;
           }
 
+          const availability = await checkAvailability(
+            supabase,
+            action.params.datetime,
+            parseInt(action.params.duration || '30', 10)
+          );
+
+          if (!availability.available) {
+            log.warn('Meeting slot not available', {
+              datetime: action.params.datetime,
+              reason: availability.reason,
+            });
+            break;
+          }
+
           const contactData = await supabase
             .from('whatsapp_contacts')
             .select('display_name, email')
@@ -813,6 +828,18 @@ async function executeActions(
               action.params.content,
               action.params.confidence || 'high'
             );
+
+            const insightContact = await getContact();
+            if (insightContact?.crm_client_id) {
+              const confidenceMap: Record<string, number> = { high: 0.9, medium: 0.7, low: 0.4 };
+              addCrmClientInsight(insightContact.crm_client_id, {
+                sourceType: 'whatsapp',
+                insightType: action.params.category,
+                title: action.params.category.replace(/_/g, ' '),
+                content: action.params.content,
+                confidence: confidenceMap[action.params.confidence || 'high'] || 0.7,
+              }).catch(() => {});
+            }
           }
           break;
         }
@@ -867,6 +894,48 @@ async function executeActions(
 
           if (severity === 'high') {
             await handleEscalation(supabase, conversationId, contactId, `Problema critico reportado: ${description}`);
+          }
+          break;
+        }
+
+        case 'manage_client_task': {
+          const contact = await getContact();
+          const phone = contact?.phone_number || '';
+          if (!phone) break;
+
+          const crmUrl = config.crm.url;
+          const crmKey = config.crm.serviceRoleKey;
+          if (!crmUrl || !crmKey) {
+            log.warn('CRM not configured for task management');
+            break;
+          }
+
+          try {
+            const taskRes = await fetch(`${crmUrl}/functions/v1/update-task-from-whatsapp`, {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${crmKey}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                phone_number: phone,
+                message: action.params.message || action.params.action || '',
+              }),
+            });
+
+            if (taskRes.ok) {
+              const result = await taskRes.json();
+              log.info('Client task action completed', {
+                contactId,
+                replySuggestion: result.reply_suggestion?.slice(0, 100),
+              });
+            } else {
+              log.warn('CRM task endpoint failed', { status: taskRes.status });
+            }
+          } catch (taskErr) {
+            log.error('manage_client_task failed', {
+              error: taskErr instanceof Error ? taskErr.message : String(taskErr),
+            });
           }
           break;
         }
