@@ -67,7 +67,7 @@ export function useInboxData() {
             updated[idx] = {
               ...updated[idx],
               last_message_at: msg.created_at,
-              last_message_preview: msg.content?.slice(0, 80) || '',
+              last_message_preview: (msg.content || '').slice(0, 80),
               unread_count:
                 msg.direction === 'inbound'
                   ? updated[idx].unread_count + 1
@@ -92,6 +92,13 @@ export function useInboxData() {
               c.id === updated.id ? { ...c, ...updated, contact: c.contact, persona: c.persona } : c
             )
           );
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'whatsapp_conversations' },
+        () => {
+          loadConversations();
         }
       )
       .subscribe();
@@ -136,16 +143,12 @@ export function useConversationMessages(conversationId: string | null) {
       return;
     }
 
+    let aborted = false;
     setLoading(true);
-    supabase
-      .from('whatsapp_messages')
-      .select('*')
-      .eq('conversation_id', conversationId)
-      .order('created_at', { ascending: true })
-      .then(({ data }) => {
-        setMessages(data || []);
-        setLoading(false);
-      });
+    setMessages([]);
+
+    const pendingQueue: WhatsAppMessage[] = [];
+    let initialLoadDone = false;
 
     const channel = supabase
       .channel(`messages-${conversationId}`)
@@ -158,8 +161,13 @@ export function useConversationMessages(conversationId: string | null) {
           filter: `conversation_id=eq.${conversationId}`,
         },
         (payload) => {
+          if (aborted) return;
+          const msg = payload.new as WhatsAppMessage;
+          if (!initialLoadDone) {
+            pendingQueue.push(msg);
+            return;
+          }
           setMessages((prev) => {
-            const msg = payload.new as WhatsAppMessage;
             if (prev.some((m) => m.id === msg.id)) return prev;
             return [...prev, msg];
           });
@@ -174,6 +182,7 @@ export function useConversationMessages(conversationId: string | null) {
           filter: `conversation_id=eq.${conversationId}`,
         },
         (payload) => {
+          if (aborted) return;
           const updated = payload.new as WhatsAppMessage;
           setMessages((prev) =>
             prev.map((m) => (m.id === updated.id ? updated : m))
@@ -182,7 +191,28 @@ export function useConversationMessages(conversationId: string | null) {
       )
       .subscribe();
 
+    supabase
+      .from('whatsapp_messages')
+      .select('*')
+      .eq('conversation_id', conversationId)
+      .order('created_at', { ascending: true })
+      .then(({ data, error }) => {
+        if (aborted) return;
+        if (error) {
+          console.error('Failed to load messages:', error);
+          setLoading(false);
+          return;
+        }
+        const loaded = data || [];
+        const loadedIds = new Set(loaded.map((m) => m.id));
+        const newFromQueue = pendingQueue.filter((m) => !loadedIds.has(m.id));
+        setMessages([...loaded, ...newFromQueue]);
+        initialLoadDone = true;
+        setLoading(false);
+      });
+
     return () => {
+      aborted = true;
       supabase.removeChannel(channel);
     };
   }, [conversationId]);

@@ -97,7 +97,7 @@ async function searchContacts(
 
 function parseCommand(text: string): { command: string; args: string } | null {
   const trimmed = text.trim();
-  if (!trimmed.startsWith('/')) return null;
+  if (!trimmed.startsWith('$')) return null;
 
   const spaceIndex = trimmed.indexOf(' ');
   if (spaceIndex === -1) {
@@ -122,13 +122,13 @@ async function handleChatear(
   args: string
 ) {
   if (!args) {
-    await reply(directorWaId, 'Uso: /chatear <nombre_cliente> <mensaje>\nEjemplo: /chatear juan Hola, como va todo?');
+    await reply(directorWaId, 'Uso: $chatear <nombre_cliente> <mensaje>\nEjemplo: $chatear juan Hola, como va todo?');
     return;
   }
 
   const { clientRef, message } = splitArgs(args);
   if (!message) {
-    await reply(directorWaId, 'Falta el mensaje. Uso: /chatear <nombre_cliente> <mensaje>');
+    await reply(directorWaId, 'Falta el mensaje. Uso: $chatear <nombre_cliente> <mensaje>');
     return;
   }
 
@@ -203,7 +203,7 @@ async function handleEstado(
   args: string
 ) {
   if (!args) {
-    await reply(directorWaId, 'Uso: /estado <nombre_cliente>');
+    await reply(directorWaId, 'Uso: $estado <nombre_cliente>');
     return;
   }
 
@@ -254,7 +254,7 @@ async function handlePausar(
   args: string
 ) {
   if (!args) {
-    await reply(directorWaId, 'Uso: /pausar <nombre_cliente>');
+    await reply(directorWaId, 'Uso: $pausar <nombre_cliente>');
     return;
   }
 
@@ -280,7 +280,7 @@ async function handleReanudar(
   args: string
 ) {
   if (!args) {
-    await reply(directorWaId, 'Uso: /reanudar <nombre_cliente>');
+    await reply(directorWaId, 'Uso: $reanudar <nombre_cliente>');
     return;
   }
 
@@ -374,11 +374,11 @@ export async function handleDirectorCommand(
   if (!parsed) {
     const helpText = [
       'Comandos disponibles:',
-      '/chatear <cliente> <mensaje> - Enviar mensaje como la persona asignada',
-      '/estado <cliente> - Ver estado de un cliente',
-      '/pausar <cliente> - Pausar IA en una conversacion',
-      '/reanudar <cliente> - Reactivar IA en una conversacion',
-      '/resumen - Resumen de conversaciones activas',
+      '$chatear <cliente> <mensaje> - Enviar mensaje como la persona asignada',
+      '$estado <cliente> - Ver estado de un cliente',
+      '$pausar <cliente> - Pausar IA en una conversacion',
+      '$reanudar <cliente> - Reactivar IA en una conversacion',
+      '$resumen - Resumen de conversaciones activas',
       '',
       'Busca clientes por nombre, telefono o empresa.',
     ].join('\n');
@@ -405,6 +405,6 @@ export async function handleDirectorCommand(
       await handleResumen(supabase, msg.directorWaId);
       break;
     default:
-      await reply(msg.directorWaId, `Comando desconocido: /${parsed.command}\nEscribe cualquier cosa sin / para ver los comandos disponibles.`);
+      await reply(msg.directorWaId, `Comando desconocido: $${parsed.command}\nEscribe cualquier cosa sin $ para ver los comandos disponibles.`);
   }
 }

@@ -13,6 +13,8 @@ import {
   ChevronRight,
   Eye,
   Calendar,
+  RefreshCw,
+  Loader2,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { useToast } from '../../contexts/ToastContext';
@@ -58,6 +60,7 @@ export default function ContactPanel({ conversation, contact, personas, onClose 
   });
   const [directorNotes, setDirectorNotes] = useState('');
   const [saving, setSaving] = useState(false);
+  const [resettingAsNew, setResettingAsNew] = useState(false);
 
   useEffect(() => {
     setForm({
@@ -127,6 +130,26 @@ export default function ContactPanel({ conversation, contact, personas, onClose 
       .update({ director_notes: directorNotes })
       .eq('id', conversation.id);
     toast.success('Notas guardadas');
+  }
+
+  async function handleResetAsNew() {
+    if (!contact) return;
+    setResettingAsNew(true);
+    try {
+      await supabase
+        .from('whatsapp_contacts')
+        .update({ intro_sent: false, lead_stage: 'nuevo' })
+        .eq('id', contact.id);
+      await supabase
+        .from('whatsapp_conversations')
+        .update({ agent_mode: 'ai', category: 'new_lead' })
+        .eq('id', conversation.id);
+      toast.success('Contacto reiniciado como nuevo');
+    } catch {
+      toast.error('Error al reiniciar');
+    } finally {
+      setResettingAsNew(false);
+    }
   }
 
   const name = contact?.display_name || contact?.profile_name || 'Desconocido';
@@ -344,6 +367,15 @@ export default function ContactPanel({ conversation, contact, personas, onClose 
                   ID: {conversation.id.slice(0, 8)}
                 </span>
               </div>
+
+              <button
+                onClick={handleResetAsNew}
+                disabled={resettingAsNew}
+                className="w-full flex items-center justify-center gap-1.5 px-3 py-2 mt-1 bg-amber-500/10 hover:bg-amber-500/15 border border-amber-500/20 text-amber-400 text-xs font-medium rounded-lg transition-all"
+              >
+                {resettingAsNew ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                {resettingAsNew ? 'Reiniciando...' : 'Reiniciar como nuevo'}
+              </button>
             </div>
           )}
 

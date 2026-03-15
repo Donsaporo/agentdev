@@ -12,8 +12,8 @@ import {
   X,
   RotateCcw,
   Clock,
-  AlertTriangle,
   Lock,
+  RefreshCw,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { useToast } from '../../contexts/ToastContext';
@@ -43,6 +43,8 @@ export default function ChatPanel({
   const [toneEnabled, setToneEnabled] = useState(true);
   const [transformedPreview, setTransformedPreview] = useState<string | null>(null);
   const [transforming, setTransforming] = useState(false);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -211,6 +213,29 @@ export default function ChatPanel({
     }
   }
 
+  async function handleResetAsNew() {
+    if (!contact) return;
+    setResetting(true);
+    try {
+      await supabase
+        .from('whatsapp_contacts')
+        .update({ intro_sent: false, lead_stage: 'nuevo' })
+        .eq('id', contact.id);
+
+      await supabase
+        .from('whatsapp_conversations')
+        .update({ agent_mode: 'ai', category: 'new_lead' })
+        .eq('id', conversation.id);
+
+      toast.success('Contacto reiniciado. El agente enviara el intro automaticamente.');
+      setShowResetConfirm(false);
+    } catch {
+      toast.error('Error al reiniciar contacto');
+    } finally {
+      setResetting(false);
+    }
+  }
+
   const name = contact?.display_name || contact?.profile_name || contact?.phone_number || 'Desconocido';
   const personaName = conversation.persona?.first_name || conversation.persona?.full_name;
 
@@ -260,6 +285,13 @@ export default function ChatPanel({
             </button>
           )}
 
+          <button
+            onClick={() => setShowResetConfirm(true)}
+            className="p-2 rounded-xl text-slate-400 hover:text-amber-400 hover:bg-amber-500/10 transition-all"
+            title="Reiniciar como nuevo"
+          >
+            <RefreshCw className="w-4 h-4" />
+          </button>
           <button className="p-2 rounded-xl text-slate-400 hover:text-slate-200 hover:bg-white/[0.04] transition-all">
             <Phone className="w-4 h-4" />
           </button>
@@ -419,6 +451,42 @@ export default function ChatPanel({
           </div>
         </div>
       </div>
+
+      {showResetConfirm && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-[#151b28] border border-white/[0.08] rounded-2xl p-6 mx-4 max-w-sm w-full shadow-2xl">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-xl bg-amber-500/10 flex items-center justify-center flex-shrink-0">
+                <RefreshCw className="w-5 h-5 text-amber-400" />
+              </div>
+              <div>
+                <h4 className="text-sm font-semibold text-white">Reiniciar como nuevo</h4>
+                <p className="text-[11px] text-slate-500">{name}</p>
+              </div>
+            </div>
+            <p className="text-sm text-slate-400 leading-relaxed mb-5">
+              Esto reiniciara el flujo de venta. El agente le enviara el mensaje de bienvenida como si fuera la primera vez que escribe.
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={handleResetAsNew}
+                disabled={resetting}
+                className="flex-1 flex items-center justify-center gap-1.5 px-4 py-2.5 bg-amber-600 hover:bg-amber-500 text-white text-sm font-medium rounded-xl transition-all"
+              >
+                {resetting ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                {resetting ? 'Reiniciando...' : 'Reiniciar'}
+              </button>
+              <button
+                onClick={() => setShowResetConfirm(false)}
+                disabled={resetting}
+                className="px-4 py-2.5 text-slate-400 hover:text-slate-200 text-sm font-medium rounded-xl hover:bg-white/[0.04] transition-all"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

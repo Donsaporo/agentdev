@@ -92,12 +92,15 @@ async function getOrCreateConversation(
   const now = new Date();
   const windowExpiresAt = new Date(now.getTime() + 24 * 60 * 60 * 1000);
 
-  const { data: existing } = await supabase
+  const { data: existingRows } = await supabase
     .from("whatsapp_conversations")
     .select("id, unread_count")
     .eq("contact_id", contactId)
     .eq("status", "active")
-    .maybeSingle();
+    .order("last_message_at", { ascending: false })
+    .limit(5);
+
+  const existing = existingRows?.[0];
 
   if (existing) {
     await supabase
@@ -111,6 +114,16 @@ async function getOrCreateConversation(
         window_status: computeWindowStatus(now),
       })
       .eq("id", existing.id);
+
+    if (existingRows && existingRows.length > 1) {
+      const duplicateIds = existingRows.slice(1).map((r) => r.id);
+      await supabase
+        .from("whatsapp_conversations")
+        .update({ status: "archived" })
+        .in("id", duplicateIds);
+      console.log(`Auto-archived ${duplicateIds.length} duplicate conversations for contact ${contactId}`);
+    }
+
     return existing.id;
   }
 
