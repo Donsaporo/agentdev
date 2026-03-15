@@ -456,7 +456,7 @@ async function processIncomingMessages(body: Record<string, unknown>, provider: 
             media_mime_type,
             metadata: msgMetadata,
             status: "received",
-            media_download_status: mediaId ? "pending" : null,
+            media_download_status: mediaId ? "pending" : "none",
           })
           .select("id")
           .maybeSingle();
