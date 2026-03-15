@@ -13,6 +13,7 @@ import { processMediaContent } from '../services/media-processor.js';
 import { scheduleMeeting } from '../services/calendar.js';
 import { joinMeeting } from '../services/recall.js';
 import * as crm from '../services/crm.js';
+import { shouldSummarize, summarizeConversation, saveInsight } from '../services/conversation-summarizer.js';
 
 const log = createLogger('conversation-manager');
 
@@ -361,6 +362,10 @@ async function processMessage(
 
     await autoSyncToCrm(supabase, msg.contactId, persona.full_name).catch((err) => {
       log.warn('Auto CRM sync failed (non-blocking)', { error: err instanceof Error ? err.message : String(err) });
+    });
+
+    triggerAutoSummary(supabase, msg.conversationId, msg.contactId).catch((err) => {
+      log.warn('Auto summary failed (non-blocking)', { error: err instanceof Error ? err.message : String(err) });
     });
 
     log.info('Message handled', {
@@ -793,6 +798,24 @@ async function executeActions(
           }
           break;
         }
+
+        case 'save_insight': {
+          const validCategories = [
+            'need', 'objection', 'preference', 'budget', 'timeline',
+            'decision_maker', 'competitor', 'pain_point', 'positive_signal', 'personal_detail',
+          ];
+          if (action.params.category && validCategories.includes(action.params.category) && action.params.content) {
+            await saveInsight(
+              supabase,
+              contactId,
+              conversationId,
+              action.params.category,
+              action.params.content,
+              action.params.confidence || 'high'
+            );
+          }
+          break;
+        }
       }
     } catch (err) {
       log.error(`Action ${action.type} failed`, {
@@ -835,6 +858,18 @@ async function loadContactForCrm(supabase: SupabaseClient, contactId: string) {
     .eq('id', contactId)
     .maybeSingle();
   return data;
+}
+
+async function triggerAutoSummary(
+  supabase: SupabaseClient,
+  conversationId: string,
+  contactId: string
+): Promise<void> {
+  const needsSummary = await shouldSummarize(supabase, conversationId);
+  if (!needsSummary) return;
+
+  log.info('Auto-summarizing conversation', { conversationId });
+  await summarizeConversation(supabase, conversationId, contactId);
 }
 
 async function logAction(

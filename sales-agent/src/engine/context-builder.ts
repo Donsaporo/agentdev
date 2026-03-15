@@ -3,8 +3,24 @@ import { createLogger } from '../core/logger.js';
 import { Persona } from './persona-engine.js';
 import { searchKnowledge, getAllInstructions } from './knowledge-search.js';
 import { getClientHistory, getCrmClientData } from '../services/crm.js';
+import { getContactInsights, getConversationSummaries } from '../services/conversation-summarizer.js';
 
 const log = createLogger('context-builder');
+
+export interface ClientInsight {
+  category: string;
+  content: string;
+  confidence: string;
+  created_at: string;
+}
+
+export interface ConversationSummary {
+  summary: string;
+  key_topics: string[];
+  message_count: number;
+  created_at: string;
+  conversation_id: string;
+}
 
 export interface ConversationContext {
   persona: Persona;
@@ -22,6 +38,8 @@ export interface ConversationContext {
   crmNotes: string;
   crmClientId: string | null;
   crmHistory: string;
+  insights: ClientInsight[];
+  conversationSummaries: ConversationSummary[];
 }
 
 export async function buildContext(
@@ -31,12 +49,14 @@ export async function buildContext(
   incomingMessage: string,
   persona: Persona
 ): Promise<ConversationContext> {
-  const [contact, conversation, messages, knowledge, instructions] = await Promise.all([
+  const [contact, conversation, messages, knowledge, instructions, insights, summaries] = await Promise.all([
     loadContact(supabase, contactId),
     loadConversation(supabase, conversationId),
     loadRecentMessages(supabase, conversationId),
     searchKnowledge(supabase, incomingMessage),
     getAllInstructions(supabase, persona.id),
+    getContactInsights(supabase, contactId),
+    getConversationSummaries(supabase, contactId),
   ]);
 
   const crmClientId = contact?.crm_client_id || null;
@@ -121,6 +141,8 @@ export async function buildContext(
     crmNotes: contact?.notes || '',
     crmClientId,
     crmHistory,
+    insights,
+    conversationSummaries: summaries,
   };
 
   log.debug('Context built', {
@@ -129,6 +151,8 @@ export async function buildContext(
     knowledgeChunks: context.knowledge.length,
     instructionCount: context.instructions.length,
     hasCrm: !!crmClientId,
+    insightCount: insights.length,
+    summaryCount: summaries.length,
   });
 
   return context;

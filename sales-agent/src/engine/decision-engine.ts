@@ -23,7 +23,8 @@ export type AgentActionType =
   | 'add_note'
   | 'sync_to_crm'
   | 'add_crm_comment'
-  | 'update_client_profile';
+  | 'update_client_profile'
+  | 'save_insight';
 
 export interface AgentAction {
   type: AgentActionType;
@@ -41,6 +42,55 @@ function extractJson(text: string): string {
   }
 
   return text;
+}
+
+const INSIGHT_LABELS: Record<string, string> = {
+  need: 'Necesidad',
+  objection: 'Objecion',
+  preference: 'Preferencia',
+  budget: 'Presupuesto',
+  timeline: 'Plazo/Urgencia',
+  decision_maker: 'Decisor',
+  competitor: 'Competencia',
+  pain_point: 'Punto de dolor',
+  positive_signal: 'Senal positiva',
+  personal_detail: 'Dato personal',
+};
+
+function formatInsights(insights: ConversationContext['insights']): string {
+  if (!insights || insights.length === 0) return '';
+
+  const grouped = new Map<string, string[]>();
+  for (const i of insights) {
+    const label = INSIGHT_LABELS[i.category] || i.category;
+    if (!grouped.has(label)) grouped.set(label, []);
+    grouped.get(label)!.push(`${i.content} [${i.confidence}]`);
+  }
+
+  const lines: string[] = ['\n=== INSIGHTS DEL CLIENTE (MEMORIA ESTRUCTURADA) ==='];
+  for (const [label, items] of grouped) {
+    lines.push(`${label}:`);
+    for (const item of items) {
+      lines.push(`  - ${item}`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+function formatSummaries(summaries: ConversationContext['conversationSummaries']): string {
+  if (!summaries || summaries.length === 0) return '';
+
+  const lines: string[] = ['\n=== RESUMENES DE CONVERSACIONES ANTERIORES ==='];
+  for (const s of summaries.slice(0, 5)) {
+    const date = new Date(s.created_at).toLocaleDateString('es-PA', { day: '2-digit', month: '2-digit', year: '2-digit' });
+    lines.push(`[${date}] (${s.message_count} msgs) ${s.summary}`);
+    if (s.key_topics.length > 0) {
+      lines.push(`  Temas: ${s.key_topics.join(', ')}`);
+    }
+  }
+
+  return lines.join('\n');
 }
 
 function buildSystemPrompt(ctx: ConversationContext): string {
@@ -88,6 +138,8 @@ Fase conversacion: ${conversationPhase} (${messageCount} mensajes)
 ${ctx.crmNotes ? `Notas: ${ctx.crmNotes}` : ''}
 Vinculado al CRM: ${ctx.crmClientId ? 'Si (ID: ' + ctx.crmClientId + ')' : 'No'}
 ${ctx.crmHistory ? `\n=== HISTORIAL CRM ===\n${ctx.crmHistory}` : ''}
+${formatInsights(ctx.insights)}
+${formatSummaries(ctx.conversationSummaries)}
 
 === INSTRUCCIONES DEL DIRECTOR ===
 ${instructionBlock}
@@ -244,6 +296,17 @@ Responde UNICAMENTE con JSON valido. Sin texto antes ni despues:
 - {"type": "sync_to_crm", "params": {}}
 - {"type": "add_crm_comment", "params": {"comment": "nota interna"}}
 - {"type": "escalate", "params": {"reason": "..."}}
+- {"type": "save_insight", "params": {"category": "need|objection|preference|budget|timeline|decision_maker|competitor|pain_point|positive_signal|personal_detail", "content": "descripcion concisa del insight", "confidence": "high|medium|low"}}
+
+=== REGLAS DE INSIGHTS ===
+Usa "save_insight" para registrar informacion estructurada del cliente que sea NUEVA y relevante:
+- Cuando el cliente mencione una necesidad concreta (ej: "necesito una tienda online")
+- Cuando exprese una objecion (ej: "me parece caro")
+- Cuando mencione presupuesto, plazos, competidores, o quien toma decisiones
+- Cuando notes senales positivas (ej: "me interesa, como pagamos?")
+- Cuando comparta datos personales utiles (ej: "tengo un restaurante en Panama")
+- NO repitas insights que ya aparecen en la seccion INSIGHTS DEL CLIENTE arriba
+- Solo registra insights con evidencia clara en el mensaje actual
 
 === REGLAS DE CRM Y PERFIL ===
 1. Si el cliente comparte su nombre, email, empresa, industria o presupuesto, usa "update_client_profile" para guardarlo INMEDIATAMENTE.
