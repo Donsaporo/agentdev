@@ -816,6 +816,60 @@ async function executeActions(
           }
           break;
         }
+
+        case 'request_project_update': {
+          const contact = await getContact();
+          if (contact?.crm_client_id) {
+            const comment = `[SOLICITUD DE ACTUALIZACION] Cliente pregunta sobre: ${action.params.project_name || 'su proyecto'}. Pregunta: ${action.params.question || 'Estado general del proyecto'}`;
+            await crm.addComment(contact.crm_client_id, comment);
+            await crm.addTimelineEvent({
+              clientId: contact.crm_client_id,
+              eventType: 'otro',
+              title: 'Cliente solicita actualizacion de proyecto via WhatsApp',
+              description: action.params.question || 'Estado general del proyecto',
+              metadata: { conversation_id: conversationId, project_name: action.params.project_name },
+            });
+          }
+          const updateContact = await getContact();
+          notifyDirector({
+            type: 'escalation',
+            contactName: updateContact?.display_name || 'Desconocido',
+            contactPhone: updateContact?.phone_number || '',
+            reason: `Cliente necesita actualizacion de proyecto: ${action.params.project_name || 'N/A'}. Pregunta: ${action.params.question || 'Estado general'}`,
+          }).catch(() => {});
+          break;
+        }
+
+        case 'report_issue': {
+          const contact = await getContact();
+          const severity = action.params.severity || 'medium';
+          const description = action.params.description || 'Problema reportado sin descripcion';
+
+          if (contact?.crm_client_id) {
+            const comment = `[REPORTE DE PROBLEMA - ${severity.toUpperCase()}] ${description}`;
+            await crm.addComment(contact.crm_client_id, comment);
+            await crm.addTimelineEvent({
+              clientId: contact.crm_client_id,
+              eventType: 'otro',
+              title: `Bug/problema reportado por cliente (${severity})`,
+              description,
+              metadata: { conversation_id: conversationId, severity, source: 'whatsapp' },
+            });
+          }
+
+          const issueContact = await getContact();
+          notifyDirector({
+            type: 'escalation',
+            contactName: issueContact?.display_name || 'Desconocido',
+            contactPhone: issueContact?.phone_number || '',
+            reason: `[BUG ${severity.toUpperCase()}] ${description}`,
+          }).catch(() => {});
+
+          if (severity === 'high') {
+            await handleEscalation(supabase, conversationId, contactId, `Problema critico reportado: ${description}`);
+          }
+          break;
+        }
       }
     } catch (err) {
       log.error(`Action ${action.type} failed`, {

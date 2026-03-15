@@ -4,6 +4,8 @@ import { Persona } from './persona-engine.js';
 import { searchKnowledge, getAllInstructions } from './knowledge-search.js';
 import { getClientHistory, getCrmClientData, getMeetingNotesFromCrm, CrmMeetingNote } from '../services/crm.js';
 import { getContactInsights, getConversationSummaries } from '../services/conversation-summarizer.js';
+import { loadPostVentaData, getClientQuotations } from '../services/crm-postventa.js';
+import { formatPostVentaContext, formatPreVentaQuotations } from '../services/crm-postventa-formatter.js';
 
 const log = createLogger('context-builder');
 
@@ -41,6 +43,8 @@ export interface ConversationContext {
   insights: ClientInsight[];
   conversationSummaries: ConversationSummary[];
   meetingHistory: MeetingHistoryEntry[];
+  postVentaContext: string;
+  isPostVenta: boolean;
 }
 
 export interface MeetingHistoryEntry {
@@ -73,25 +77,46 @@ export async function buildContext(
   const crmClientId = contact?.crm_client_id || null;
   let crmHistory = '';
   let meetingHistory: MeetingHistoryEntry[] = [];
+  let postVentaContext = '';
+
+  const leadStage = contact?.lead_stage || 'nuevo';
+  const convCategory = conversation?.category || 'new_lead';
+  const isPostVenta = convCategory === 'support'
+    || convCategory === 'active_client'
+    || leadStage === 'ganado';
 
   const localMeetings = await loadCompletedMeetings(supabase, contactId);
 
   if (crmClientId) {
     try {
-      const [clientData, history, crmMeetingNotes] = await Promise.all([
+      const crmPromises: Promise<unknown>[] = [
         getCrmClientData(crmClientId),
         getClientHistory(crmClientId),
         getMeetingNotesFromCrm(crmClientId),
-      ]);
+      ];
+
+      if (isPostVenta) {
+        crmPromises.push(loadPostVentaData(crmClientId));
+      } else {
+        crmPromises.push(getClientQuotations(crmClientId));
+      }
+
+      const [clientData, history, crmMeetingNotes, extendedData] = await Promise.all(crmPromises) as [
+        Record<string, unknown> | null,
+        Awaited<ReturnType<typeof getClientHistory>>,
+        CrmMeetingNote[],
+        unknown,
+      ];
 
       const parts: string[] = [];
 
       if (clientData) {
-        const cd = clientData as Record<string, unknown>;
+        const cd = clientData;
         if (cd.lead_stage) parts.push(`Etapa CRM: ${cd.lead_stage}`);
         if (cd.estimated_value) parts.push(`Valor estimado: $${cd.estimated_value}`);
         if (cd.next_action) parts.push(`Proxima accion: ${cd.next_action}`);
         if (cd.next_action_date) parts.push(`Fecha proxima accion: ${cd.next_action_date}`);
+        if (cd.notes) parts.push(`Notas del cliente: ${(cd.notes as string).slice(0, 300)}`);
       }
 
       if (history.meetings.length > 0) {
@@ -103,19 +128,28 @@ export async function buildContext(
 
       if (history.timeline.length > 0) {
         parts.push('Actividad reciente:');
-        for (const t of history.timeline.slice(0, 5)) {
-          parts.push(`  - [${t.event_type}] ${t.title}`);
+        for (const t of history.timeline.slice(0, 7)) {
+          const desc = t.description ? `: ${t.description.slice(0, 100)}` : '';
+          parts.push(`  - [${t.event_type}] ${t.title}${desc}`);
         }
       }
 
       if (history.comments.length > 0) {
         parts.push('Notas internas:');
-        for (const c of history.comments.slice(0, 3)) {
+        for (const c of history.comments.slice(0, 5)) {
           parts.push(`  - ${c.comment}`);
         }
       }
 
       crmHistory = parts.join('\n');
+
+      if (isPostVenta) {
+        const pvData = extendedData as Awaited<ReturnType<typeof loadPostVentaData>>;
+        postVentaContext = formatPostVentaContext(pvData);
+      } else {
+        const quotations = extendedData as Awaited<ReturnType<typeof getClientQuotations>>;
+        postVentaContext = formatPreVentaQuotations({ quotations });
+      }
 
       const crmEntries: MeetingHistoryEntry[] = crmMeetingNotes
         .filter((n: CrmMeetingNote) => n.executive_summary)
@@ -187,6 +221,8 @@ export async function buildContext(
     insights,
     conversationSummaries: summaries,
     meetingHistory,
+    postVentaContext,
+    isPostVenta,
   };
 
   log.debug('Context built', {
@@ -195,6 +231,8 @@ export async function buildContext(
     knowledgeChunks: context.knowledge.length,
     instructionCount: context.instructions.length,
     hasCrm: !!crmClientId,
+    isPostVenta,
+    hasPostVentaData: postVentaContext.length > 0,
     insightCount: insights.length,
     summaryCount: summaries.length,
   });

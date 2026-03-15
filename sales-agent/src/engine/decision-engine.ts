@@ -24,7 +24,9 @@ export type AgentActionType =
   | 'sync_to_crm'
   | 'add_crm_comment'
   | 'update_client_profile'
-  | 'save_insight';
+  | 'save_insight'
+  | 'request_project_update'
+  | 'report_issue';
 
 export interface AgentAction {
   type: AgentActionType;
@@ -164,6 +166,7 @@ Fase conversacion: ${conversationPhase} (${messageCount} mensajes)
 ${ctx.crmNotes ? `Notas: ${ctx.crmNotes}` : ''}
 Vinculado al CRM: ${ctx.crmClientId ? 'Si (ID: ' + ctx.crmClientId + ')' : 'No'}
 ${ctx.crmHistory ? `\n=== HISTORIAL CRM ===\n${ctx.crmHistory}` : ''}
+${ctx.postVentaContext ? `\n${ctx.postVentaContext}` : ''}
 ${formatInsights(ctx.insights)}
 ${formatSummaries(ctx.conversationSummaries)}
 ${formatMeetingHistory(ctx.meetingHistory)}
@@ -175,16 +178,50 @@ ${instructionBlock}
 ${knowledgeBlock}
 
 ${isSupport ? `=== MODO SOPORTE POST-VENTA ===
-Este cliente ya es un cliente activo/ganado. Tu comportamiento cambia:
-1. NO intentes vender ni agendar reuniones de ventas
-2. Se servicial y atento. Pregunta en que puedes ayudarle
-3. Si pregunta por el estado de su proyecto o app:
-   - Revisa el HISTORIAL CRM arriba para dar informacion
-   - Si hay datos disponibles, compartelos de forma resumida
-   - Si NO hay informacion suficiente o no puedes responder con certeza: di "Dejame confirmar con el equipo de desarrollo y te aviso" y usa la accion "escalate" con razon "Cliente pregunta sobre proyecto, requiere respuesta de desarrollo"
-4. Puedes ayudar con preguntas generales, facturacion, dominios, hosting
-5. Si necesitan cambios o nuevas funcionalidades, agenda una reunion de seguimiento
-6. Tono: servicial, profesional, no vendedor` : `=== OBJETIVO PRINCIPAL ===
+Este cliente ya es un cliente activo/ganado. Tienes acceso a datos REALES de su proyecto, facturacion y hosting arriba.
+
+COMPORTAMIENTO GENERAL:
+- NO intentes vender ni agendar reuniones de ventas
+- Se servicial, atento y profesional. Tono de soporte, no de vendedor
+- Pregunta en que puedes ayudarle si no es claro
+
+CUANDO PREGUNTE POR SU PROYECTO:
+- Revisa la seccion "ESTADO DE PROYECTOS" arriba
+- Comparte la fase actual del proyecto (ej: "Tu proyecto esta en fase de desarrollo")
+- Menciona los ultimos avances si hay (de project updates)
+- Indica milestones completados vs pendientes si aplica
+- Si hay notas del equipo relevantes, compartelas de forma resumida
+- NUNCA compartas montos del proyecto, costos internos ni datos del desarrollador asignado
+- Si NO hay datos de proyecto o la informacion es vieja (ultimo update hace mas de 2 semanas), usa la accion "request_project_update" para pedir actualizacion al equipo y dile al cliente: "Dejame confirmar el estado mas reciente con el equipo y te aviso"
+
+CUANDO PREGUNTE POR PAGOS O FACTURAS:
+- Revisa la seccion "FACTURACION" arriba
+- Indica el estado de sus facturas: cuanto debe, cuanto ha pagado, fechas de vencimiento
+- Si tiene facturas vencidas o morosas, mencionalo de forma profesional y ofrece ayuda
+- Si pregunta por el monto de un servicio recurrente, compartelo
+- Si necesita una copia de factura o quiere pagar, di que le envias la informacion y usa "escalate" con razon: "Cliente solicita copia de factura / desea realizar pago"
+
+CUANDO PREGUNTE POR SU SITIO WEB, APP O HOSTING:
+- Revisa la seccion "HOSTING Y SERVICIOS" arriba
+- Comparte el dominio, estado del hosting, y tipo de servicio
+- Si reporta que su sitio esta caido o tiene problemas, usa "report_issue" inmediatamente
+
+CUANDO REPORTE UN BUG O PROBLEMA TECNICO:
+- Agradece que lo reporte
+- Usa "report_issue" con la descripcion del problema y severidad (high si afecta funcionamiento, medium si es visual, low si es menor)
+- Dile: "Ya lo registre con el equipo tecnico, van a revisarlo"
+- NO intentes diagnosticar ni dar soluciones tecnicas
+
+CUANDO PIDA CAMBIOS O NUEVAS FUNCIONALIDADES:
+- Registra el pedido con "add_crm_comment"
+- Agenda una reunion de seguimiento para discutir los cambios
+- Di algo como: "Perfecto, agendemos una llamada para revisar esos cambios con el equipo"
+
+CUANDO ESCALAR:
+- Solo escala cuando genuinamente no hay datos disponibles en NINGUNA seccion Y el cliente necesita respuesta
+- Cuando el cliente tenga una queja seria o este molesto
+- Cuando pida hablar con alguien mas
+- Cuando el tema sea renegociacion de precios o alcance` : `=== OBJETIVO PRINCIPAL ===
 Tu meta es AGENDAR UNA REUNION para que el equipo pueda presentar una propuesta.
 Reunion = cierre. Sin reunion = se pierde el cliente.
 Pero NO presiones para agendar de inmediato. Primero entiende su necesidad, genera confianza, y cuando sientas que hay interes real, propone la reunion de forma natural.
@@ -323,6 +360,8 @@ Responde UNICAMENTE con JSON valido. Sin texto antes ni despues:
 - {"type": "add_crm_comment", "params": {"comment": "nota interna"}}
 - {"type": "escalate", "params": {"reason": "..."}}
 - {"type": "save_insight", "params": {"category": "need|objection|preference|budget|timeline|decision_maker|competitor|pain_point|positive_signal|personal_detail", "content": "descripcion concisa del insight", "confidence": "high|medium|low"}}
+- {"type": "request_project_update", "params": {"project_name": "nombre del proyecto", "question": "que quiere saber el cliente"}}
+- {"type": "report_issue", "params": {"description": "descripcion del problema reportado", "severity": "high|medium|low"}}
 
 === REGLAS DE INSIGHTS ===
 Usa "save_insight" para registrar informacion estructurada del cliente que sea NUEVA y relevante:
@@ -352,7 +391,8 @@ Usa "save_insight" para registrar informacion estructurada del cliente que sea N
 - Cliente se queja o esta molesto
 - Situacion fuera de tu conocimiento o capacidad
 - Cliente pide hablar con alguien mas senior
-- Cliente activo pregunta sobre el estado de su proyecto y no tienes informacion suficiente`;
+- Cliente post-venta necesita informacion que NO aparece en ninguna seccion de datos (proyectos, facturas, hosting)
+- Cliente quiere renegociar precios o alcance del proyecto`;
 }
 
 export async function decide(
