@@ -40,7 +40,6 @@ export interface CrmLeadParams {
   phone?: string;
   company?: string;
   notes?: string;
-  source?: string;
   assignedPersonaName?: string;
 }
 
@@ -428,7 +427,6 @@ export async function syncContactToCrm(contact: {
       email: contact.email,
       company: contact.company,
       notes: contact.notes,
-      source: 'whatsapp',
       assignedPersonaName: personaName,
     });
 
