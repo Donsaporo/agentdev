@@ -71,7 +71,7 @@ export async function buildContext(
     searchKnowledge(supabase, incomingMessage),
     getAllInstructions(supabase, persona.id),
     getContactInsights(supabase, contactId),
-    getConversationSummaries(supabase, contactId),
+    getConversationSummaries(supabase, contactId, conversationId),
   ]);
 
   const crmClientId = contact?.crm_client_id || null;

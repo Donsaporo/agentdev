@@ -677,6 +677,45 @@ async function executeActions(
               datetime: action.params.datetime,
               reason: availability.reason,
             });
+
+            const contactForSlots = await supabase
+              .from('whatsapp_contacts')
+              .select('wa_id, phone_number')
+              .eq('id', contactId)
+              .maybeSingle();
+
+            const slotsPhone = contactForSlots?.data?.wa_id || contactForSlots?.data?.phone_number || '';
+            if (slotsPhone) {
+              let fallbackMsg = availability.reason || 'Ese horario no esta disponible.';
+
+              if (availability.suggestedSlots && availability.suggestedSlots.length > 0) {
+                const options = availability.suggestedSlots.slice(0, 3).map((s) => {
+                  const d = new Date(s.start);
+                  return d.toLocaleString('es-PA', {
+                    weekday: 'long',
+                    day: 'numeric',
+                    month: 'long',
+                    hour: 'numeric',
+                    minute: '2-digit',
+                    hour12: true,
+                    timeZone: 'America/Panama',
+                  });
+                });
+                fallbackMsg += '\n\nTe puedo ofrecer estos horarios:\n' + options.map((o, i) => `${i + 1}. ${o}`).join('\n');
+                fallbackMsg += '\n\nCual te funciona mejor?';
+              } else if (availability.suggestedDate) {
+                fallbackMsg += ` Te parece si revisamos opciones para el ${new Date(availability.suggestedDate).toLocaleDateString('es-PA', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'America/Panama' })}?`;
+              }
+
+              const persona = await getOrAssignPersona(supabase, conversationId, contactId);
+              const delay = calculateDelay(fallbackMsg, false);
+              await setTypingIndicator(supabase, conversationId, true);
+              await sleep(delay);
+              await setTypingIndicator(supabase, conversationId, false);
+
+              const fallbackResult = await sendTextMessage(slotsPhone, fallbackMsg);
+              await recordOutbound(supabase, conversationId, contactId, fallbackResult.messageId, fallbackMsg, persona.full_name);
+            }
             break;
           }
 
