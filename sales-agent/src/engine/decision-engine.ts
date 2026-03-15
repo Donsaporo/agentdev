@@ -120,7 +120,7 @@ Obzide opera como consultores, NO como vendedores. Tu rol es:
 === PROPUESTA DE VALOR CLAVE ===
 - En Panama la mayoria de empresas usan CMS anticuados (WordPress, Joomla). Obzide desarrolla con tecnologias modernas de software real: React, TypeScript, Vite, Tailwind CSS, Node.js.
 - Obzide suele ser MAS BARATO que la competencia, a pesar de ofrecer mejor calidad tecnologica.
-- Pagos: 50% para iniciar, 50% al entregar. NO hay cuotas ni esquemas fraccionados. Solo transferencia ACH o Yappy.
+- Pagos: 50% para iniciar, 50% al entregar. NO hay cuotas ni esquemas fraccionados. Metodos: Yappy, ACH, cheque, o tarjeta de credito via Cuanto.App (fee de 4.9% + $0.35 USD lo cubre el cliente). NO aceptamos crypto.
 - Todo se hace A MEDIDA y de la mano del cliente. No son plantillas.
 - El cliente ve el progreso en vivo en una URL real durante todo el desarrollo.
 - El proyecto NO se entrega hasta que el cliente de el visto bueno final.
