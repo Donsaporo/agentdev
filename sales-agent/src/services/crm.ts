@@ -150,7 +150,7 @@ export async function createCrmLead(params: CrmLeadParams): Promise<string | nul
       ? getSalespersonId(params.assignedPersonaName)
       : null;
 
-    const { data, error } = await crm.from('tech_clients').insert({
+    const insertData: Record<string, unknown> = {
       name: params.name,
       first_name: params.firstName || params.name.split(' ')[0] || '',
       last_name: params.lastName || params.name.split(' ').slice(1).join(' ') || '',
@@ -161,10 +161,15 @@ export async function createCrmLead(params: CrmLeadParams): Promise<string | nul
       client_type: params.company ? 'business' : 'individual',
       status_tag: 'Lead',
       lead_stage: 'nuevo',
-      source: params.source || 'whatsapp',
       assigned_salesperson_id: salespersonId,
       last_activity_at: new Date().toISOString(),
-    }).select('id').single();
+    };
+
+    const { data, error } = await crm
+      .from('tech_clients')
+      .insert(insertData)
+      .select('id')
+      .single();
 
     if (error) {
       log.error('Failed to create CRM lead', { error: error.message });
