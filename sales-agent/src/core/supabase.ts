@@ -8,6 +8,11 @@ export function getSupabase(): SupabaseClient {
   if (!mainClient) {
     mainClient = createClient(config.supabase.url, config.supabase.serviceRoleKey, {
       auth: { persistSession: false, autoRefreshToken: false },
+      realtime: {
+        params: {
+          apikey: config.supabase.serviceRoleKey,
+        },
+      },
     });
   }
   return mainClient;

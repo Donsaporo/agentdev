@@ -122,6 +122,11 @@ async function routeMessage(supabase: ReturnType<typeof getSupabase>, msg: Recor
 }
 
 function subscribeToMessages(supabase: ReturnType<typeof getSupabase>) {
+  if (realtimeChannel) {
+    supabase.removeChannel(realtimeChannel);
+    realtimeChannel = null;
+  }
+
   realtimeChannel = supabase
     .channel('sales-agent-messages')
     .on(
@@ -148,10 +153,19 @@ function subscribeToMessages(supabase: ReturnType<typeof getSupabase>) {
     )
     .subscribe((status) => {
       log.info('Realtime subscription status', { status });
+      if (status === 'TIMED_OUT' || status === 'CHANNEL_ERROR') {
+        log.warn('Realtime connection failed, retrying in 5s...', { status });
+        setTimeout(() => subscribeToMessages(supabase), 5000);
+      }
     });
 }
 
 function subscribeToInstructions(supabase: ReturnType<typeof getSupabase>) {
+  if (instructionsChannel) {
+    supabase.removeChannel(instructionsChannel);
+    instructionsChannel = null;
+  }
+
   instructionsChannel = supabase
     .channel('sales-agent-instructions')
     .on(
@@ -166,7 +180,12 @@ function subscribeToInstructions(supabase: ReturnType<typeof getSupabase>) {
         invalidateInstructionsCache();
       }
     )
-    .subscribe();
+    .subscribe((status) => {
+      if (status === 'TIMED_OUT' || status === 'CHANNEL_ERROR') {
+        log.warn('Instructions realtime failed, retrying in 5s...', { status });
+        setTimeout(() => subscribeToInstructions(supabase), 5000);
+      }
+    });
 }
 
 const FOLLOW_UP_INTERVAL = 30 * 60_000;
