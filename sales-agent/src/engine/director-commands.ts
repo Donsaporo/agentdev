@@ -350,6 +350,46 @@ async function handleResumen(
   await reply(directorWaId, lines.join('\n'));
 }
 
+async function handleReiniciar(
+  supabase: SupabaseClient,
+  directorWaId: string,
+  args: string
+) {
+  if (!args) {
+    await reply(directorWaId, 'Uso: $reiniciar <nombre_cliente>\nEjemplo: $reiniciar juan');
+    return;
+  }
+
+  const matches = await searchContacts(supabase, args);
+  if (matches.length === 0) {
+    await reply(directorWaId, `No encontre ningun cliente con "${args}".`);
+    return;
+  }
+
+  if (matches.length > 1) {
+    const list = matches.slice(0, 5).map((m, i) =>
+      `${i + 1}. ${m.display_name}${m.company ? ` (${m.company})` : ''} - ${m.phone_number}`
+    ).join('\n');
+    await reply(directorWaId, `Encontre ${matches.length} resultados. Se mas especifico:\n${list}`);
+    return;
+  }
+
+  const target = matches[0];
+
+  await supabase
+    .from('whatsapp_contacts')
+    .update({ intro_sent: false, lead_stage: 'nuevo' })
+    .eq('id', target.id);
+
+  await supabase
+    .from('whatsapp_conversations')
+    .update({ agent_mode: 'ai', category: 'new_lead' })
+    .eq('id', target.conversationId);
+
+  await reply(directorWaId, `${target.display_name} reiniciado como nuevo. El agente enviara el intro automaticamente cuando escriba.`);
+  log.info('Director reset contact as new', { target: target.display_name, contactId: target.id });
+}
+
 function formatTimeAgo(date: Date): string {
   const diffMs = Date.now() - date.getTime();
   const minutes = Math.floor(diffMs / 60_000);
@@ -382,6 +422,7 @@ export async function handleDirectorCommand(
       '$estado <cliente> - Ver estado de un cliente',
       '$pausar <cliente> - Pausar IA en una conversacion',
       '$reanudar <cliente> - Reactivar IA en una conversacion',
+      '$reiniciar <cliente> - Reiniciar cliente como nuevo (envia intro otra vez)',
       '$resumen - Resumen de conversaciones activas',
       '',
       'Busca clientes por nombre, telefono o empresa.',
@@ -404,6 +445,9 @@ export async function handleDirectorCommand(
       break;
     case 'reanudar':
       await handleReanudar(supabase, msg.directorWaId, parsed.args);
+      break;
+    case 'reiniciar':
+      await handleReiniciar(supabase, msg.directorWaId, parsed.args);
       break;
     case 'resumen':
       await handleResumen(supabase, msg.directorWaId);
