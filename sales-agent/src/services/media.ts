@@ -96,7 +96,7 @@ export async function transcribeAudio(audioBuffer: Buffer, mimeType: string): Pr
 
   try {
     const ext = audioMimeToExt(mimeType);
-    const blob = new Blob([audioBuffer], { type: mimeType });
+    const blob = new Blob([new Uint8Array(audioBuffer)], { type: mimeType });
 
     const formData = new FormData();
     formData.append('file', blob, `audio.${ext}`);

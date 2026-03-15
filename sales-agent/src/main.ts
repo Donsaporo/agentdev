@@ -223,7 +223,8 @@ async function processFollowUps(supabase: ReturnType<typeof getSupabase>) {
     if (!staleConversations || staleConversations.length === 0) return;
 
     for (const conv of staleConversations) {
-      const contact = conv.contact as Record<string, string | number> | null;
+      const rawContact = conv.contact as unknown;
+      const contact = (Array.isArray(rawContact) ? rawContact[0] : rawContact) as Record<string, string | number> | null;
       if (!contact) continue;
 
       const stage = String(contact.lead_stage || 'nuevo');

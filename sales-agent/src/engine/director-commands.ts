@@ -57,7 +57,8 @@ async function searchContacts(
   const matches: ContactMatch[] = [];
 
   for (const conv of conversations) {
-    const contact = conv.contact as Record<string, string> | null;
+    const rawContact = conv.contact as unknown;
+    const contact = (Array.isArray(rawContact) ? rawContact[0] : rawContact) as Record<string, string> | null;
     if (!contact) continue;
 
     const name = (contact.display_name || contact.profile_name || '').toLowerCase();
@@ -73,7 +74,8 @@ async function searchContacts(
       normalized.includes(phone.slice(-7));
 
     if (isMatch) {
-      const persona = conv.persona as Record<string, string> | null;
+      const rawPersona = conv.persona as unknown;
+      const persona = (Array.isArray(rawPersona) ? rawPersona[0] : rawPersona) as Record<string, string> | null;
       matches.push({
         id: contact.id,
         wa_id: contact.wa_id,
@@ -325,7 +327,8 @@ async function handleResumen(
   if (escalated.length > 0) {
     lines.push(`ESCALACIONES (${escalated.length}):`);
     for (const c of escalated) {
-      const contact = c.contact as Record<string, string> | null;
+      const rawContact = c.contact as unknown;
+      const contact = (Array.isArray(rawContact) ? rawContact[0] : rawContact) as Record<string, string> | null;
       const name = contact?.display_name || contact?.phone_number || '?';
       lines.push(`  ! ${name} - ${contact?.lead_stage || '?'}`);
     }
@@ -334,7 +337,8 @@ async function handleResumen(
 
   lines.push(`CONVERSACIONES ACTIVAS (${conversations.length}):`);
   for (const c of conversations) {
-    const contact = c.contact as Record<string, string> | null;
+    const rawContact = c.contact as unknown;
+    const contact = (Array.isArray(rawContact) ? rawContact[0] : rawContact) as Record<string, string> | null;
     const name = contact?.display_name || contact?.phone_number || '?';
     const mode = c.agent_mode === 'ai' ? 'IA' : 'Manual';
     const stage = contact?.lead_stage || '?';
