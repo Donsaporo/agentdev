@@ -72,7 +72,7 @@ async function queuePendingNotification(phone: string, payload: NotificationPayl
 
 async function sendTemplateToDirector(phone: string): Promise<boolean> {
   try {
-    const result = await sendTemplateMessage(phone, 'hey_director', 'es');
+    const result = await sendTemplateMessage(phone, 'hey_director', 'es_PA');
     if (result.success) {
       log.info('Template hey_director sent to director', { phone });
       return true;

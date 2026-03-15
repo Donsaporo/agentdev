@@ -531,11 +531,11 @@ Deno.serve(async (req: Request) => {
 
       console.log(`Webhook received from provider: ${provider}`);
 
-      EdgeRuntime.waitUntil(
-        processIncomingMessages(body, provider).catch((err) =>
-          console.error("Webhook processing error:", err)
-        )
-      );
+      try {
+        await processIncomingMessages(body, provider);
+      } catch (err) {
+        console.error("Webhook processing error:", err);
+      }
 
       return new Response(JSON.stringify({ status: "ok" }), {
         status: 200,

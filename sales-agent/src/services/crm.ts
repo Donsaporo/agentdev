@@ -164,11 +164,21 @@ export async function createCrmLead(params: CrmLeadParams): Promise<string | nul
       last_activity_at: new Date().toISOString(),
     };
 
-    const { data, error } = await crm
+    let { data, error } = await crm
       .from('tech_clients')
       .insert(insertData)
       .select('id')
       .single();
+
+    if (error && error.message?.includes('foreign key') && salespersonId) {
+      log.warn('Salesperson FK invalid, retrying without assignment', { salespersonId });
+      insertData.assigned_salesperson_id = null;
+      ({ data, error } = await crm
+        .from('tech_clients')
+        .insert(insertData)
+        .select('id')
+        .single());
+    }
 
     if (error) {
       log.error('Failed to create CRM lead', { error: error.message });
@@ -195,10 +205,19 @@ export async function updateCrmClient(
       updates.lead_stage = validateStage(updates.lead_stage as string);
     }
 
-    const { error } = await crm
+    let { error } = await crm
       .from('tech_clients')
       .update({ ...updates, last_activity_at: new Date().toISOString() })
       .eq('id', clientId);
+
+    if (error && error.message?.includes('foreign key') && updates.assigned_salesperson_id) {
+      log.warn('Salesperson FK invalid on update, retrying without', { clientId });
+      delete updates.assigned_salesperson_id;
+      ({ error } = await crm
+        .from('tech_clients')
+        .update({ ...updates, last_activity_at: new Date().toISOString() })
+        .eq('id', clientId));
+    }
 
     if (error) {
       log.error('Failed to update CRM client', { clientId, error: error.message });

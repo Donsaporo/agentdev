@@ -407,7 +407,7 @@ async function processFollowUps(supabase: ReturnType<typeof getSupabase>) {
 
         if (!result || (!result.success && result.reason === 'window_expired')) {
           const templateName = TEMPLATE_NAMES[Math.min(newFollowUpCount - 1, TEMPLATE_NAMES.length - 1)];
-          const tplResult = await sendTemplateMessage(waId, templateName, 'es').catch((err) => {
+          const tplResult = await sendTemplateMessage(waId, templateName, 'es_PA').catch((err) => {
             log.error('Follow-up template also failed', { conversationId: conv.id, error: err instanceof Error ? err.message : String(err) });
             return null;
           });
@@ -431,7 +431,7 @@ async function processFollowUps(supabase: ReturnType<typeof getSupabase>) {
       } else {
         const templateName = TEMPLATE_NAMES[Math.min(newFollowUpCount - 1, TEMPLATE_NAMES.length - 1)];
 
-        const tplResult = await sendTemplateMessage(waId, templateName, 'es').catch((err) => {
+        const tplResult = await sendTemplateMessage(waId, templateName, 'es_PA').catch((err) => {
           log.error('Follow-up template send failed', { conversationId: conv.id, error: err instanceof Error ? err.message : String(err) });
           return null;
         });

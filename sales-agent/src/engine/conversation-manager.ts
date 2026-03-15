@@ -253,21 +253,22 @@ async function processMessage(
       const chunks = shouldSplitMessage(sanitized.text);
       const recipientPhone = contact.wa_id || contact.phone_number;
 
-      const { data: convWindow } = await supabase
-        .from('whatsapp_conversations')
-        .select('window_expires_at')
-        .eq('id', msg.conversationId)
+      const { data: contactWindow } = await supabase
+        .from('whatsapp_contacts')
+        .select('last_inbound_at')
+        .eq('id', msg.contactId)
         .maybeSingle();
 
-      const windowExpiresAt = convWindow?.window_expires_at
-        ? new Date(convWindow.window_expires_at as string).getTime()
+      const lastInboundAt = contactWindow?.last_inbound_at
+        ? new Date(contactWindow.last_inbound_at as string).getTime()
         : 0;
-      const windowOpen = windowExpiresAt > Date.now();
+      const hoursSinceInbound = (Date.now() - lastInboundAt) / (1000 * 60 * 60);
+      const windowOpen = hoursSinceInbound < 24;
 
       if (!windowOpen) {
         log.warn('Window closed before send, sending template directly', { conversationId: msg.conversationId });
         try {
-          const tplResult = await sendTemplateMessage(recipientPhone, 'seguimiento_amigable', 'es');
+          const tplResult = await sendTemplateMessage(recipientPhone, 'seguimiento_amigable', 'es_PA');
           if (tplResult.success) {
             await recordOutbound(supabase, msg.conversationId, msg.contactId, tplResult.messageId, '[Template: seguimiento_amigable]', persona.full_name);
           } else {
@@ -321,7 +322,7 @@ async function processMessage(
           if (!result.success && result.reason === 'window_expired') {
             log.warn('Window expired mid-send, falling back to template', { conversationId: msg.conversationId });
             try {
-              const tplResult = await sendTemplateMessage(recipientPhone, 'seguimiento_amigable', 'es');
+              const tplResult = await sendTemplateMessage(recipientPhone, 'seguimiento_amigable', 'es_PA');
               if (tplResult.success) {
                 await recordOutbound(supabase, msg.conversationId, msg.contactId, tplResult.messageId, '[Template: seguimiento_amigable]', persona.full_name);
               } else {

@@ -101,7 +101,7 @@ export async function sendTextMessage(to: string, text: string): Promise<SendRes
 export async function sendTemplateMessage(
   to: string,
   templateName: string,
-  languageCode = 'es',
+  languageCode = 'es_PA',
   components?: unknown[]
 ): Promise<SendResult> {
   const recipient = to.replace(/[\s\-\+\(\)]/g, '');
