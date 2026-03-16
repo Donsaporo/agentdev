@@ -36,15 +36,27 @@ export interface AgentAction {
 
 function extractJson(text: string): string {
   const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (fenceMatch) return fenceMatch[1].trim();
+  if (fenceMatch) return sanitizeJsonString(fenceMatch[1].trim());
 
   const braceStart = text.indexOf('{');
   const braceEnd = text.lastIndexOf('}');
   if (braceStart !== -1 && braceEnd > braceStart) {
-    return text.slice(braceStart, braceEnd + 1);
+    return sanitizeJsonString(text.slice(braceStart, braceEnd + 1));
   }
 
   return text;
+}
+
+function sanitizeJsonString(raw: string): string {
+  let s = raw;
+  s = s.replace(/\/\/[^\n]*/g, '');
+  s = s.replace(/\/\*[\s\S]*?\*\//g, '');
+  s = s.replace(/,\s*([\]}])/g, '$1');
+  s = s.replace(/[\x00-\x1F\x7F]/g, (ch) => {
+    if (ch === '\n' || ch === '\r' || ch === '\t') return ch;
+    return '';
+  });
+  return s;
 }
 
 const INSIGHT_LABELS: Record<string, string> = {
@@ -575,73 +587,100 @@ export async function decide(
         { role: 'user', content: incomingMessage },
       ];
 
-  const response = await callAI(systemPrompt, aiMessages, {
-    maxTokens: 1024,
-    temperature: 0.7,
-    tier: 'primary',
-  });
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let lastModel = '';
+  let lastRawText = '';
 
-  try {
-    const cleaned = extractJson(response.text);
-    const parsed = JSON.parse(cleaned);
-
-    const actions = Array.isArray(parsed.actions)
-      ? parsed.actions.filter(
-          (a: { type?: string }) => a && typeof a.type === 'string'
-        )
-      : [];
-
-    const decision: AgentDecision = {
-      responseText: parsed.response_text || '',
-      actions: actions as AgentAction[],
-      reasoning: parsed.reasoning || '',
-      shouldEscalate: parsed.should_escalate || false,
-      escalationReason: parsed.escalation_reason || '',
-      inputTokens: response.inputTokens,
-      outputTokens: response.outputTokens,
-      model: response.model,
-    };
-
-    log.info('Decision made', {
-      contact: ctx.contactName,
-      stage: ctx.leadStage,
-      actions: decision.actions.length,
-      escalate: decision.shouldEscalate,
-      tokens: decision.inputTokens + decision.outputTokens,
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const response = await callAI(systemPrompt, aiMessages, {
+      maxTokens: 1024,
+      temperature: attempt === 0 ? 0.7 : 0.3,
+      tier: 'primary',
     });
 
-    return decision;
-  } catch {
-    log.warn('Failed to parse AI response as JSON, using raw text', {
-      responsePreview: response.text.slice(0, 200),
-    });
+    totalInputTokens += response.inputTokens;
+    totalOutputTokens += response.outputTokens;
+    lastModel = response.model;
+    lastRawText = response.text;
 
-    let cleaned = response.text.replace(/```json|```/g, '').trim();
+    try {
+      const cleaned = extractJson(response.text);
+      const parsed = JSON.parse(cleaned);
 
-    const reasoningPrefixes = /^(Let me|I'll|I will|Based on|Reasoning:|Actions:|Analizando|Basandome en|Voy a|Analizar|Here is|Here's)[^\n]*/gim;
-    cleaned = cleaned.replace(reasoningPrefixes, '').trim();
+      const actions = Array.isArray(parsed.actions)
+        ? parsed.actions.filter(
+            (a: { type?: string }) => a && typeof a.type === 'string'
+          )
+        : [];
 
-    const jsonBlockStart = cleaned.indexOf('{');
-    if (jsonBlockStart > 0) {
-      const maybeJson = cleaned.slice(jsonBlockStart);
-      if (/"response_text"|"actions"|"should_escalate"/.test(maybeJson)) {
-        cleaned = cleaned.slice(0, jsonBlockStart).trim();
+      const decision: AgentDecision = {
+        responseText: parsed.response_text || '',
+        actions: actions as AgentAction[],
+        reasoning: parsed.reasoning || '',
+        shouldEscalate: parsed.should_escalate || false,
+        escalationReason: parsed.escalation_reason || '',
+        inputTokens: totalInputTokens,
+        outputTokens: totalOutputTokens,
+        model: response.model,
+      };
+
+      if (attempt > 0) {
+        log.info('Parse succeeded on retry', { attempt, contact: ctx.contactName });
+      }
+
+      log.info('Decision made', {
+        contact: ctx.contactName,
+        stage: ctx.leadStage,
+        actions: decision.actions.length,
+        escalate: decision.shouldEscalate,
+        tokens: totalInputTokens + totalOutputTokens,
+      });
+
+      return decision;
+    } catch {
+      log.warn(`Failed to parse AI response (attempt ${attempt + 1}/2)`, {
+        responsePreview: response.text.slice(0, 300),
+      });
+
+      if (attempt === 0) {
+        aiMessages.push(
+          { role: 'assistant', content: response.text },
+          { role: 'user', content: 'ERROR: Tu respuesta no fue JSON valido. Responde UNICAMENTE con el objeto JSON, sin texto adicional antes ni despues. No uses comentarios ni trailing commas.' }
+        );
       }
     }
-
-    if (cleaned.length < 10 || /"response_text"|"actions"|"should_escalate"/.test(cleaned)) {
-      cleaned = 'Dame un momento por favor.';
-    }
-
-    return {
-      responseText: cleaned,
-      actions: [],
-      reasoning: 'Fallback: could not parse structured response',
-      shouldEscalate: true,
-      escalationReason: 'Respuesta del modelo no pudo ser parseada',
-      inputTokens: response.inputTokens,
-      outputTokens: response.outputTokens,
-      model: response.model,
-    };
   }
+
+  log.warn('All parse attempts failed, using fallback (no escalation)', {
+    responsePreview: lastRawText.slice(0, 300),
+  });
+
+  let cleaned = lastRawText.replace(/```json|```/g, '').trim();
+
+  const reasoningPrefixes = /^(Let me|I'll|I will|Based on|Reasoning:|Actions:|Analizando|Basandome en|Voy a|Analizar|Here is|Here's)[^\n]*/gim;
+  cleaned = cleaned.replace(reasoningPrefixes, '').trim();
+
+  const jsonBlockStart = cleaned.indexOf('{');
+  if (jsonBlockStart > 0) {
+    const maybeJson = cleaned.slice(jsonBlockStart);
+    if (/"response_text"|"actions"|"should_escalate"/.test(maybeJson)) {
+      cleaned = cleaned.slice(0, jsonBlockStart).trim();
+    }
+  }
+
+  if (cleaned.length < 10 || /"response_text"|"actions"|"should_escalate"/.test(cleaned)) {
+    cleaned = 'Dame un momento por favor, ya te respondo.';
+  }
+
+  return {
+    responseText: cleaned,
+    actions: [],
+    reasoning: 'Fallback: could not parse structured response after 2 attempts',
+    shouldEscalate: false,
+    escalationReason: '',
+    inputTokens: totalInputTokens,
+    outputTokens: totalOutputTokens,
+    model: lastModel,
+  };
 }
