@@ -43,7 +43,7 @@ function tokenMatch(haystack: string, query: string): boolean {
   const normalizedFull = query.toLowerCase().replace(/[+\-\s()&.,]/g, '');
   if (haystack.includes(normalizedFull)) return true;
 
-  const tokens = query.toLowerCase().replace(/[&.,]/g, ' ').split(/\s+/).filter((t) => t.length >= 2);
+  const tokens = query.toLowerCase().replace(/[&.,()]/g, ' ').split(/\s+/).filter((t) => t.length >= 2);
   if (tokens.length === 0) return false;
 
   return tokens.every((token) => haystack.includes(token));
@@ -83,7 +83,7 @@ async function searchContacts(
     const isMatch =
       tokenMatch(name, query) ||
       tokenMatch(company, query) ||
-      (name + ' ' + company).includes(query.toLowerCase().replace(/[&.,]/g, '').trim()) ||
+      (name + ' ' + company).includes(query.toLowerCase().replace(/[&.,()]/g, ' ').replace(/\s+/g, ' ').trim()) ||
       phone.includes(normalizedPhone) ||
       waId.includes(normalizedPhone) ||
       normalizedPhone.includes(phone.slice(-7));

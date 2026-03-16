@@ -67,7 +67,7 @@ function tokenMatch(haystack: string, query: string): boolean {
   const normalizedFull = query.toLowerCase().replace(/[+\-\s()&.,]/g, '');
   if (haystack.includes(normalizedFull)) return true;
 
-  const tokens = query.toLowerCase().replace(/[&.,]/g, ' ').split(/\s+/).filter((t) => t.length >= 2);
+  const tokens = query.toLowerCase().replace(/[&.,()]/g, ' ').split(/\s+/).filter((t) => t.length >= 2);
   if (tokens.length === 0) return false;
 
   return tokens.every((token) => haystack.includes(token));
@@ -104,7 +104,7 @@ async function searchContact(
       const isMatch =
         tokenMatch(name, query) ||
         tokenMatch(company, query) ||
-        (name + ' ' + company).includes(query.toLowerCase().replace(/[&.,]/g, '').trim()) ||
+        (name + ' ' + company).includes(query.toLowerCase().replace(/[&.,()]/g, ' ').replace(/\s+/g, ' ').trim()) ||
         phone.includes(normalizedPhone) ||
         waId.includes(normalizedPhone) ||
         normalizedPhone.includes(phone.slice(-7));
@@ -467,7 +467,7 @@ Responde SOLO con JSON valido:
   "response_text": "tu mensaje al director (WhatsApp, corto y directo)",
   "action": null | {
     "type": "send_message|schedule_meeting_request|schedule_meeting_direct|update_stage|pause_ai|resume_ai",
-    "contact_query": "nombre/telefono para buscar al contacto",
+    "contact_query": "nombre o empresa del contacto en texto simple, sin parentesis ni formato especial (ej: 'Dumani' o 'Juan Perez')",
     "params": {}
   }
 }
