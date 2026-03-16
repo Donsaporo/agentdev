@@ -4,6 +4,7 @@ import { sendTextMessage } from '../services/whatsapp.js';
 import { callAISecondary } from '../services/ai.js';
 import { getOrAssignPersona } from './persona-engine.js';
 import { handleDirectorConversation } from './director-agent.js';
+import { searchClientsByName } from '../services/crm.js';
 
 const log = createLogger('director-commands');
 
@@ -28,6 +29,8 @@ interface ContactMatch {
   personaName: string | null;
   lastMessageAt: string;
   unreadCount: number;
+  source: 'whatsapp' | 'crm';
+  crmClientId?: string;
 }
 
 async function reply(directorWaId: string, text: string) {
@@ -102,7 +105,40 @@ async function searchContacts(
         personaName: persona?.full_name || null,
         lastMessageAt: conv.last_message_at as string,
         unreadCount: conv.unread_count as number,
+        source: 'whatsapp',
       });
+    }
+  }
+
+  if (matches.length === 0) {
+    try {
+      const crmResults = await searchClientsByName(query);
+      const matchedPhones = new Set(matches.map((m) => m.phone_number.replace(/\D/g, '')));
+
+      for (const client of crmResults) {
+        const cleanPhone = (client.phone || '').replace(/\D/g, '');
+        if (cleanPhone && matchedPhones.has(cleanPhone)) continue;
+
+        matches.push({
+          id: client.id,
+          wa_id: client.phone || '',
+          phone_number: client.phone || '',
+          display_name: client.name || client.company_name || client.phone || '?',
+          company: client.company_name || '',
+          lead_stage: client.lead_stage || 'nuevo',
+          email: client.email || '',
+          conversationId: '',
+          conversationCategory: '',
+          agentMode: '',
+          personaName: null,
+          lastMessageAt: '',
+          unreadCount: 0,
+          source: 'crm',
+          crmClientId: client.id,
+        });
+      }
+    } catch (err) {
+      log.warn('CRM search fallback failed', { error: err instanceof Error ? err.message : String(err) });
     }
   }
 
@@ -413,10 +449,16 @@ async function handleReunion(
   const endMin = m + 30;
   const endTime = `${String(h + Math.floor(endMin / 60)).padStart(2, '0')}:${String(endMin % 60).padStart(2, '0')}`;
 
+  const phoneForScheduling = target.wa_id || target.phone_number;
+  if (!phoneForScheduling) {
+    await reply(directorWaId, `El cliente "${target.display_name}" no tiene telefono registrado. No se puede agendar.`);
+    return;
+  }
+
   const { scheduleMeetingViaCrm } = await import('../services/calendar.js');
 
   const result = await scheduleMeetingViaCrm({
-    phoneNumber: target.wa_id || target.phone_number,
+    phoneNumber: phoneForScheduling,
     title: `Reunion Obzide - ${target.display_name}`,
     date,
     startTime,
@@ -433,20 +475,23 @@ async function handleReunion(
     return;
   }
 
-  await supabase.from('sales_meetings').insert({
-    conversation_id: target.conversationId,
-    contact_id: target.id,
-    google_event_id: result.googleEventId || null,
-    title: `Reunion Obzide - ${target.display_name}`,
-    start_time: new Date(`${date}T${startTime}:00-05:00`).toISOString(),
-    end_time: new Date(`${date}T${endTime}:00-05:00`).toISOString(),
-    meet_link: result.meetLink || null,
-    status: 'scheduled',
-  });
+  if (target.conversationId) {
+    await supabase.from('sales_meetings').insert({
+      conversation_id: target.conversationId,
+      contact_id: target.id,
+      google_event_id: result.googleEventId || null,
+      title: `Reunion Obzide - ${target.display_name}`,
+      start_time: new Date(`${date}T${startTime}:00-05:00`).toISOString(),
+      end_time: new Date(`${date}T${endTime}:00-05:00`).toISOString(),
+      meet_link: result.meetLink || null,
+      status: 'scheduled',
+    });
+  }
 
+  const sourceLabel = target.source === 'crm' ? ' (desde CRM)' : '';
   const typeLabel = meetingType === 'presencial' ? 'Presencial - PH Plaza Real' : `Virtual${result.meetLink ? ': ' + result.meetLink : ''}`;
-  await reply(directorWaId, `Reunion agendada:\n${target.display_name}\n${date} ${startTime}-${endTime}\n${typeLabel}`);
-  log.info('Director scheduled meeting directly', { target: target.display_name, date, startTime });
+  await reply(directorWaId, `Reunion agendada:\n${target.display_name}${sourceLabel}\n${date} ${startTime}-${endTime}\n${typeLabel}`);
+  log.info('Director scheduled meeting directly', { target: target.display_name, date, startTime, source: target.source });
 }
 
 async function handleAyuda(directorWaId: string) {

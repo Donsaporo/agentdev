@@ -4,6 +4,7 @@ import { callAISecondary } from '../services/ai.js';
 import { sendTextMessage } from '../services/whatsapp.js';
 import { getOrAssignPersona } from './persona-engine.js';
 import { scheduleMeetingViaCrm } from '../services/calendar.js';
+import { searchClientsByName } from '../services/crm.js';
 
 const log = createLogger('director-agent');
 
@@ -75,7 +76,7 @@ function tokenMatch(haystack: string, query: string): boolean {
 async function searchContact(
   supabase: SupabaseClient,
   query: string
-): Promise<{ contact: Record<string, string>; conversationId: string; personaName: string } | null> {
+): Promise<{ contact: Record<string, string>; conversationId: string; personaName: string; source: 'whatsapp' | 'crm' } | null> {
   const normalizedPhone = query.replace(/[+\-\s()]/g, '');
 
   const { data: conversations } = await supabase
@@ -89,35 +90,61 @@ async function searchContact(
     .order('last_message_at', { ascending: false })
     .limit(100);
 
-  if (!conversations) return null;
+  if (conversations) {
+    for (const conv of conversations) {
+      const rawContact = conv.contact as unknown;
+      const contact = (Array.isArray(rawContact) ? rawContact[0] : rawContact) as Record<string, string> | null;
+      if (!contact) continue;
 
-  for (const conv of conversations) {
-    const rawContact = conv.contact as unknown;
-    const contact = (Array.isArray(rawContact) ? rawContact[0] : rawContact) as Record<string, string> | null;
-    if (!contact) continue;
+      const name = (contact.display_name || contact.profile_name || '').toLowerCase();
+      const company = (contact.company || '').toLowerCase();
+      const phone = (contact.phone_number || '').replace(/[+\-\s()]/g, '');
+      const waId = (contact.wa_id || '').replace(/[+\-\s()]/g, '');
 
-    const name = (contact.display_name || contact.profile_name || '').toLowerCase();
-    const company = (contact.company || '').toLowerCase();
-    const phone = (contact.phone_number || '').replace(/[+\-\s()]/g, '');
-    const waId = (contact.wa_id || '').replace(/[+\-\s()]/g, '');
+      const isMatch =
+        tokenMatch(name, query) ||
+        tokenMatch(company, query) ||
+        (name + ' ' + company).includes(query.toLowerCase().replace(/[&.,]/g, '').trim()) ||
+        phone.includes(normalizedPhone) ||
+        waId.includes(normalizedPhone) ||
+        normalizedPhone.includes(phone.slice(-7));
 
-    const isMatch =
-      tokenMatch(name, query) ||
-      tokenMatch(company, query) ||
-      (name + ' ' + company).includes(query.toLowerCase().replace(/[&.,]/g, '').trim()) ||
-      phone.includes(normalizedPhone) ||
-      waId.includes(normalizedPhone) ||
-      normalizedPhone.includes(phone.slice(-7));
+      if (isMatch) {
+        const rawPersona = conv.persona as unknown;
+        const persona = (Array.isArray(rawPersona) ? rawPersona[0] : rawPersona) as Record<string, string> | null;
+        return {
+          contact,
+          conversationId: conv.id as string,
+          personaName: persona?.full_name || '',
+          source: 'whatsapp',
+        };
+      }
+    }
+  }
 
-    if (isMatch) {
-      const rawPersona = conv.persona as unknown;
-      const persona = (Array.isArray(rawPersona) ? rawPersona[0] : rawPersona) as Record<string, string> | null;
+  try {
+    const crmResults = await searchClientsByName(query);
+    if (crmResults.length > 0) {
+      const client = crmResults[0];
       return {
-        contact,
-        conversationId: conv.id as string,
-        personaName: persona?.full_name || '',
+        contact: {
+          id: client.id,
+          wa_id: client.phone || '',
+          phone_number: client.phone || '',
+          display_name: client.name || '',
+          company: client.company_name || '',
+          lead_stage: client.lead_stage || 'nuevo',
+          email: client.email || '',
+          profile_name: client.name || '',
+          crm_client_id: client.id,
+        },
+        conversationId: '',
+        personaName: '',
+        source: 'crm',
       };
     }
+  } catch (err) {
+    log.warn('CRM search fallback failed in director-agent', { error: err instanceof Error ? err.message : String(err) });
   }
 
   return null;
@@ -503,7 +530,18 @@ ETAPAS VALIDAS: nuevo, en_proceso, demo_solicitada, cotizacion_enviada, por_cerr
         return;
       }
 
-      const persona = await getOrAssignPersona(supabase, found.conversationId, found.contact.id);
+      const isCrmOnly = found.source === 'crm';
+      const needsWhatsApp = ['send_message', 'schedule_meeting_request', 'pause_ai', 'resume_ai'].includes(parsed.action.type);
+
+      if (isCrmOnly && needsWhatsApp && !found.contact.wa_id && !found.contact.phone_number) {
+        await reply(directorWaId, `${found.contact.display_name} solo existe en el CRM y no tiene telefono. No puedo enviar mensajes por WhatsApp.`);
+        return;
+      }
+
+      let persona = { full_name: 'Agente', communication_style: '', formality_level: '' };
+      if (found.conversationId) {
+        persona = await getOrAssignPersona(supabase, found.conversationId, found.contact.id);
+      }
       const actionParams = parsed.action.params || {};
 
       switch (parsed.action.type) {

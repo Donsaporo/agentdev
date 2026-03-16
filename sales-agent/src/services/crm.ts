@@ -99,6 +99,54 @@ export function getSalespersonId(personaName: string): string | null {
   return PERSONA_TO_SALESPERSON[normalized] || null;
 }
 
+export interface CrmClientMatch {
+  id: string;
+  name: string;
+  phone: string;
+  email: string;
+  company_name: string;
+  lead_stage: string;
+}
+
+export async function searchClientsByName(query: string): Promise<CrmClientMatch[]> {
+  if (!isAvailable()) return [];
+  const crm = getCrmSupabase()!;
+
+  try {
+    const normalizedQuery = stripAccents(query.toLowerCase().trim());
+    const tokens = normalizedQuery.split(/\s+/).filter((t) => t.length >= 2);
+    if (tokens.length === 0) return [];
+
+    const ilikePattern = `%${tokens.join('%')}%`;
+    const normalizedPhone = query.replace(/\D/g, '');
+
+    let orFilter = `name.ilike.${ilikePattern},company_name.ilike.${ilikePattern}`;
+    if (normalizedPhone.length >= 4) {
+      orFilter += `,phone.ilike.%${normalizedPhone}%`;
+    }
+
+    const { data } = await crm
+      .from('tech_clients')
+      .select('id, name, phone, email, company_name, lead_stage')
+      .or(orFilter)
+      .limit(10);
+
+    if (!data || data.length === 0) return [];
+
+    return data.map((c) => ({
+      id: c.id,
+      name: c.name || '',
+      phone: c.phone || '',
+      email: c.email || '',
+      company_name: c.company_name || '',
+      lead_stage: c.lead_stage || 'nuevo',
+    }));
+  } catch (err) {
+    log.error('CRM searchClientsByName error', { error: err instanceof Error ? err.message : String(err) });
+    return [];
+  }
+}
+
 export async function findClientByPhone(phone: string): Promise<string | null> {
   if (!isAvailable()) return null;
   const crm = getCrmSupabase()!;
