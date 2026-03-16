@@ -8,6 +8,29 @@ import { searchClientsByName } from '../services/crm.js';
 
 const log = createLogger('director-agent');
 
+function getPanamaDateTime(): string {
+  const now = new Date();
+  const dayNames = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado'];
+  const monthNames = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Panama',
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  }).formatToParts(now);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value || '';
+  const day = parseInt(get('day'));
+  const month = parseInt(get('month')) - 1;
+  const year = get('year');
+  const time = `${get('hour')}:${get('minute')} ${get('dayPeriod')}`;
+  const weekday = dayNames[new Date(now.toLocaleString('en-US', { timeZone: 'America/Panama' })).getDay()];
+  const monthName = monthNames[month];
+  return `Hoy es ${weekday} ${day} de ${monthName} de ${year}, ${time} (hora de Panama)`;
+}
+
 const CONFIRMATION_WORDS = ['si', 'sí', 'ok', 'dale', 'listo', 'confirmo', 'perfecto', 'hazlo', 'envía', 'envia', 'envialo', 'yes', 'adelante', 'va'];
 const REJECTION_WORDS = ['no', 'cancela', 'cancelar', 'cambiar', 'cambia', 'detener', 'para', 'espera'];
 
@@ -446,7 +469,13 @@ export async function handleDirectorConversation(params: DirectorAgentParams): P
       getDirectorHistory(supabase, directorWaId),
     ]);
 
+    const dateTimeStr = getPanamaDateTime();
+
     const systemPrompt = `Eres el Centro de Comando de los agentes de ventas de Obzide Tech. El director de ventas te habla por WhatsApp y tu le ayudas a gestionar su equipo de agentes IA.
+
+=== FECHA Y HORA ACTUAL ===
+${dateTimeStr}
+Usa esta referencia para todas las fechas. Cuando el director diga "manana", "el martes", "esta semana", etc., calcula la fecha YYYY-MM-DD correcta basandote en la fecha de hoy. NUNCA inventes fechas de anos pasados.
 
 CONVERSACIONES ACTIVAS:
 ${conversationContext}
