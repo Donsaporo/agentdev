@@ -1,0 +1,236 @@
+{
+  "version": "1.0",
+  "base_url": "https://sweuranqqzssntzxkcbf.supabase.co/functions/v1",
+  "auth_header": "Authorization: Bearer <SUPABASE_ANON_KEY>",
+  "recommended_flow": [
+    "1. When a user mentions a client or you detect a phone number, call get-client-context to load full context about that client.",
+    "2. Use the context (projects, meetings, quotations, pending tasks, insights) to have an informed conversation.",
+    "3. When the user wants to schedule a meeting, call schedule-meeting-from-whatsapp with the details.",
+    "4. If there are conflicts, inform the user and suggest alternative times based on the conflict details returned.",
+    "5. If the meeting is created successfully, share the Google Meet link (if virtual) and confirm the details."
+  ],
+  "endpoints": {
+    "get-client-context": {
+      "url": "/get-client-context",
+      "method": "POST",
+      "description": "Retrieves complete context about a client: profile, AI-generated insights, meeting history with summaries, projects, quotations, and pending tasks. Use this to prepare for conversations or before scheduling meetings.",
+      "request": {
+        "content_type": "application/json",
+        "fields": {
+          "client_id": {
+            "type": "string (uuid)",
+            "required": false,
+            "description": "Direct client ID if known. Either client_id or phone must be provided."
+          },
+          "phone": {
+            "type": "string",
+            "required": false,
+            "description": "Phone number of the client. Supports any format: local, with country code, with +, with dashes/spaces. The system normalizes and matches automatically across all known formats."
+          }
+        }
+      },
+      "response_success": {
+        "success": true,
+        "context": {
+          "client": {
+            "id": "uuid",
+            "name": "string",
+            "company": "string or null",
+            "email": "string or null",
+            "phone": "string or null",
+            "status": "activo | inactivo | vip | moroso | nuevo",
+            "lead_stage": "nuevo | contactado | en_proceso | propuesta_enviada | ganado | perdido",
+            "estimated_value": "number or null",
+            "next_action": "string or null - what needs to be done next",
+            "next_action_date": "date string or null",
+            "notes": "string or null - general notes about client",
+            "last_activity": "timestamp or null"
+          },
+          "insights": {
+            "description": "Object keyed by insight type (preference, need, behavior, feedback, general). Each contains an array of insights.",
+            "example": {
+              "preference": [
+                {
+                  "title": "string",
+                  "content": "string - the insight text",
+                  "confidence": "number 0-1",
+                  "source": "meeting | interaction | manual",
+                  "date": "timestamp"
+                }
+              ]
+            }
+          },
+          "insights_total": "number - total insights count",
+          "meetings": [
+            {
+              "id": "uuid",
+              "title": "string",
+              "date": "timestamp",
+              "status": "programada | completada | cancelada",
+              "type": "virtual | presencial",
+              "project_id": "uuid or null",
+              "summary": "string or null - AI-generated executive summary",
+              "key_points": ["array of strings - main discussion points"],
+              "decisions": ["array of strings - decisions made"],
+              "sentiment": "string or null - overall meeting sentiment"
+            }
+          ],
+          "projects": [
+            {
+              "id": "uuid",
+              "name": "string",
+              "status": "lead | propuesta | negociacion | aprobado | en_desarrollo | revision | entregado | cerrado | cancelado",
+              "type": "string or null",
+              "value": "number or null",
+              "deadline": "date or null",
+              "notes": "string or null",
+              "start_date": "date or null",
+              "delivered_at": "date or null"
+            }
+          ],
+          "quotations": [
+            {
+              "id": "uuid",
+              "number": "string - quotation number like COT-001",
+              "status": "borrador | enviada | aprobada | rechazada | vencida",
+              "total": "number",
+              "date": "timestamp"
+            }
+          ],
+          "pending_tasks": [
+            {
+              "id": "uuid",
+              "title": "string",
+              "status": "pendiente | en_progreso",
+              "priority": "alta | media | baja",
+              "due_date": "date or null",
+              "source": "string - where the task originated"
+            }
+          ]
+        }
+      },
+      "response_no_client": {
+        "error": "no_client_found",
+        "message": "No se encontro un cliente con ese telefono."
+      }
+    },
+    "schedule-meeting-from-whatsapp": {
+      "url": "/schedule-meeting-from-whatsapp",
+      "method": "POST",
+      "description": "Schedules a meeting for a client. Validates against team time blocks, work schedules, and existing meetings. Creates the event in Google Calendar (info@obzide.com) with optional Google Meet link, and saves it to the database.",
+      "request": {
+        "content_type": "application/json",
+        "fields": {
+          "phone_number": {
+            "type": "string",
+            "required": true,
+            "description": "Phone number of the client to identify them. Same flexible format as get-client-context."
+          },
+          "title": {
+            "type": "string",
+            "required": true,
+            "description": "Title of the meeting. Example: 'Revision de proyecto web - ClientName'"
+          },
+          "date": {
+            "type": "string",
+            "required": true,
+            "description": "Date in YYYY-MM-DD format. Example: '2026-03-20'"
+          },
+          "start_time": {
+            "type": "string",
+            "required": true,
+            "description": "Start time in HH:MM format (24h, Panama timezone). Example: '10:00'"
+          },
+          "end_time": {
+            "type": "string",
+            "required": true,
+            "description": "End time in HH:MM format (24h, Panama timezone). Example: '11:00'"
+          },
+          "meeting_type": {
+            "type": "string",
+            "required": false,
+            "default": "virtual",
+            "description": "'virtual' or 'presencial'. Virtual meetings auto-generate a Google Meet link."
+          },
+          "description": {
+            "type": "string",
+            "required": false,
+            "description": "Meeting agenda or description."
+          },
+          "location": {
+            "type": "string",
+            "required": false,
+            "description": "Physical location for in-person meetings."
+          },
+          "attendees": {
+            "type": "string[]",
+            "required": false,
+            "description": "Array of email addresses to invite as attendees."
+          },
+          "create_meet": {
+            "type": "boolean",
+            "required": false,
+            "default": true,
+            "description": "Whether to generate a Google Meet link. Only applies when meeting_type is 'virtual'."
+          },
+          "project_id": {
+            "type": "string (uuid)",
+            "required": false,
+            "description": "Link the meeting to an existing project by its ID."
+          }
+        }
+      },
+      "response_success": {
+        "success": true,
+        "meeting_id": "uuid - the created meeting's ID",
+        "google_event_id": "string or null - Google Calendar event ID",
+        "meet_link": "string or null - Google Meet URL for virtual meetings",
+        "client": {
+          "id": "uuid",
+          "name": "string"
+        },
+        "scheduled": {
+          "date": "YYYY-MM-DD",
+          "start_time": "HH:MM",
+          "end_time": "HH:MM"
+        }
+      },
+      "response_conflict": {
+        "success": false,
+        "reason": "schedule_conflict",
+        "conflicts": [
+          {
+            "type": "recurring_block | one_time_block | existing_meeting | outside_work_hours",
+            "label": "string - description of the conflict",
+            "time_range": "string - the conflicting time range or explanation"
+          }
+        ],
+        "client": {
+          "id": "uuid",
+          "name": "string"
+        }
+      },
+      "response_no_client": {
+        "success": false,
+        "reason": "no_client_found",
+        "message": "No se encontro un cliente con ese numero de telefono."
+      },
+      "response_missing_fields": {
+        "success": false,
+        "reason": "missing_fields",
+        "message": "Campos requeridos: phone_number, title, date, start_time, end_time"
+      }
+    }
+  },
+  "work_schedule": {
+    "description": "Default work schedule (Panama timezone, UTC-5)",
+    "monday": "08:00 - 17:00",
+    "tuesday": "08:00 - 17:00",
+    "wednesday": "08:00 - 16:00",
+    "thursday": "08:00 - 16:00",
+    "friday": "08:00 - 16:00",
+    "saturday": "Off",
+    "sunday": "Off",
+    "note": "This schedule may be updated by admins. The API always checks the live schedule."
+  }
+}
