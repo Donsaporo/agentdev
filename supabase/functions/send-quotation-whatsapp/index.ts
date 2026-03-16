@@ -31,7 +31,7 @@ function getCrmSupabase() {
 
 const STAGE_ORDER = [
   "nuevo",
-  "en_negociacion",
+  "en_proceso",
   "demo_solicitada",
   "cotizacion_enviada",
   "por_cerrar",

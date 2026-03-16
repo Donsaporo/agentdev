@@ -15,6 +15,7 @@ import { scheduleMeetingViaCrm, type CrmScheduleResult } from '../services/calen
 import { joinMeeting } from '../services/recall.js';
 import { addCrmClientInsight } from '../services/crm-postventa.js';
 import * as crm from '../services/crm.js';
+import { classifyName } from '../services/name-classifier.js';
 import { shouldSummarize, summarizeConversation, saveInsight } from '../services/conversation-summarizer.js';
 
 const log = createLogger('conversation-manager');
@@ -969,13 +970,23 @@ async function autoSyncToCrm(supabase: SupabaseClient, contactId: string, person
   const hasName = !!(contact.display_name || contact.profile_name);
   if (!hasName) return;
 
+  const rawName = contact.display_name || contact.profile_name || '';
+  const classification = await classifyName(rawName).catch((err) => {
+    log.warn('Name classification failed, using raw name', { error: err instanceof Error ? err.message : String(err) });
+    return null;
+  });
+
   const clientId = await crm.syncContactToCrm({
     phone_number: contact.phone_number || '',
-    display_name: contact.display_name || '',
+    display_name: classification?.cleanName || contact.display_name || '',
     profile_name: contact.profile_name || '',
     email: contact.email,
     company: contact.company,
     notes: contact.notes,
+    firstName: classification?.firstName,
+    lastName: classification?.lastName,
+    clientType: classification?.clientType,
+    companyName: classification?.companyName,
   }, personaName);
 
   if (clientId) {
@@ -984,7 +995,11 @@ async function autoSyncToCrm(supabase: SupabaseClient, contactId: string, person
       .update({ crm_client_id: clientId })
       .eq('id', contactId);
 
-    log.info('Auto-synced contact to CRM', { contactId, crmClientId: clientId });
+    log.info('Auto-synced contact to CRM', {
+      contactId,
+      crmClientId: clientId,
+      classifiedAs: classification?.clientType || 'unknown',
+    });
   }
 }
 

@@ -36,8 +36,7 @@ interface WindowStats {
 
 const STAGE_PIPELINE = [
   { key: 'nuevo', label: 'Nuevo', color: 'bg-slate-500' },
-  { key: 'contactado', label: 'Contactado', color: 'bg-blue-500' },
-  { key: 'en_negociacion', label: 'Negociacion', color: 'bg-cyan-500' },
+  { key: 'en_proceso', label: 'En Proceso', color: 'bg-blue-500' },
   { key: 'demo_solicitada', label: 'Demo', color: 'bg-amber-500' },
   { key: 'cotizacion_enviada', label: 'Cotizacion', color: 'bg-sky-500' },
   { key: 'por_cerrar', label: 'Por Cerrar', color: 'bg-orange-500' },
@@ -63,6 +62,8 @@ export default function DirectorMetrics() {
 
   useEffect(() => {
     loadMetrics();
+    const interval = setInterval(loadMetrics, 60_000);
+    return () => clearInterval(interval);
   }, []);
 
   async function loadMetrics() {

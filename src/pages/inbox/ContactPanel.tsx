@@ -22,8 +22,7 @@ import type { WhatsAppConversation, WhatsAppContact, SalesAgentPersona, Conversa
 
 const LEAD_STAGES: { value: LeadStage; label: string; color: string }[] = [
   { value: 'nuevo', label: 'Nuevo', color: 'bg-slate-500/20 text-slate-400' },
-  { value: 'contactado', label: 'Contactado', color: 'bg-blue-500/20 text-blue-400' },
-  { value: 'en_negociacion', label: 'En Negociacion', color: 'bg-cyan-500/20 text-cyan-400' },
+  { value: 'en_proceso', label: 'En Proceso', color: 'bg-blue-500/20 text-blue-400' },
   { value: 'demo_solicitada', label: 'Demo Solicitada', color: 'bg-amber-500/20 text-amber-400' },
   { value: 'cotizacion_enviada', label: 'Cotizacion Enviada', color: 'bg-sky-500/20 text-sky-400' },
   { value: 'por_cerrar', label: 'Por Cerrar', color: 'bg-orange-500/20 text-orange-400' },

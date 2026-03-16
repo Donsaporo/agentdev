@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { ToggleLeft, ToggleRight, CreditCard as Edit2, Save, X, Loader2 } from 'lucide-react';
+import { ToggleLeft, ToggleRight, Pencil, Save, X, Loader2 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { useToast } from '../../contexts/ToastContext';
 import type { SalesAgentPersona } from '../../lib/types';
@@ -116,7 +116,7 @@ export default function PersonaManager() {
                       onClick={() => startEdit(persona)}
                       className="p-1.5 rounded-lg text-slate-500 hover:text-slate-200 hover:bg-white/[0.04] transition-all"
                     >
-                      <Edit2 className="w-3.5 h-3.5" />
+                      <Pencil className="w-3.5 h-3.5" />
                     </button>
                   )}
                   <button

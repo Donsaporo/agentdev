@@ -96,10 +96,8 @@ export default function EscalationQueue() {
           {escalations.map((esc) => {
             const priority = PRIORITY_STYLES[esc.priority];
             const status = STATUS_STYLES[esc.status];
-            const contactName =
-              (esc.contact as unknown as { display_name: string; phone_number: string })?.display_name ||
-              (esc.contact as unknown as { display_name: string; phone_number: string })?.phone_number ||
-              'Desconocido';
+            const c = esc.contact as unknown as { display_name?: string; phone_number?: string } | undefined;
+            const contactName = c?.display_name || c?.phone_number || 'Desconocido';
 
             return (
               <div key={esc.id} className="glass-card p-4">

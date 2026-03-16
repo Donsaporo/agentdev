@@ -274,8 +274,7 @@ export interface WhatsAppBusinessAccount {
 
 export type LeadStage =
   | 'nuevo'
-  | 'contactado'
-  | 'en_negociacion'
+  | 'en_proceso'
   | 'demo_solicitada'
   | 'cotizacion_enviada'
   | 'por_cerrar'

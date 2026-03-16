@@ -3,6 +3,7 @@ import { createLogger } from '../core/logger.js';
 import { sendTextMessage } from '../services/whatsapp.js';
 import { callAISecondary } from '../services/ai.js';
 import { getOrAssignPersona } from './persona-engine.js';
+import { handleDirectorConversation } from './director-agent.js';
 
 const log = createLogger('director-commands');
 
@@ -428,18 +429,14 @@ export async function handleDirectorCommand(
   const parsed = parseCommand(msg.content);
 
   if (!parsed) {
-    const helpText = [
-      'Comandos disponibles:',
-      '$chatear <cliente> <mensaje> - Enviar mensaje como la persona asignada',
-      '$estado <cliente> - Ver estado de un cliente',
-      '$pausar <cliente> - Pausar IA en una conversacion',
-      '$reanudar <cliente> - Reactivar IA en una conversacion',
-      '$reiniciar <cliente> - Reiniciar cliente como nuevo (envia intro otra vez)',
-      '$resumen - Resumen de conversaciones activas',
-      '',
-      'Busca clientes por nombre, telefono o empresa.',
-    ].join('\n');
-    await reply(msg.directorWaId, helpText);
+    log.info('Director free-text message, routing to conversational agent', { waId: msg.directorWaId });
+    await handleDirectorConversation({
+      supabase,
+      directorWaId: msg.directorWaId,
+      content: msg.content,
+      conversationId: msg.conversationId,
+      contactId: msg.contactId,
+    });
     return;
   }
 
@@ -465,6 +462,6 @@ export async function handleDirectorCommand(
       await handleResumen(supabase, msg.directorWaId);
       break;
     default:
-      await reply(msg.directorWaId, `Comando desconocido: $${parsed.command}\nEscribe cualquier cosa sin $ para ver los comandos disponibles.`);
+      await reply(msg.directorWaId, `Comando desconocido: $${parsed.command}\nComandos: $chatear, $estado, $pausar, $reanudar, $reiniciar, $resumen\nO escribe sin $ para hablar con el asistente.`);
   }
 }

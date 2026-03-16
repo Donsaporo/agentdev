@@ -22,8 +22,7 @@ const CATEGORY_COLORS: Record<ConversationCategory, string> = {
 
 const STAGE_CONFIG: Record<string, { label: string; color: string; short: string }> = {
   nuevo: { label: 'Nuevo', color: 'bg-slate-500/20 text-slate-400', short: 'N' },
-  contactado: { label: 'Contactado', color: 'bg-blue-500/20 text-blue-400', short: 'C' },
-  en_negociacion: { label: 'Negociacion', color: 'bg-cyan-500/20 text-cyan-400', short: 'Ng' },
+  en_proceso: { label: 'En Proceso', color: 'bg-blue-500/20 text-blue-400', short: 'EP' },
   demo_solicitada: { label: 'Demo', color: 'bg-amber-500/20 text-amber-400', short: 'D' },
   cotizacion_enviada: { label: 'Cotizacion', color: 'bg-sky-500/20 text-sky-400', short: 'Cz' },
   por_cerrar: { label: 'Por Cerrar', color: 'bg-orange-500/20 text-orange-400', short: 'PC' },

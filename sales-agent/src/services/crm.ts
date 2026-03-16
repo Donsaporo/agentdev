@@ -38,6 +38,8 @@ export interface CrmLeadParams {
   name: string;
   firstName?: string;
   lastName?: string;
+  clientType?: 'individual' | 'business';
+  companyName?: string;
   email?: string;
   phone?: string;
   company?: string;
@@ -151,15 +153,20 @@ export async function createCrmLead(params: CrmLeadParams): Promise<string | nul
       ? getSalespersonId(params.assignedPersonaName)
       : null;
 
+    const resolvedFirstName = params.firstName || params.name.split(' ')[0] || '';
+    const resolvedLastName = params.lastName || params.name.split(' ').slice(1).join(' ') || '';
+    const resolvedClientType = params.clientType || (params.company || params.companyName ? 'business' : 'individual');
+    const resolvedCompany = params.companyName || params.company || null;
+
     const insertData: Record<string, unknown> = {
       name: params.name,
-      first_name: params.firstName || params.name.split(' ')[0] || '',
-      last_name: params.lastName || params.name.split(' ').slice(1).join(' ') || '',
+      first_name: resolvedFirstName,
+      last_name: resolvedLastName,
       email: params.email || null,
       phone: params.phone || null,
-      company_name: params.company || null,
+      company_name: resolvedCompany,
       notes: params.notes || null,
-      client_type: params.company ? 'business' : 'individual',
+      client_type: resolvedClientType,
       status_tag: 'Lead',
       lead_stage: 'nuevo',
       assigned_salesperson_id: salespersonId,
@@ -230,6 +237,32 @@ export async function updateCrmClient(
     return true;
   } catch (err) {
     log.error('CRM updateCrmClient error', { error: err instanceof Error ? err.message : String(err) });
+    return false;
+  }
+}
+
+export async function syncNameUpdateToCrm(
+  crmClientId: string,
+  name: string,
+  firstName?: string,
+  lastName?: string,
+  clientType?: 'individual' | 'business'
+): Promise<boolean> {
+  if (!isAvailable() || !crmClientId) return false;
+
+  try {
+    const updates: Record<string, unknown> = { name };
+    if (firstName) updates.first_name = firstName;
+    if (lastName) updates.last_name = lastName;
+    if (clientType) updates.client_type = clientType;
+
+    const ok = await updateCrmClient(crmClientId, updates);
+    if (ok) {
+      log.info('CRM name synced', { crmClientId, name, clientType });
+    }
+    return ok;
+  } catch (err) {
+    log.error('CRM syncNameUpdateToCrm error', { error: err instanceof Error ? err.message : String(err) });
     return false;
   }
 }
@@ -416,6 +449,10 @@ export async function syncContactToCrm(contact: {
   email?: string;
   company?: string;
   notes?: string;
+  firstName?: string;
+  lastName?: string;
+  clientType?: 'individual' | 'business';
+  companyName?: string;
 }, personaName: string): Promise<string | null> {
   if (!isAvailable()) return null;
 
@@ -444,6 +481,10 @@ export async function syncContactToCrm(contact: {
 
     clientId = await createCrmLead({
       name,
+      firstName: contact.firstName,
+      lastName: contact.lastName,
+      clientType: contact.clientType,
+      companyName: contact.companyName,
       phone: contact.phone_number,
       email: contact.email,
       company: contact.company,
