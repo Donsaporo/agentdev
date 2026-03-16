@@ -402,7 +402,8 @@ export async function scheduleMeeting(
   start: string,
   durationMinutes: number,
   attendeeEmail?: string,
-  presencial = false
+  presencial = false,
+  location?: string
 ): Promise<ScheduledMeeting | null> {
   if (!isConfigured()) {
     log.warn('Calendar integration not configured');
@@ -428,7 +429,7 @@ export async function scheduleMeeting(
   };
 
   if (presencial) {
-    event.location = 'PH Plaza Real, Costa del Este, Ciudad de Panama, Panama';
+    event.location = location || 'PH Plaza Real, Costa del Este, Ciudad de Panama, Panama';
   } else {
     event.conferenceData = {
       createRequest: {
@@ -505,6 +506,7 @@ export async function scheduleMeetingViaCrm(params: {
   description?: string;
   attendees?: string[];
   projectId?: string;
+  location?: string;
 }): Promise<CrmScheduleResult> {
   const crmUrl = config.crm.url;
   const crmKey = config.crm.serviceRoleKey;
@@ -532,6 +534,7 @@ export async function scheduleMeetingViaCrm(params: {
         attendees: params.attendees,
         project_id: params.projectId,
         create_meet: params.meetingType !== 'presencial',
+        location: params.location,
       }),
     });
 

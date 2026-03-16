@@ -340,6 +340,7 @@ async function executePendingAction(supabase: SupabaseClient, action: Record<str
         const endTime = payload.end_time as string || '';
         const meetingType = (payload.meeting_type as string) || 'virtual';
         const title = (payload.title as string) || `Reunion Obzide - ${payload.contact_name}`;
+        const location = (payload.location as string) || '';
 
         const computedEnd = endTime || (() => {
           const [h, m] = startTime.split(':').map(Number);
@@ -354,6 +355,7 @@ async function executePendingAction(supabase: SupabaseClient, action: Record<str
           startTime,
           endTime: computedEnd,
           meetingType,
+          location: meetingType === 'presencial' ? (location || 'PH Plaza Real, Costa del Este, Panama') : undefined,
         });
 
         if (!crmResult.success) {
@@ -377,7 +379,8 @@ async function executePendingAction(supabase: SupabaseClient, action: Record<str
             });
           }
 
-          const typeLabel = meetingType === 'presencial' ? 'Presencial - PH Plaza Real' : `Virtual${crmResult.meetLink ? ': ' + crmResult.meetLink : ''}`;
+          const presencialLabel = location || 'PH Plaza Real, Costa del Este';
+          const typeLabel = meetingType === 'presencial' ? `Presencial - ${presencialLabel}` : `Virtual${crmResult.meetLink ? ': ' + crmResult.meetLink : ''}`;
           await reply(directorWaId, `Reunion agendada:\n${title}\n${meetingDate} ${startTime}-${computedEnd}\n${typeLabel}`);
         }
         break;
@@ -511,7 +514,8 @@ REGLAS:
 - Los mensajes a clientes deben ser CORTOS, naturales, como WhatsApp humano
 - Adapta el tono del mensaje al estilo de la persona asignada al contacto
 - Para agendar reunion SIN fecha/hora especifica: usa schedule_meeting_request para preguntarle al cliente cuando le queda bien.
-- Para agendar reunion CON fecha/hora especifica del director: usa schedule_meeting_direct con params { date: "YYYY-MM-DD", start_time: "HH:MM", end_time: "HH:MM", title: "...", meeting_type: "virtual|presencial" }. Esto agenda directamente sin preguntarle al cliente.
+- Para agendar reunion CON fecha/hora especifica del director: usa schedule_meeting_direct con params { date: "YYYY-MM-DD", start_time: "HH:MM", end_time: "HH:MM", title: "...", meeting_type: "virtual|presencial", location: "direccion si es presencial fuera de oficina" }. Esto agenda directamente sin preguntarle al cliente.
+- PREFERENCIA DE REUNIONES: Siempre preferimos virtual (Google Meet). Si el director o cliente pide presencial, preferimos ir a la oficina/ubicacion del cliente en vez de usar nuestra oficina. Si el director especifica una ubicacion (ej: "en PH World Trade Center"), usa esa ubicacion en el campo "location". Solo si no se especifica ubicacion, usa nuestra oficina: "PH Plaza Real, Costa del Este, Panama".
 
 ETAPAS VALIDAS: nuevo, en_proceso, demo_solicitada, cotizacion_enviada, por_cerrar, ganado, perdido`;
 

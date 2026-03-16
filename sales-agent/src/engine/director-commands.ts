@@ -404,20 +404,23 @@ async function handleReunion(
   args: string
 ) {
   if (!args) {
-    await reply(directorWaId, 'Uso: $reunion <cliente> <fecha> <hora>\nEjemplo: $reunion juan 2026-03-20 10:00\nFecha formato: YYYY-MM-DD\nHora formato: HH:MM (24h, hora Panama)');
+    await reply(directorWaId, 'Uso: $reunion <cliente> <fecha> <hora> [presencial] [ubicacion]\nEjemplo: $reunion juan 2026-03-20 10:00\nEjemplo: $reunion maria 2026-03-21 14:00 presencial PH World Trade Center\nFecha formato: YYYY-MM-DD\nHora formato: HH:MM (24h, hora Panama)');
     return;
   }
 
   const parts = args.split(/\s+/);
   if (parts.length < 3) {
-    await reply(directorWaId, 'Necesito cliente, fecha y hora.\nEjemplo: $reunion juan 2026-03-20 10:00');
+    await reply(directorWaId, 'Necesito cliente, fecha y hora.\nEjemplo: $reunion juan 2026-03-20 10:00\nEjemplo: $reunion juan 2026-03-20 10:00 presencial PH World Trade Center');
     return;
   }
 
   const clientRef = parts[0];
   const date = parts[1];
   const startTime = parts[2];
-  const meetingType = parts[3] === 'presencial' ? 'presencial' : 'virtual';
+  const presencialIdx = parts.findIndex((p) => p.toLowerCase() === 'presencial');
+  const meetingType = presencialIdx >= 0 ? 'presencial' : 'virtual';
+  const locationParts = presencialIdx >= 0 ? parts.slice(presencialIdx + 1) : [];
+  const meetingLocation = locationParts.length > 0 ? locationParts.join(' ') : '';
 
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     await reply(directorWaId, 'Formato de fecha invalido. Usa YYYY-MM-DD (ej: 2026-03-20)');
@@ -464,6 +467,7 @@ async function handleReunion(
     startTime,
     endTime,
     meetingType,
+    location: meetingType === 'presencial' ? (meetingLocation || 'PH Plaza Real, Costa del Este, Panama') : undefined,
   });
 
   if (!result.success) {
@@ -489,7 +493,8 @@ async function handleReunion(
   }
 
   const sourceLabel = target.source === 'crm' ? ' (desde CRM)' : '';
-  const typeLabel = meetingType === 'presencial' ? 'Presencial - PH Plaza Real' : `Virtual${result.meetLink ? ': ' + result.meetLink : ''}`;
+  const presencialLabel = meetingLocation || 'PH Plaza Real, Costa del Este';
+  const typeLabel = meetingType === 'presencial' ? `Presencial - ${presencialLabel}` : `Virtual${result.meetLink ? ': ' + result.meetLink : ''}`;
   await reply(directorWaId, `Reunion agendada:\n${target.display_name}${sourceLabel}\n${date} ${startTime}-${endTime}\n${typeLabel}`);
   log.info('Director scheduled meeting directly', { target: target.display_name, date, startTime, source: target.source });
 }
@@ -520,10 +525,10 @@ $reiniciar <cliente>
 $resumen
   Ver resumen de todas las conversaciones activas
 
-$reunion <cliente> <fecha> <hora> [presencial]
+$reunion <cliente> <fecha> <hora> [presencial] [ubicacion]
   Agendar reunion directamente en el calendario
   Ej: $reunion juan 2026-03-20 10:00
-  Ej: $reunion maria 2026-03-21 14:00 presencial
+  Ej: $reunion maria 2026-03-21 14:00 presencial PH World Trade Center Calle 50
 
 $ayuda
   Mostrar esta guia

@@ -697,6 +697,7 @@ async function executeActions(
           }
 
           const isPresencial = action.params.meeting_type === 'presencial';
+          const meetingLocation = action.params.location || '';
 
           const crmResult: CrmScheduleResult = await scheduleMeetingViaCrm({
             phoneNumber: phone,
@@ -707,6 +708,7 @@ async function executeActions(
             meetingType: isPresencial ? 'presencial' : 'virtual',
             description: action.params.description,
             attendees: contactData?.data?.email ? [contactData.data.email] : undefined,
+            location: isPresencial ? (meetingLocation || 'PH Plaza Real, Costa del Este, Panama') : undefined,
           });
 
           if (!crmResult.success) {
@@ -759,7 +761,7 @@ async function executeActions(
           notifyDirector({
             type: 'meeting_scheduled',
             contactName: meetContact?.display_name || contactData?.data?.display_name || 'Desconocido',
-            details: `${action.params.title || 'Reunion Obzide'}\n${isPresencial ? 'Presencial - PH Plaza Real' : `Virtual: ${crmResult.meetLink}`}\nFecha: ${meetingDate} ${startTime}-${endTime}`,
+            details: `${action.params.title || 'Reunion Obzide'}\n${isPresencial ? `Presencial - ${meetingLocation || 'PH Plaza Real, Costa del Este'}` : `Virtual: ${crmResult.meetLink}`}\nFecha: ${meetingDate} ${startTime}-${endTime}`,
           }).catch(() => {});
 
           log.info('Meeting scheduled via CRM and recorded', {

@@ -415,9 +415,12 @@ AVANZADA (9+ mensajes):
 Tipos de reunion disponibles:
 1. VIRTUAL (preferida): Se crea automaticamente un link de Google Meet
    - Usa: {"type": "schedule_meeting", "params": {"title": "...", "date": "YYYY-MM-DD", "start_time": "HH:MM", "end_time": "HH:MM", "meeting_type": "virtual"}}
-2. PRESENCIAL: En la oficina de Obzide en PH Plaza Real, Costa del Este, Panama
-   - Usa: {"type": "schedule_meeting", "params": {"title": "...", "date": "YYYY-MM-DD", "start_time": "HH:MM", "end_time": "HH:MM", "meeting_type": "presencial"}}
-   - Cuando el cliente prefiera presencial, comparte la direccion: "Nuestra oficina esta en PH Plaza Real, Costa del Este"
+2. PRESENCIAL: Preferimos ir a la ubicacion del cliente en vez de usar nuestra oficina
+   - Usa: {"type": "schedule_meeting", "params": {"title": "...", "date": "YYYY-MM-DD", "start_time": "HH:MM", "end_time": "HH:MM", "meeting_type": "presencial", "location": "direccion del lugar"}}
+   - Si el cliente da una ubicacion especifica, usa esa en "location"
+   - Si el cliente no especifica ubicacion, preguntale donde prefiere reunirse
+   - Solo como ultimo recurso, usa nuestra oficina: "PH Plaza Real, Costa del Este, Panama"
+   - SIEMPRE preferimos virtual sobre presencial. Si el cliente pide presencial, esta bien, pero sugiere virtual primero
 
 FORMATO DE FECHA/HORA PARA REUNIONES:
 - "date": formato YYYY-MM-DD (ej: "2026-03-20")
