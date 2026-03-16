@@ -36,11 +36,21 @@ async function reply(directorWaId: string, text: string) {
   });
 }
 
+function tokenMatch(haystack: string, query: string): boolean {
+  const normalizedFull = query.toLowerCase().replace(/[+\-\s()&.,]/g, '');
+  if (haystack.includes(normalizedFull)) return true;
+
+  const tokens = query.toLowerCase().replace(/[&.,]/g, ' ').split(/\s+/).filter((t) => t.length >= 2);
+  if (tokens.length === 0) return false;
+
+  return tokens.every((token) => haystack.includes(token));
+}
+
 async function searchContacts(
   supabase: SupabaseClient,
   query: string
 ): Promise<ContactMatch[]> {
-  const normalized = query.toLowerCase().replace(/[+\-\s()]/g, '');
+  const normalizedPhone = query.replace(/[+\-\s()]/g, '');
 
   const { data: conversations } = await supabase
     .from('whatsapp_conversations')
@@ -68,11 +78,12 @@ async function searchContacts(
     const waId = (contact.wa_id || '').replace(/[+\-\s()]/g, '');
 
     const isMatch =
-      name.includes(normalized) ||
-      company.includes(normalized) ||
-      phone.includes(normalized) ||
-      waId.includes(normalized) ||
-      normalized.includes(phone.slice(-7));
+      tokenMatch(name, query) ||
+      tokenMatch(company, query) ||
+      (name + ' ' + company).includes(query.toLowerCase().replace(/[&.,]/g, '').trim()) ||
+      phone.includes(normalizedPhone) ||
+      waId.includes(normalizedPhone) ||
+      normalizedPhone.includes(phone.slice(-7));
 
     if (isMatch) {
       const rawPersona = conv.persona as unknown;
