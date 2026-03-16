@@ -9,76 +9,8 @@ const corsHeaders = {
 };
 
 const RECALL_API_BASE = "https://api.recall.ai/api/v1";
-const ANTHROPIC_API = "https://api.anthropic.com/v1/messages";
 
-interface MeetingAnalysis {
-  summary: string;
-  key_points: string[];
-  decisions: string[];
-  action_items: Array<{ description: string; assigned_to: string; due_date: string | null }>;
-  client_commitments: string[];
-  next_steps: string[];
-  insights: Array<{ category: string; content: string; confidence: string }>;
-}
-
-async function analyzeTranscript(transcript: string, meetingTitle: string): Promise<MeetingAnalysis | null> {
-  const apiKey = Deno.env.get("ANTHROPIC_API_KEY");
-  if (!apiKey || !transcript || transcript.length < 50) return null;
-
-  const res = await fetch(ANTHROPIC_API, {
-    method: "POST",
-    headers: {
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 2048,
-      messages: [
-        {
-          role: "user",
-          content: `Analiza la siguiente transcripcion de la reunion "${meetingTitle}" y retorna UNICAMENTE un JSON valido con esta estructura exacta (en espanol):
-
-{
-  "summary": "Resumen ejecutivo de 3-5 oraciones",
-  "key_points": ["punto clave 1", "punto clave 2"],
-  "decisions": ["decision tomada 1", "decision tomada 2"],
-  "action_items": [{"description": "tarea", "assigned_to": "persona/equipo", "due_date": null}],
-  "client_commitments": ["compromiso del cliente 1"],
-  "next_steps": ["proximo paso 1"],
-  "insights": [{"category": "need|objection|preference|budget|timeline|decision_maker|competitor|pain_point|positive_signal|personal_detail", "content": "descripcion del insight", "confidence": "high|medium|low"}]
-}
-
-Transcripcion:
-${transcript.slice(0, 15000)}`,
-        },
-      ],
-    }),
-  });
-
-  if (!res.ok) {
-    console.error("Anthropic API error:", await res.text());
-    return null;
-  }
-
-  const data = await res.json();
-  const text = data.content?.[0]?.text || "";
-
-  try {
-    const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-    const jsonStr = fenceMatch ? fenceMatch[1].trim() : text.trim();
-    const braceStart = jsonStr.indexOf("{");
-    const braceEnd = jsonStr.lastIndexOf("}");
-    if (braceStart === -1 || braceEnd === -1) return null;
-    return JSON.parse(jsonStr.slice(braceStart, braceEnd + 1));
-  } catch {
-    console.error("Failed to parse transcript analysis");
-    return null;
-  }
-}
-
-async function processTranscriptWithAI(
+async function forwardTranscriptToCrm(
   supabase: ReturnType<typeof createClient>,
   botId: string,
   transcript: string
@@ -94,124 +26,57 @@ async function processTranscriptWithAI(
     return;
   }
 
-  const analysis = await analyzeTranscript(transcript, meeting.title);
-  if (!analysis) {
-    console.log("No analysis generated for meeting:", meeting.id);
+  const crmUrl = Deno.env.get("CRM_SUPABASE_URL");
+  const crmKey = Deno.env.get("CRM_SUPABASE_SERVICE_ROLE_KEY");
+
+  if (!crmUrl || !crmKey) {
+    console.warn("CRM not configured, skipping transcript forwarding");
     return;
   }
 
-  await supabase
-    .from("sales_meetings")
-    .update({ summary: analysis.summary })
-    .eq("id", meeting.id);
+  try {
+    const { data: contactData } = await supabase
+      .from("whatsapp_contacts")
+      .select("email, display_name")
+      .eq("id", meeting.contact_id)
+      .maybeSingle();
 
-  await supabase.from("sales_meeting_transcripts").upsert(
-    {
-      conversation_id: meeting.conversation_id,
-      contact_id: meeting.contact_id,
-      recall_bot_id: botId,
-      raw_transcript: transcript,
-      summary: analysis.summary,
-      action_items: analysis.action_items,
-      client_commitments: analysis.client_commitments,
-      next_steps: analysis.next_steps,
-      status: "completed",
-      meeting_date: meeting.start_time,
-      metadata: {
-        key_points: analysis.key_points,
-        decisions: analysis.decisions,
+    const attendees = ["info@obzide.com"];
+    if (contactData?.email) attendees.push(contactData.email);
+
+    const crmRes = await fetch(`${crmUrl}/functions/v1/receive-meeting-transcript`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${crmKey}`,
+        "Content-Type": "application/json",
       },
-    },
-    { onConflict: "recall_bot_id" }
-  );
-
-  if (meeting.contact_id && analysis.insights.length > 0) {
-    const validCategories = [
-      "need", "objection", "preference", "budget", "timeline",
-      "decision_maker", "competitor", "pain_point", "positive_signal", "personal_detail",
-    ];
-
-    const insightRows = analysis.insights
-      .filter((i) => validCategories.includes(i.category))
-      .map((i) => ({
-        contact_id: meeting.contact_id,
-        category: i.category,
-        content: i.content,
-        confidence: i.confidence || "medium",
-        source_type: "meeting",
-        source_conversation_id: meeting.conversation_id || null,
-      }));
-
-    if (insightRows.length > 0) {
-      await supabase.from("client_insights").insert(insightRows);
-    }
-  }
-
-  if (meeting.contact_id && meeting.conversation_id) {
-    const keyTopics = [
-      ...analysis.key_points.slice(0, 3),
-      ...(analysis.decisions.length > 0 ? [`Decisiones: ${analysis.decisions.length}`] : []),
-    ];
-
-    await supabase.from("conversation_summaries").insert({
-      conversation_id: meeting.conversation_id,
-      contact_id: meeting.contact_id,
-      summary: `[Reunion: ${meeting.title}] ${analysis.summary}`,
-      message_range_start: meeting.start_time || new Date().toISOString(),
-      message_range_end: new Date().toISOString(),
-      message_count: 0,
-      key_topics: keyTopics,
+      body: JSON.stringify({
+        google_event_id: meeting.google_event_id || undefined,
+        title: meeting.title,
+        attendees,
+        start_time: meeting.start_time,
+        end_time: meeting.end_time || meeting.start_time,
+        transcript_text: transcript,
+        auto_generate_notes: true,
+      }),
     });
-  }
 
-  const crmUrl = Deno.env.get("CRM_SUPABASE_URL");
-  const crmKey = Deno.env.get("CRM_SUPABASE_SERVICE_ROLE_KEY");
-  if (crmUrl && crmKey) {
-    try {
-      const transcriptEndpoint = `${crmUrl}/functions/v1/receive-meeting-transcript`;
-      const { data: contactData } = await supabase
-        .from("whatsapp_contacts")
-        .select("email, display_name")
-        .eq("id", meeting.contact_id)
-        .maybeSingle();
-
-      const attendees = ["info@obzide.com"];
-      if (contactData?.email) attendees.push(contactData.email);
-
-      const crmRes = await fetch(transcriptEndpoint, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${crmKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          google_event_id: meeting.google_event_id || undefined,
-          title: meeting.title,
-          attendees,
-          start_time: meeting.start_time,
-          end_time: meeting.end_time || meeting.start_time,
-          transcript_text: transcript,
-          auto_generate_notes: true,
-        }),
+    if (crmRes.ok) {
+      const crmResult = await crmRes.json();
+      console.log("CRM transcript pipeline completed", {
+        meetingId: crmResult.meeting_id,
+        notesGenerated: crmResult.notes_generated,
+        tasksCreated: crmResult.notes_result?.tasks_created || 0,
       });
-
-      if (crmRes.ok) {
-        const crmResult = await crmRes.json();
-        console.log("CRM transcript pipeline completed", {
-          meetingId: crmResult.meeting_id,
-          notesGenerated: crmResult.notes_generated,
-          tasksCreated: crmResult.notes_result?.tasks_created || 0,
-        });
-      } else {
-        const errText = await crmRes.text();
-        console.error("CRM receive-meeting-transcript failed:", crmRes.status, errText);
-      }
-    } catch (err) {
-      console.error("CRM transcript sync error:", err);
+    } else {
+      const errText = await crmRes.text();
+      console.error("CRM receive-meeting-transcript failed:", crmRes.status, errText);
     }
+  } catch (err) {
+    console.error("CRM transcript sync error:", err);
   }
 
-  console.log("Transcript processed successfully for meeting:", meeting.id);
+  console.log("Transcript forwarded to CRM for meeting:", meeting.id);
 }
 
 Deno.serve(async (req: Request) => {
@@ -314,8 +179,8 @@ Deno.serve(async (req: Request) => {
 
         if (transcript) {
           EdgeRuntime.waitUntil(
-            processTranscriptWithAI(supabase, botId, transcript).catch(
-              (err) => console.error("Transcript AI processing error:", err)
+            forwardTranscriptToCrm(supabase, botId, transcript).catch(
+              (err) => console.error("Transcript CRM forwarding error:", err)
             )
           );
         }

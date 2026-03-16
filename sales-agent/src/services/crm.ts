@@ -475,6 +475,100 @@ export async function syncContactToCrm(contact: {
   }
 }
 
+export interface CrmClientContext {
+  client: {
+    id: string;
+    name: string;
+    company: string | null;
+    email: string | null;
+    phone: string | null;
+    status: string;
+    lead_stage: string;
+    estimated_value: number | null;
+    next_action: string | null;
+    next_action_date: string | null;
+    notes: string | null;
+    last_activity: string | null;
+  } | null;
+  insights: Record<string, Array<{ title: string; content: string; confidence: number; source: string; date: string }>>;
+  insights_total: number;
+  meetings: Array<{
+    id: string;
+    title: string;
+    date: string;
+    status: string;
+    type: string;
+    project_id: string | null;
+    summary: string | null;
+    key_points: string[];
+    decisions: string[];
+    sentiment: string | null;
+  }>;
+  projects: Array<{
+    id: string;
+    name: string;
+    status: string;
+    type: string | null;
+    value: number | null;
+    deadline: string | null;
+    notes: string | null;
+    start_date: string | null;
+    delivered_at: string | null;
+  }>;
+  quotations: Array<{
+    id: string;
+    number: string;
+    status: string;
+    total: number;
+    date: string;
+  }>;
+  pending_tasks: Array<{
+    id: string;
+    title: string;
+    status: string;
+    priority: string;
+    due_date: string | null;
+    source: string;
+  }>;
+}
+
+export async function fetchClientContextFromCrm(phone?: string, clientId?: string): Promise<CrmClientContext | null> {
+  const { config } = await import('../core/config.js');
+  const crmUrl = config.crm.url;
+  const crmKey = config.crm.serviceRoleKey;
+
+  if (!crmUrl || !crmKey) return null;
+
+  try {
+    const body: Record<string, string> = {};
+    if (clientId) body.client_id = clientId;
+    if (phone) body.phone = phone;
+    if (!body.client_id && !body.phone) return null;
+
+    const res = await fetch(`${crmUrl}/functions/v1/get-client-context`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${crmKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      log.warn('CRM get-client-context failed', { status: res.status });
+      return null;
+    }
+
+    const data = await res.json();
+    if (!data.success || data.error) return null;
+
+    return data.context || null;
+  } catch (err) {
+    log.warn('CRM fetchClientContextFromCrm error', { error: err instanceof Error ? err.message : String(err) });
+    return null;
+  }
+}
+
 export interface CrmMeetingNote {
   title: string;
   start_time: string;

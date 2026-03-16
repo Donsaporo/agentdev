@@ -10,10 +10,24 @@ const CALENDAR_BASE = 'https://www.googleapis.com/calendar/v3';
 
 const TIMEZONE = 'America/Panama';
 const TIMEZONE_OFFSET = '-05:00';
-const WORK_START_HOUR = 9;
-const WORK_END_HOUR = 17;
 const SLOT_DURATION_MIN = 30;
 const MAX_MEETINGS_PER_DAY = 4;
+
+const WORK_SCHEDULE: Record<number, { start: number; end: number } | null> = {
+  0: null,
+  1: { start: 8, end: 17 },
+  2: { start: 8, end: 17 },
+  3: { start: 8, end: 16 },
+  4: { start: 8, end: 16 },
+  5: { start: 8, end: 16 },
+  6: null,
+};
+
+function getWorkHours(date: string): { start: number; end: number } | null {
+  const d = new Date(`${date}T12:00:00${TIMEZONE_OFFSET}`);
+  const day = d.getDay();
+  return WORK_SCHEDULE[day] || null;
+}
 
 export interface MeetingSlot {
   start: string;
@@ -225,6 +239,23 @@ export async function checkAvailability(
     };
   }
 
+  const workHours = getWorkHours(dateStr);
+  if (!workHours) {
+    const tomorrow = new Date(getPanamaNow());
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    while (tomorrow.getDay() === 0 || tomorrow.getDay() === 6) {
+      tomorrow.setDate(tomorrow.getDate() + 1);
+    }
+    const nextStr = getPanamaDate(tomorrow);
+    const slots = await getAvailableSlots(supabase, nextStr);
+    return {
+      available: false,
+      reason: 'No tenemos reuniones los fines de semana',
+      suggestedDate: nextStr,
+      suggestedSlots: slots.slice(0, 6),
+    };
+  }
+
   const panamaHour = parseInt(
     requestedDate.toLocaleString('en-US', { hour: 'numeric', hour12: false, timeZone: TIMEZONE })
   );
@@ -235,11 +266,12 @@ export async function checkAvailability(
   const meetingEndHour = panamaHour + Math.floor((panamaMinute + durationMinutes) / 60);
   const meetingEndMin = (panamaMinute + durationMinutes) % 60;
 
-  if (panamaHour < WORK_START_HOUR || (meetingEndHour > WORK_END_HOUR) || (meetingEndHour === WORK_END_HOUR && meetingEndMin > 0)) {
+  if (panamaHour < workHours.start || (meetingEndHour > workHours.end) || (meetingEndHour === workHours.end && meetingEndMin > 0)) {
     const slots = await getAvailableSlots(supabase, dateStr);
+    const endDisplay = workHours.end > 12 ? `${workHours.end - 12}:00 PM` : `${workHours.end}:00 AM`;
     return {
       available: false,
-      reason: `Nuestro horario de reuniones es de ${WORK_START_HOUR}:00 AM a ${WORK_END_HOUR - 12}:00 PM (hora de Panama)`,
+      reason: `Nuestro horario de reuniones ese dia es de ${workHours.start}:00 AM a ${endDisplay} (hora de Panama)`,
       suggestedSlots: slots.slice(0, 6),
     };
   }
@@ -295,16 +327,19 @@ export async function getAvailableSlots(
     getCrmTeamBlocks(date).catch(() => []),
   ]);
 
+  const workHours = getWorkHours(date);
+  if (!workHours) return [];
+
   const allBusy = [...googleBusy, ...teamBlocks];
   const slots: MeetingSlot[] = [];
   const now = new Date();
 
-  for (let hour = WORK_START_HOUR; hour < WORK_END_HOUR; hour++) {
+  for (let hour = workHours.start; hour < workHours.end; hour++) {
     for (let min = 0; min < 60; min += SLOT_DURATION_MIN) {
       const slotStart = new Date(`${date}T${String(hour).padStart(2, '0')}:${String(min).padStart(2, '0')}:00${TIMEZONE_OFFSET}`);
       const slotEnd = new Date(slotStart.getTime() + SLOT_DURATION_MIN * 60_000);
 
-      if (slotEnd.getTime() > new Date(`${date}T${String(WORK_END_HOUR).padStart(2, '0')}:00:00${TIMEZONE_OFFSET}`).getTime()) {
+      if (slotEnd.getTime() > new Date(`${date}T${String(workHours.end).padStart(2, '0')}:00:00${TIMEZONE_OFFSET}`).getTime()) {
         continue;
       }
 
@@ -445,4 +480,103 @@ export async function scheduleMeeting(
     end: endDate.toISOString(),
     meetLink,
   };
+}
+
+export interface CrmScheduleResult {
+  success: boolean;
+  meetingId?: string;
+  googleEventId?: string;
+  meetLink?: string;
+  scheduled?: { date: string; start_time: string; end_time: string };
+  clientId?: string;
+  clientName?: string;
+  reason?: string;
+  conflicts?: Array<{ type: string; label: string; time_range: string }>;
+  message?: string;
+}
+
+export async function scheduleMeetingViaCrm(params: {
+  phoneNumber: string;
+  title: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  meetingType?: string;
+  description?: string;
+  attendees?: string[];
+  projectId?: string;
+}): Promise<CrmScheduleResult> {
+  const crmUrl = config.crm.url;
+  const crmKey = config.crm.serviceRoleKey;
+
+  if (!crmUrl || !crmKey) {
+    log.warn('CRM not configured for scheduling');
+    return { success: false, reason: 'crm_not_configured', message: 'CRM no esta configurado' };
+  }
+
+  try {
+    const res = await fetch(`${crmUrl}/functions/v1/schedule-meeting-from-whatsapp`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${crmKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        phone_number: params.phoneNumber,
+        title: params.title,
+        date: params.date,
+        start_time: params.startTime,
+        end_time: params.endTime,
+        meeting_type: params.meetingType || 'virtual',
+        description: params.description,
+        attendees: params.attendees,
+        project_id: params.projectId,
+        create_meet: params.meetingType !== 'presencial',
+      }),
+    });
+
+    const data = await res.json();
+
+    if (!res.ok || data.success === false) {
+      log.warn('CRM schedule-meeting returned failure', {
+        status: res.status,
+        reason: data.reason,
+        conflicts: data.conflicts?.length,
+      });
+
+      return {
+        success: false,
+        reason: data.reason || 'unknown',
+        conflicts: data.conflicts,
+        message: data.message,
+        clientId: data.client?.id,
+        clientName: data.client?.name,
+      };
+    }
+
+    log.info('Meeting scheduled via CRM', {
+      meetingId: data.meeting_id,
+      googleEventId: data.google_event_id,
+      meetLink: data.meet_link,
+    });
+
+    return {
+      success: true,
+      meetingId: data.meeting_id,
+      googleEventId: data.google_event_id,
+      meetLink: data.meet_link,
+      scheduled: data.scheduled,
+      clientId: data.client?.id,
+      clientName: data.client?.name,
+    };
+  } catch (err) {
+    log.error('CRM schedule-meeting request failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return {
+      success: false,
+      reason: 'network_error',
+      message: 'Error de conexion con el CRM',
+    };
+  }
 }

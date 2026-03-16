@@ -11,7 +11,7 @@ import { sendTextMessage, sendTemplateMessage, setTypingIndicator } from '../ser
 import type { SendResult } from '../services/whatsapp.js';
 import { notifyDirector } from '../services/director-notifier.js';
 import { processMediaContent } from '../services/media-processor.js';
-import { scheduleMeeting, checkAvailability } from '../services/calendar.js';
+import { scheduleMeetingViaCrm, type CrmScheduleResult } from '../services/calendar.js';
 import { joinMeeting } from '../services/recall.js';
 import { addCrmClientInsight } from '../services/crm-postventa.js';
 import * as crm from '../services/crm.js';
@@ -236,7 +236,11 @@ async function processMessage(
         return;
       }
 
-      const chunks = shouldSplitMessage(sanitized.text);
+      const finalText = actionResult.meetingFailed
+        ? actionResult.meetingFailureMessage
+        : sanitized.text;
+
+      const chunks = shouldSplitMessage(finalText);
       const recipientPhone = contact.wa_id || contact.phone_number;
 
       const { data: contactWindow } = await supabase
@@ -330,7 +334,7 @@ async function processMessage(
           await recordOutbound(supabase, msg.conversationId, msg.contactId, result.messageId, chunks[i], persona.full_name);
 
           if (i < chunks.length - 1) {
-            await sleep(1_500 + Math.random() * 3_000);
+            await sleep(4_000 + Math.random() * 6_000);
           }
         }
       }
@@ -392,7 +396,7 @@ async function sendIntroMessage(
     const introText = `Hola, gracias por comunicarte con Obzide Tech. Te voy a comunicar con ${persona.first_name}, quien te va a atender. Un momento por favor.`;
 
     await setTypingIndicator(supabase, conversationId, true);
-    await sleep(2_000 + Math.random() * 2_000);
+    await sleep(5_000 + Math.random() * 5_000);
     await setTypingIndicator(supabase, conversationId, false);
 
     const result = await sendTextMessage(recipientPhone, introText);
@@ -403,7 +407,7 @@ async function sendIntroMessage(
       .update({ intro_sent: true })
       .eq('id', contactId);
 
-    await sleep(3_000 + Math.random() * 5_000);
+    await sleep(8_000 + Math.random() * 7_000);
 
     log.info('Intro message sent', { conversationId, persona: persona.full_name });
   } catch (err) {
@@ -547,8 +551,10 @@ async function executeActions(
   contactId: string,
   actions: AgentAction[],
   personaName = 'Sales Agent'
-): Promise<{ messageSent: boolean }> {
+): Promise<{ messageSent: boolean; meetingFailed: boolean; meetingFailureMessage: string }> {
   let messageSent = false;
+  let meetingFailed = false;
+  let meetingFailureMessage = '';
   let cachedContact: Awaited<ReturnType<typeof loadContactForCrm>> = null;
 
   async function getContact() {
@@ -656,138 +662,109 @@ async function executeActions(
           break;
 
         case 'schedule_meeting': {
-          if (!action.params.datetime || isNaN(new Date(action.params.datetime).getTime())) {
-            log.warn('Invalid or missing datetime for schedule_meeting', { datetime: action.params.datetime });
-            break;
-          }
-
-          const availability = await checkAvailability(
-            supabase,
-            action.params.datetime,
-            parseInt(action.params.duration || '30', 10)
-          );
-
-          if (!availability.available) {
-            log.warn('Meeting slot not available', {
-              datetime: action.params.datetime,
-              reason: availability.reason,
-            });
-
-            const contactForSlots = await supabase
-              .from('whatsapp_contacts')
-              .select('wa_id, phone_number')
-              .eq('id', contactId)
-              .maybeSingle();
-
-            const slotsPhone = contactForSlots?.data?.wa_id || contactForSlots?.data?.phone_number || '';
-            if (slotsPhone) {
-              let fallbackMsg = availability.reason || 'Ese horario no esta disponible.';
-
-              if (availability.suggestedSlots && availability.suggestedSlots.length > 0) {
-                const options = availability.suggestedSlots.slice(0, 3).map((s) => {
-                  const d = new Date(s.start);
-                  return d.toLocaleString('es-PA', {
-                    weekday: 'long',
-                    day: 'numeric',
-                    month: 'long',
-                    hour: 'numeric',
-                    minute: '2-digit',
-                    hour12: true,
-                    timeZone: 'America/Panama',
-                  });
-                });
-                fallbackMsg += '\n\nTe puedo ofrecer estos horarios:\n' + options.map((o, i) => `${i + 1}. ${o}`).join('\n');
-                fallbackMsg += '\n\nCual te funciona mejor?';
-              } else if (availability.suggestedDate) {
-                fallbackMsg += ` Te parece si revisamos opciones para el ${new Date(availability.suggestedDate).toLocaleDateString('es-PA', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'America/Panama' })}?`;
-              }
-
-              const persona = await getOrAssignPersona(supabase, conversationId, contactId);
-              const delay = calculateDelay(fallbackMsg, false);
-              await setTypingIndicator(supabase, conversationId, true);
-              await sleep(delay);
-              await setTypingIndicator(supabase, conversationId, false);
-
-              const fallbackResult = await sendTextMessage(slotsPhone, fallbackMsg);
-              await recordOutbound(supabase, conversationId, contactId, fallbackResult.messageId, fallbackMsg, persona.full_name);
-              messageSent = true;
-            }
-            break;
-          }
-
           const contactData = await supabase
             .from('whatsapp_contacts')
-            .select('display_name, email')
+            .select('display_name, email, wa_id, phone_number')
             .eq('id', contactId)
             .maybeSingle();
 
+          const phone = contactData?.data?.wa_id || contactData?.data?.phone_number || '';
+
+          let meetingDate = action.params.date || '';
+          let startTime = action.params.start_time || '';
+          let endTime = action.params.end_time || '';
+
+          if (!meetingDate && action.params.datetime) {
+            const dt = new Date(action.params.datetime);
+            if (!isNaN(dt.getTime())) {
+              meetingDate = dt.toLocaleDateString('en-CA', { timeZone: 'America/Panama' });
+              startTime = dt.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Panama' });
+              const dur = parseInt(action.params.duration || '30', 10);
+              const endDt = new Date(dt.getTime() + dur * 60_000);
+              endTime = endDt.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Panama' });
+            }
+          }
+
+          if (!meetingDate || !startTime || !endTime || !phone) {
+            log.warn('Missing scheduling params', { meetingDate, startTime, endTime, phone });
+            meetingFailed = true;
+            meetingFailureMessage = 'Me faltan algunos datos para agendar la reunion. Me puedes confirmar la fecha y hora que prefieres?';
+            break;
+          }
+
           const isPresencial = action.params.meeting_type === 'presencial';
 
-          const meeting = await scheduleMeeting(
-            action.params.title || `Reunion Obzide - ${contactData?.data?.display_name || 'Cliente'}`,
-            action.params.datetime,
-            parseInt(action.params.duration || '30', 10),
-            contactData?.data?.email || action.params.email,
-            isPresencial
-          );
+          const crmResult: CrmScheduleResult = await scheduleMeetingViaCrm({
+            phoneNumber: phone,
+            title: action.params.title || `Reunion Obzide - ${contactData?.data?.display_name || 'Cliente'}`,
+            date: meetingDate,
+            startTime,
+            endTime,
+            meetingType: isPresencial ? 'presencial' : 'virtual',
+            description: action.params.description,
+            attendees: contactData?.data?.email ? [contactData.data.email] : undefined,
+          });
 
-          if (meeting) {
-            let recallBotId: string | null = null;
-            if (meeting.meetLink) {
-              recallBotId = await joinMeeting(meeting.meetLink).catch((err) => {
-                log.warn('Failed to launch Recall bot', { error: err instanceof Error ? err.message : String(err) });
-                return null;
-              });
-            }
-
-            await supabase.from('sales_meetings').insert({
-              conversation_id: conversationId,
-              contact_id: contactId,
-              google_event_id: meeting.eventId,
-              title: meeting.title,
-              start_time: meeting.start,
-              end_time: meeting.end,
-              meet_link: meeting.meetLink || null,
-              recall_bot_id: recallBotId,
-              status: 'scheduled',
+          if (!crmResult.success) {
+            log.warn('CRM scheduling failed', {
+              reason: crmResult.reason,
+              conflicts: crmResult.conflicts?.length,
             });
 
-            const meetingContact = await getContact();
-            if (meetingContact?.crm_client_id) {
-              await crm.addMeeting({
-                clientId: meetingContact.crm_client_id,
-                title: meeting.title,
-                startTime: meeting.start,
-                endTime: meeting.end,
-                meetLink: meeting.meetLink,
-                googleEventId: meeting.eventId,
-                meetingType: isPresencial ? 'presencial' : 'virtual',
-              });
-              await crm.addTimelineEvent({
-                clientId: meetingContact.crm_client_id,
-                eventType: 'reunion_programada',
-                title: `Reunion agendada: ${meeting.title}`,
-                description: isPresencial
-                  ? 'Reunion presencial en PH Plaza Real, Costa del Este, Panama'
-                  : `Google Meet: ${meeting.meetLink}`,
-                metadata: { google_event_id: meeting.eventId, recall_bot_id: recallBotId, meeting_type: isPresencial ? 'presencial' : 'virtual', source: 'whatsapp_sales_agent' },
-              });
+            meetingFailed = true;
+
+            if (crmResult.reason === 'schedule_conflict' && crmResult.conflicts) {
+              const conflictLines = crmResult.conflicts.map((c) => `- ${c.label}: ${c.time_range}`);
+              meetingFailureMessage = `Ese horario no esta disponible.\n\n${conflictLines.join('\n')}\n\nTe parece otro horario?`;
+            } else if (crmResult.reason === 'no_client_found') {
+              meetingFailureMessage = crmResult.message || 'No encontre tu registro en el sistema. Me puedes confirmar tu nombre y telefono?';
+            } else {
+              meetingFailureMessage = crmResult.message || 'No pude agendar la reunion en este momento. Dejame verificar la disponibilidad y te confirmo.';
             }
+            break;
+          }
 
-            const meetContact = await getContact();
-            notifyDirector({
-              type: 'meeting_scheduled',
-              contactName: meetContact?.display_name || contactData?.data?.display_name || 'Desconocido',
-              details: `${meeting.title}\n${isPresencial ? 'Presencial - PH Plaza Real' : `Virtual: ${meeting.meetLink}`}\nFecha: ${action.params.datetime}`,
-            }).catch(() => {});
-
-            log.info('Meeting scheduled and recorded', {
-              eventId: meeting.eventId,
-              meetLink: meeting.meetLink,
-              type: isPresencial ? 'presencial' : 'virtual',
-              recallBotId,
+          let recallBotId: string | null = null;
+          if (crmResult.meetLink) {
+            recallBotId = await joinMeeting(crmResult.meetLink).catch((err) => {
+              log.warn('Failed to launch Recall bot', { error: err instanceof Error ? err.message : String(err) });
+              return null;
             });
           }
+
+          const startIso = crmResult.scheduled
+            ? new Date(`${crmResult.scheduled.date}T${crmResult.scheduled.start_time}:00-05:00`).toISOString()
+            : new Date().toISOString();
+          const endIso = crmResult.scheduled
+            ? new Date(`${crmResult.scheduled.date}T${crmResult.scheduled.end_time}:00-05:00`).toISOString()
+            : new Date().toISOString();
+
+          await supabase.from('sales_meetings').insert({
+            conversation_id: conversationId,
+            contact_id: contactId,
+            google_event_id: crmResult.googleEventId || null,
+            title: action.params.title || `Reunion Obzide - ${contactData?.data?.display_name || 'Cliente'}`,
+            start_time: startIso,
+            end_time: endIso,
+            meet_link: crmResult.meetLink || null,
+            recall_bot_id: recallBotId,
+            status: 'scheduled',
+          });
+
+          const meetContact = await getContact();
+          notifyDirector({
+            type: 'meeting_scheduled',
+            contactName: meetContact?.display_name || contactData?.data?.display_name || 'Desconocido',
+            details: `${action.params.title || 'Reunion Obzide'}\n${isPresencial ? 'Presencial - PH Plaza Real' : `Virtual: ${crmResult.meetLink}`}\nFecha: ${meetingDate} ${startTime}-${endTime}`,
+          }).catch(() => {});
+
+          log.info('Meeting scheduled via CRM and recorded', {
+            meetingId: crmResult.meetingId,
+            googleEventId: crmResult.googleEventId,
+            meetLink: crmResult.meetLink,
+            type: isPresencial ? 'presencial' : 'virtual',
+            recallBotId,
+          });
           break;
         }
 
@@ -982,7 +959,7 @@ async function executeActions(
     }
   }
 
-  return { messageSent };
+  return { messageSent, meetingFailed, meetingFailureMessage };
 }
 
 async function autoSyncToCrm(supabase: SupabaseClient, contactId: string, personaName: string) {

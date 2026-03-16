@@ -2,7 +2,7 @@ import { SupabaseClient } from '@supabase/supabase-js';
 import { createLogger } from '../core/logger.js';
 import { Persona } from './persona-engine.js';
 import { searchKnowledge, getAllInstructions } from './knowledge-search.js';
-import { getClientHistory, getCrmClientData, getMeetingNotesFromCrm, CrmMeetingNote } from '../services/crm.js';
+import { getClientHistory, getCrmClientData, getMeetingNotesFromCrm, fetchClientContextFromCrm, CrmMeetingNote, type CrmClientContext } from '../services/crm.js';
 import { getContactInsights, getConversationSummaries } from '../services/conversation-summarizer.js';
 import { loadPostVentaData, getClientQuotations } from '../services/crm-postventa.js';
 import { formatPostVentaContext, formatPreVentaQuotations } from '../services/crm-postventa-formatter.js';
@@ -54,6 +54,9 @@ export interface ConversationContext {
   upcomingMeetings: UpcomingMeeting[];
   postVentaContext: string;
   isPostVenta: boolean;
+  crmProjects: CrmClientContext['projects'];
+  crmPendingTasks: CrmClientContext['pending_tasks'];
+  crmQuotations: CrmClientContext['quotations'];
 }
 
 export interface MeetingHistoryEntry {
@@ -87,6 +90,9 @@ export async function buildContext(
   let crmHistory = '';
   let meetingHistory: MeetingHistoryEntry[] = [];
   let postVentaContext = '';
+  let crmProjects: CrmClientContext['projects'] = [];
+  let crmPendingTasks: CrmClientContext['pending_tasks'] = [];
+  let crmQuotations: CrmClientContext['quotations'] = [];
 
   const leadStage = contact?.lead_stage || 'nuevo';
   const convCategory = conversation?.category || 'new_lead';
@@ -99,12 +105,16 @@ export async function buildContext(
     loadUpcomingMeetings(supabase, contactId),
   ]);
 
+  const clientPhone = contact?.phone_number || contact?.wa_id || '';
+  const crmContextPromise = fetchClientContextFromCrm(clientPhone || undefined, crmClientId || undefined);
+
   if (crmClientId) {
     try {
       const crmPromises: Promise<unknown>[] = [
         getCrmClientData(crmClientId),
         getClientHistory(crmClientId),
         getMeetingNotesFromCrm(crmClientId),
+        crmContextPromise,
       ];
 
       if (isPostVenta) {
@@ -113,12 +123,19 @@ export async function buildContext(
         crmPromises.push(getClientQuotations(crmClientId));
       }
 
-      const [clientData, history, crmMeetingNotes, extendedData] = await Promise.all(crmPromises) as [
+      const [clientData, history, crmMeetingNotes, clientContext, extendedData] = await Promise.all(crmPromises) as [
         Record<string, unknown> | null,
         Awaited<ReturnType<typeof getClientHistory>>,
         CrmMeetingNote[],
+        CrmClientContext | null,
         unknown,
       ];
+
+      if (clientContext) {
+        crmProjects = clientContext.projects || [];
+        crmPendingTasks = clientContext.pending_tasks || [];
+        crmQuotations = clientContext.quotations || [];
+      }
 
       const parts: string[] = [];
 
@@ -175,6 +192,22 @@ export async function buildContext(
           source: 'crm' as const,
         }));
 
+      if (clientContext?.meetings) {
+        for (const cm of clientContext.meetings) {
+          if (cm.summary) {
+            crmEntries.push({
+              title: cm.title,
+              date: cm.date,
+              summary: cm.summary,
+              key_points: cm.key_points || [],
+              decisions: cm.decisions || [],
+              action_items: [],
+              source: 'crm',
+            });
+          }
+        }
+      }
+
       meetingHistory = [...localMeetings, ...crmEntries];
 
       const seenTitles = new Set<string>();
@@ -192,6 +225,12 @@ export async function buildContext(
       meetingHistory = localMeetings;
     }
   } else {
+    const clientContext = await crmContextPromise.catch(() => null);
+    if (clientContext) {
+      crmProjects = clientContext.projects || [];
+      crmPendingTasks = clientContext.pending_tasks || [];
+      crmQuotations = clientContext.quotations || [];
+    }
     meetingHistory = localMeetings;
   }
 
@@ -236,6 +275,9 @@ export async function buildContext(
     upcomingMeetings,
     postVentaContext,
     isPostVenta,
+    crmProjects,
+    crmPendingTasks,
+    crmQuotations,
   };
 
   log.debug('Context built', {

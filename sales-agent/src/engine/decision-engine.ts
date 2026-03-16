@@ -147,6 +147,31 @@ function formatUpcomingMeetings(meetings: ConversationContext['upcomingMeetings'
   return lines.join('\n');
 }
 
+function formatCrmProjects(projects: ConversationContext['crmProjects']): string {
+  if (!projects || projects.length === 0) return '';
+
+  const lines: string[] = ['\n=== PROYECTOS DEL CLIENTE (CRM) ==='];
+  for (const p of projects) {
+    const parts = [`"${p.name}" - Estado: ${p.status}`];
+    if (p.type) parts.push(`Tipo: ${p.type}`);
+    if (p.deadline) parts.push(`Deadline: ${p.deadline}`);
+    if (p.notes) parts.push(`Notas: ${p.notes.slice(0, 150)}`);
+    lines.push(`- ${parts.join(', ')}`);
+  }
+  return lines.join('\n');
+}
+
+function formatCrmTasks(tasks: ConversationContext['crmPendingTasks']): string {
+  if (!tasks || tasks.length === 0) return '';
+
+  const lines: string[] = ['\n=== TAREAS PENDIENTES DEL CLIENTE (CRM) ==='];
+  for (const t of tasks) {
+    const due = t.due_date ? ` (vence: ${t.due_date})` : '';
+    lines.push(`- [${t.priority}] ${t.title} - ${t.status}${due}`);
+  }
+  return lines.join('\n');
+}
+
 function buildSystemPrompt(ctx: ConversationContext): string {
   const instructionBlock =
     ctx.instructions.length > 0
@@ -197,6 +222,8 @@ ${formatInsights(ctx.insights)}
 ${formatSummaries(ctx.conversationSummaries)}
 ${formatMeetingHistory(ctx.meetingHistory)}
 ${formatUpcomingMeetings(ctx.upcomingMeetings)}
+${formatCrmProjects(ctx.crmProjects)}
+${formatCrmTasks(ctx.crmPendingTasks)}
 
 === INSTRUCCIONES DEL DIRECTOR ===
 ${instructionBlock}
@@ -331,19 +358,29 @@ AVANZADA (9+ mensajes):
 === REUNIONES ===
 Tipos de reunion disponibles:
 1. VIRTUAL (preferida): Se crea automaticamente un link de Google Meet
-   - Usa: {"type": "schedule_meeting", "params": {"title": "...", "datetime": "ISO8601", "duration": "30", "meeting_type": "virtual"}}
+   - Usa: {"type": "schedule_meeting", "params": {"title": "...", "date": "YYYY-MM-DD", "start_time": "HH:MM", "end_time": "HH:MM", "meeting_type": "virtual"}}
 2. PRESENCIAL: En la oficina de Obzide en PH Plaza Real, Costa del Este, Panama
-   - Usa: {"type": "schedule_meeting", "params": {"title": "...", "datetime": "ISO8601", "duration": "30", "meeting_type": "presencial"}}
+   - Usa: {"type": "schedule_meeting", "params": {"title": "...", "date": "YYYY-MM-DD", "start_time": "HH:MM", "end_time": "HH:MM", "meeting_type": "presencial"}}
    - Cuando el cliente prefiera presencial, comparte la direccion: "Nuestra oficina esta en PH Plaza Real, Costa del Este"
+
+FORMATO DE FECHA/HORA PARA REUNIONES:
+- "date": formato YYYY-MM-DD (ej: "2026-03-20")
+- "start_time": formato HH:MM en hora de Panama (ej: "10:00")
+- "end_time": formato HH:MM en hora de Panama (ej: "10:30" para 30 min, "11:00" para 1 hora)
+- Si el cliente dice "media hora" usa 30 minutos. Si no especifica duracion, usa 30 minutos por defecto.
 
 REGLAS DE DISPONIBILIDAD (OBLIGATORIAS):
 - Zona horaria: Panama (EST/UTC-5). SIEMPRE interpreta las horas del cliente como hora de Panama.
-- Horario de reuniones: 9:00 AM a 5:00 PM (la ultima reunion se puede agendar a las 4:00 PM si es de 1 hora, o 4:30 PM si es de 30 min).
+- Horario de reuniones (variable por dia):
+  * Lunes y Martes: 8:00 AM a 5:00 PM
+  * Miercoles, Jueves y Viernes: 8:00 AM a 4:00 PM
+  * Sabado y Domingo: NO HAY reuniones
 - NO se pueden agendar reuniones para el mismo dia. Minimo un dia de antelacion (el dia siguiente o despues).
 - Maximo 4 reuniones por dia. Si el dia esta lleno, sugiere otro dia.
 - El sistema chequea automaticamente bloqueos del equipo (universidad, compromisos) y el calendario de Google.
-- Si el horario solicitado no esta disponible, el sistema te dara horarios alternativos. Sugerelos al cliente.
+- Si el horario solicitado no esta disponible, el sistema te dara los detalles del conflicto. Ofrece horarios alternativos.
 - Si el cliente pide "hoy", dile amablemente que necesitas al menos un dia de antelacion y sugiere manana u otro dia.
+- NO confirmes la reunion hasta que el sistema la haya creado exitosamente. Si falla, el sistema te dara el mensaje correcto para enviar al cliente.
 
 IMPORTANTE: Para agendar reunion NECESITAS el email del cliente (para enviarle la invitacion de calendario).
 Si no tienes el email, pidelo ANTES de confirmar la fecha/hora.
@@ -401,7 +438,7 @@ Responde UNICAMENTE con JSON valido. Sin texto antes ni despues:
 
 === ACCIONES DISPONIBLES ===
 - {"type": "update_lead_stage", "params": {"stage": "nuevo|en_proceso|demo_solicitada|cotizacion_enviada|por_cerrar|ganado|perdido"}}
-- {"type": "schedule_meeting", "params": {"title": "...", "datetime": "ISO8601", "duration": "30", "meeting_type": "virtual|presencial"}}
+- {"type": "schedule_meeting", "params": {"title": "...", "date": "YYYY-MM-DD", "start_time": "HH:MM", "end_time": "HH:MM", "meeting_type": "virtual|presencial"}}
 - {"type": "add_note", "params": {"note": "informacion importante extraida de la conversacion"}}
 - {"type": "update_client_profile", "params": {"field": "email|company|display_name|industry|estimated_budget|source", "value": "..."}}
 - {"type": "sync_to_crm", "params": {}}
