@@ -5,7 +5,7 @@ import { sendTextMessage, sendTemplateMessage } from './whatsapp.js';
 
 const log = createLogger('director-notifier');
 
-type NotificationType = 'escalation' | 'new_lead' | 'meeting_scheduled' | 'window_closing' | 'lead_won' | 'lead_lost' | 'send_failed';
+type NotificationType = 'escalation' | 'new_lead' | 'meeting_scheduled' | 'window_closing' | 'lead_won' | 'lead_lost' | 'send_failed' | 'conversation_completed';
 
 interface NotificationPayload {
   type: NotificationType;
@@ -30,6 +30,8 @@ const TEMPLATES: Record<NotificationType, (p: NotificationPayload) => string> = 
     `*LEAD PERDIDO*\nContacto: ${p.contactName || 'Desconocido'}\nTel: ${p.contactPhone || 'N/A'}${p.reason ? `\nRazon: ${p.reason}` : ''}`,
   send_failed: (p) =>
     `*ENVIO FALLIDO*\nContacto: ${p.contactName || 'Desconocido'}\nTel: ${p.contactPhone || 'N/A'}\nRazon: ${p.reason || 'Error desconocido'}`,
+  conversation_completed: (p) =>
+    `*CONVERSACION COMPLETADA*\nContacto: ${p.contactName || 'Desconocido'}\nTel: ${p.contactPhone || 'N/A'}${p.details ? `\nResultado: ${p.details}` : ''}`,
 };
 
 async function isDirectorWindowOpen(phone: string): Promise<boolean> {

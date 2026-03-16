@@ -172,6 +172,42 @@ function formatCrmTasks(tasks: ConversationContext['crmPendingTasks']): string {
   return lines.join('\n');
 }
 
+function getPanamaDateTime(): string {
+  const now = new Date();
+  const dayNames = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado'];
+  const monthNames = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+
+  const opts: Intl.DateTimeFormatOptions = { timeZone: 'America/Panama' };
+  const panamaStr = now.toLocaleString('en-US', { ...opts, year: 'numeric', month: '2-digit', day: '2-digit', hour: 'numeric', minute: '2-digit', hour12: true, weekday: 'long' });
+
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Panama',
+    weekday: 'long',
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  }).formatToParts(now);
+
+  const get = (type: string) => parts.find((p) => p.type === type)?.value || '';
+  const dayOfWeek = dayNames[now.toLocaleDateString('en-US', { timeZone: 'America/Panama', weekday: 'narrow' }) === 'S'
+    ? (panamaStr.toLowerCase().includes('sun') ? 0 : 6)
+    : ['M', 'T', 'W', 'T', 'F', 'S'].indexOf(now.toLocaleDateString('en-US', { timeZone: 'America/Panama', weekday: 'narrow' })) + 1
+  ] || get('weekday').toLowerCase();
+
+  const day = parseInt(get('day'));
+  const month = parseInt(get('month')) - 1;
+  const year = get('year');
+  const time = `${get('hour')}:${get('minute')} ${get('dayPeriod')}`;
+
+  const weekday = dayNames[new Date(now.toLocaleString('en-US', { timeZone: 'America/Panama' })).getDay()];
+  const monthName = monthNames[month];
+
+  return `Hoy es ${weekday} ${day} de ${monthName} de ${year}, ${time} (hora de Panama)`;
+}
+
 function buildSystemPrompt(ctx: ConversationContext): string {
   const instructionBlock =
     ctx.instructions.length > 0
@@ -203,7 +239,13 @@ function buildSystemPrompt(ctx: ConversationContext): string {
   const businessKeywords = ['llc', 'inc', 'corp', 'sa', 's.a', 'srl', 'ltd', 'group', 'grupo', 'tech', 'solutions', 'consulting', 'services', 'tienda', 'store', 'shop', 'studio', 'estudio', 'agencia', 'agency', 'constructora', 'inmobiliaria', 'acabados', 'materiales', 'industrias', 'comercial', 'distribuidora'];
   const nameLooksLikeBusiness = !nameIsUnknown && businessKeywords.some(kw => (ctx.contactName || '').toLowerCase().includes(kw));
 
-  return `Eres ${ctx.persona.full_name}, ${ctx.persona.job_title} en Obzide Tech, una empresa de desarrollo de software premium con sede en Panama.
+  const dateTimeStr = getPanamaDateTime();
+
+  return `Eres ${ctx.persona.full_name}, ${ctx.persona.job_title} en Obzide Tech, una empresa de desarrollo de software y marketing digital premium con sede en Panama.
+
+=== FECHA Y HORA ACTUAL ===
+${dateTimeStr}
+Usa esta referencia para interpretar correctamente expresiones como "manana", "el martes", "esta semana", "la proxima semana", etc.
 
 === TU PERSONALIDAD ===
 ${ctx.persona.communication_style ? `Estilo: ${ctx.persona.communication_style}` : ''}
@@ -283,6 +325,12 @@ Tu meta es AGENDAR UNA REUNION para que el equipo pueda presentar una propuesta.
 Reunion = cierre. Sin reunion = se pierde el cliente.
 Pero NO presiones para agendar de inmediato. Primero entiende su necesidad, genera confianza, y cuando sientas que hay interes real, propone la reunion de forma natural.
 
+=== PROPUESTAS, COTIZACIONES Y PRECIOS ===
+NUNCA des precios, cotizaciones, ni propuestas por WhatsApp. Ni para software, ni para marketing.
+Las propuestas y cotizaciones SIEMPRE se elaboran y envian DESPUES de una reunion con el equipo.
+Si el cliente pide precios, explicale que cada proyecto es a medida y que necesitas entender mejor su necesidad en una reunion para darle una propuesta acertada.
+Si insiste mucho en saber un precio antes de reunirse, ESCALA.
+
 === PRINCIPIO DE CONSULTORIA ===
 Obzide opera como consultores, NO como vendedores. Tu rol es:
 1. Entender la necesidad real del cliente
@@ -299,7 +347,11 @@ Obzide opera como consultores, NO como vendedores. Tu rol es:
 - El proyecto NO se entrega hasta que el cliente de el visto bueno final.
 - Mantenimiento (hosting + dominio + soporte): mensual o anual. Plan anual = se pagan 10 meses en vez de 12.
 - Diseno de logo/branding es un servicio aparte con costo adicional.
-- Servicios: paginas web, e-commerce, apps moviles, CRM, ERP, inventarios, chatbots, agentes IA, automatizaciones, Google Ads, redes sociales, QR, y cualquier cosa de software.`}
+- Servicios: paginas web, e-commerce, apps moviles, CRM, ERP, inventarios, chatbots, agentes IA, automatizaciones, marketing digital (Google Ads, redes sociales, campanas publicitarias, SEO), QR, y cualquier cosa de software o marketing digital.
+- Marketing digital sigue el MISMO flujo que software: entender la necesidad, agendar reunion, y enviar propuesta despues de la reunion. NO des precios ni paquetes de marketing por WhatsApp.
+
+=== FUERA DE ALCANCE ===
+Si alguien pregunta por algo que NO es software, marketing digital, ni servicios de Obzide (ej: venta de productos fisicos, servicios legales, bienes raices, etc.), responde amablemente que eso no es algo en lo que puedan ayudar. Si claramente no es un lead potencial (proveedor vendiendo algo, spam, o tema completamente ajeno), marca como "perdido".`}
 
 === RECOPILACION DE DATOS DEL CLIENTE ===
 Es CRITICO obtener estos datos durante la conversacion. Hazlo de forma NATURAL, no como interrogatorio:

@@ -351,6 +351,134 @@ async function handleResumen(
   await reply(directorWaId, lines.join('\n'));
 }
 
+async function handleReunion(
+  supabase: SupabaseClient,
+  directorWaId: string,
+  args: string
+) {
+  if (!args) {
+    await reply(directorWaId, 'Uso: $reunion <cliente> <fecha> <hora>\nEjemplo: $reunion juan 2026-03-20 10:00\nFecha formato: YYYY-MM-DD\nHora formato: HH:MM (24h, hora Panama)');
+    return;
+  }
+
+  const parts = args.split(/\s+/);
+  if (parts.length < 3) {
+    await reply(directorWaId, 'Necesito cliente, fecha y hora.\nEjemplo: $reunion juan 2026-03-20 10:00');
+    return;
+  }
+
+  const clientRef = parts[0];
+  const date = parts[1];
+  const startTime = parts[2];
+  const meetingType = parts[3] === 'presencial' ? 'presencial' : 'virtual';
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    await reply(directorWaId, 'Formato de fecha invalido. Usa YYYY-MM-DD (ej: 2026-03-20)');
+    return;
+  }
+
+  if (!/^\d{2}:\d{2}$/.test(startTime)) {
+    await reply(directorWaId, 'Formato de hora invalido. Usa HH:MM (ej: 10:00)');
+    return;
+  }
+
+  const matches = await searchContacts(supabase, clientRef);
+  if (matches.length === 0) {
+    await reply(directorWaId, `No encontre ningun cliente con "${clientRef}".`);
+    return;
+  }
+
+  if (matches.length > 1) {
+    const list = matches.slice(0, 5).map((m, i) =>
+      `${i + 1}. ${m.display_name}${m.company ? ` (${m.company})` : ''} - ${m.phone_number}`
+    ).join('\n');
+    await reply(directorWaId, `Encontre ${matches.length} resultados. Se mas especifico:\n${list}`);
+    return;
+  }
+
+  const target = matches[0];
+
+  const [h, m] = startTime.split(':').map(Number);
+  const endMin = m + 30;
+  const endTime = `${String(h + Math.floor(endMin / 60)).padStart(2, '0')}:${String(endMin % 60).padStart(2, '0')}`;
+
+  const { scheduleMeetingViaCrm } = await import('../services/calendar.js');
+
+  const result = await scheduleMeetingViaCrm({
+    phoneNumber: target.wa_id || target.phone_number,
+    title: `Reunion Obzide - ${target.display_name}`,
+    date,
+    startTime,
+    endTime,
+    meetingType,
+  });
+
+  if (!result.success) {
+    let failMsg = `No pude agendar: ${result.message || result.reason || 'Error'}`;
+    if (result.conflicts && result.conflicts.length > 0) {
+      failMsg += '\n' + result.conflicts.map((c) => `- ${c.label}: ${c.time_range}`).join('\n');
+    }
+    await reply(directorWaId, failMsg);
+    return;
+  }
+
+  await supabase.from('sales_meetings').insert({
+    conversation_id: target.conversationId,
+    contact_id: target.id,
+    google_event_id: result.googleEventId || null,
+    title: `Reunion Obzide - ${target.display_name}`,
+    start_time: new Date(`${date}T${startTime}:00-05:00`).toISOString(),
+    end_time: new Date(`${date}T${endTime}:00-05:00`).toISOString(),
+    meet_link: result.meetLink || null,
+    status: 'scheduled',
+  });
+
+  const typeLabel = meetingType === 'presencial' ? 'Presencial - PH Plaza Real' : `Virtual${result.meetLink ? ': ' + result.meetLink : ''}`;
+  await reply(directorWaId, `Reunion agendada:\n${target.display_name}\n${date} ${startTime}-${endTime}\n${typeLabel}`);
+  log.info('Director scheduled meeting directly', { target: target.display_name, date, startTime });
+}
+
+async function handleAyuda(directorWaId: string) {
+  const helpText = `*COMANDOS DISPONIBLES*
+
+$chatear <cliente> <mensaje>
+  Enviar mensaje a un cliente como su persona asignada
+  Ej: $chatear juan Hola, como vas?
+
+$estado <cliente>
+  Ver estado detallado de un cliente
+  Ej: $estado maria
+
+$pausar <cliente>
+  Pausar la IA para un cliente (modo manual)
+  Ej: $pausar juan
+
+$reanudar <cliente>
+  Reactivar la IA para un cliente
+  Ej: $reanudar juan
+
+$reiniciar <cliente>
+  Reiniciar un contacto como nuevo lead
+  Ej: $reiniciar pedro
+
+$resumen
+  Ver resumen de todas las conversaciones activas
+
+$reunion <cliente> <fecha> <hora> [presencial]
+  Agendar reunion directamente en el calendario
+  Ej: $reunion juan 2026-03-20 10:00
+  Ej: $reunion maria 2026-03-21 14:00 presencial
+
+$ayuda
+  Mostrar esta guia
+
+Sin $ = Modo conversacion natural con el asistente IA
+  Ej: "como va la conversacion con Juan?"
+  Ej: "enviare a Maria un seguimiento"`;
+
+  await reply(directorWaId, helpText);
+}
+
 async function handleReiniciar(
   supabase: SupabaseClient,
   directorWaId: string,
@@ -461,7 +589,14 @@ export async function handleDirectorCommand(
     case 'resumen':
       await handleResumen(supabase, msg.directorWaId);
       break;
+    case 'reunion':
+      await handleReunion(supabase, msg.directorWaId, parsed.args);
+      break;
+    case 'ayuda':
+    case 'help':
+      await handleAyuda(msg.directorWaId);
+      break;
     default:
-      await reply(msg.directorWaId, `Comando desconocido: $${parsed.command}\nComandos: $chatear, $estado, $pausar, $reanudar, $reiniciar, $resumen\nO escribe sin $ para hablar con el asistente.`);
+      await reply(msg.directorWaId, `Comando desconocido: $${parsed.command}\nUsa $ayuda para ver todos los comandos disponibles.`);
   }
 }

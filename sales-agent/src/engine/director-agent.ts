@@ -272,6 +272,56 @@ async function executePendingAction(supabase: SupabaseClient, action: Record<str
         break;
       }
 
+      case 'schedule_meeting_direct': {
+        const phone = payload.target_wa_id as string;
+        const meetingDate = payload.date as string;
+        const startTime = payload.start_time as string;
+        const endTime = payload.end_time as string || '';
+        const meetingType = (payload.meeting_type as string) || 'virtual';
+        const title = (payload.title as string) || `Reunion Obzide - ${payload.contact_name}`;
+
+        const computedEnd = endTime || (() => {
+          const [h, m] = startTime.split(':').map(Number);
+          const endMin = m + 30;
+          return `${String(h + Math.floor(endMin / 60)).padStart(2, '0')}:${String(endMin % 60).padStart(2, '0')}`;
+        })();
+
+        const crmResult = await scheduleMeetingViaCrm({
+          phoneNumber: phone,
+          title,
+          date: meetingDate,
+          startTime,
+          endTime: computedEnd,
+          meetingType,
+        });
+
+        if (!crmResult.success) {
+          let failMsg = `No pude agendar la reunion: ${crmResult.message || crmResult.reason || 'Error desconocido'}`;
+          if (crmResult.conflicts && crmResult.conflicts.length > 0) {
+            const conflictLines = crmResult.conflicts.map((c) => `- ${c.label}: ${c.time_range}`);
+            failMsg += `\n\nConflictos:\n${conflictLines.join('\n')}`;
+          }
+          await reply(directorWaId, failMsg);
+        } else {
+          if (conversationId) {
+            await supabase.from('sales_meetings').insert({
+              conversation_id: conversationId,
+              contact_id: contactId || null,
+              google_event_id: crmResult.googleEventId || null,
+              title,
+              start_time: new Date(`${meetingDate}T${startTime}:00-05:00`).toISOString(),
+              end_time: new Date(`${meetingDate}T${computedEnd}:00-05:00`).toISOString(),
+              meet_link: crmResult.meetLink || null,
+              status: 'scheduled',
+            });
+          }
+
+          const typeLabel = meetingType === 'presencial' ? 'Presencial - PH Plaza Real' : `Virtual${crmResult.meetLink ? ': ' + crmResult.meetLink : ''}`;
+          await reply(directorWaId, `Reunion agendada:\n${title}\n${meetingDate} ${startTime}-${computedEnd}\n${typeLabel}`);
+        }
+        break;
+      }
+
       default:
         await reply(directorWaId, 'Accion ejecutada.');
     }
@@ -367,7 +417,8 @@ CAPACIDADES:
 1. CONSULTAS (sin confirmacion): resumenes, estado de clientes, metricas, buscar info
 2. ACCIONES (requieren confirmacion):
    - send_message: Enviar mensaje a un cliente como la persona asignada
-   - schedule_meeting_request: Pedirle al cliente cuando le queda bien para una reunion (el agente de IA continuara el flujo)
+   - schedule_meeting_request: Pedirle al cliente cuando le queda bien para una reunion (el agente de IA continuara el flujo). Usa esto cuando NO se tiene fecha/hora especifica.
+   - schedule_meeting_direct: Agendar una reunion directamente en el calendario sin preguntarle al cliente. Usa esto cuando el director da una fecha, hora y cliente especificos (ej: "agenda reunion con Juan el martes a las 10").
    - update_stage: Cambiar la etapa de un lead
    - pause_ai: Pausar IA en una conversacion
    - resume_ai: Reactivar IA
@@ -377,7 +428,7 @@ Responde SOLO con JSON valido:
 {
   "response_text": "tu mensaje al director (WhatsApp, corto y directo)",
   "action": null | {
-    "type": "send_message|schedule_meeting_request|update_stage|pause_ai|resume_ai",
+    "type": "send_message|schedule_meeting_request|schedule_meeting_direct|update_stage|pause_ai|resume_ai",
     "contact_query": "nombre/telefono para buscar al contacto",
     "params": {}
   }
@@ -392,7 +443,8 @@ REGLAS:
 - Cuando propongas una accion, describe EXACTAMENTE lo que haras en response_text y termina con "Confirmas?"
 - Los mensajes a clientes deben ser CORTOS, naturales, como WhatsApp humano
 - Adapta el tono del mensaje al estilo de la persona asignada al contacto
-- Para agendar reunion: NO agendes directamente. Envia un mensaje al cliente preguntando cuando le queda bien. El sistema de IA se encargara de agendar cuando el cliente responda.
+- Para agendar reunion SIN fecha/hora especifica: usa schedule_meeting_request para preguntarle al cliente cuando le queda bien.
+- Para agendar reunion CON fecha/hora especifica del director: usa schedule_meeting_direct con params { date: "YYYY-MM-DD", start_time: "HH:MM", end_time: "HH:MM", title: "...", meeting_type: "virtual|presencial" }. Esto agenda directamente sin preguntarle al cliente.
 
 ETAPAS VALIDAS: nuevo, en_proceso, demo_solicitada, cotizacion_enviada, por_cerrar, ganado, perdido`;
 
@@ -531,6 +583,41 @@ Reglas: Mantiene significado, adapta tono, formato WhatsApp corto y natural. Res
           break;
         }
 
+        case 'schedule_meeting_direct': {
+          const meetDate = actionParams.date as string || '';
+          const meetStart = actionParams.start_time as string || '';
+          const meetEnd = actionParams.end_time as string || '';
+          const meetType = (actionParams.meeting_type as string) || 'virtual';
+          const meetTitle = (actionParams.title as string) || `Reunion Obzide - ${found.contact.display_name || 'Cliente'}`;
+
+          if (!meetDate || !meetStart) {
+            await reply(directorWaId, 'Necesito al menos la fecha y hora de inicio para agendar. Ejemplo: "agenda reunion con Juan el martes a las 10am"');
+            break;
+          }
+
+          await createPendingAction(
+            supabase,
+            directorWaId,
+            'schedule_meeting_direct',
+            {
+              target_wa_id: found.contact.wa_id || found.contact.phone_number,
+              contact_name: found.contact.display_name || found.contact.phone_number,
+              date: meetDate,
+              start_time: meetStart,
+              end_time: meetEnd,
+              meeting_type: meetType,
+              title: meetTitle,
+            },
+            parsed.response_text,
+            found.contact.id,
+            found.conversationId
+          );
+
+          const typeLabel = meetType === 'presencial' ? 'presencial en PH Plaza Real' : 'virtual con Google Meet';
+          await reply(directorWaId, `Agendar reunion ${typeLabel}:\n${meetTitle}\n${meetDate} ${meetStart}${meetEnd ? '-' + meetEnd : ''}\nCliente: ${found.contact.display_name || found.contact.phone_number}\n\nConfirmas?`);
+          break;
+        }
+
         case 'update_stage': {
           const newStage = actionParams.stage as string || actionParams.new_stage as string || '';
           await createPendingAction(
@@ -585,6 +672,6 @@ Reglas: Mantiene significado, adapta tono, formato WhatsApp corto y natural. Res
     }
   } catch (err) {
     log.error('Director agent error', { error: err instanceof Error ? err.message : String(err) });
-    await reply(directorWaId, 'Hubo un error procesando tu solicitud. Puedes usar los comandos $ como respaldo:\n$resumen - Ver conversaciones\n$chatear <cliente> <msg> - Enviar mensaje\n$estado <cliente> - Ver estado');
+    await reply(directorWaId, 'Hubo un error procesando tu solicitud. Usa $ayuda para ver todos los comandos disponibles.');
   }
 }

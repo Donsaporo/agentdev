@@ -160,6 +160,9 @@ async function processMessage(
     }
 
     if (shouldSkipResponse(msg.conversationId, msg.content)) {
+      notifyConversationCompleted(supabase, msg.conversationId, msg.contactId).catch((err) => {
+        log.warn('Conversation completed notification failed', { error: err instanceof Error ? err.message : String(err) });
+      });
       return;
     }
 
@@ -1006,7 +1009,7 @@ async function autoSyncToCrm(supabase: SupabaseClient, contactId: string, person
 async function loadContactForCrm(supabase: SupabaseClient, contactId: string) {
   const { data } = await supabase
     .from('whatsapp_contacts')
-    .select('phone_number, display_name, profile_name, email, company, notes, crm_client_id, client_profile_id, follow_up_count')
+    .select('phone_number, display_name, profile_name, email, company, notes, crm_client_id, client_profile_id, follow_up_count, lead_stage')
     .eq('id', contactId)
     .maybeSingle();
   return data;
@@ -1022,6 +1025,45 @@ async function triggerAutoSummary(
 
   log.info('Auto-summarizing conversation', { conversationId });
   await summarizeConversation(supabase, conversationId, contactId);
+}
+
+async function notifyConversationCompleted(
+  supabase: SupabaseClient,
+  conversationId: string,
+  contactId: string
+): Promise<void> {
+  const contact = await loadContactForCrm(supabase, contactId);
+  if (!contact) return;
+
+  const { data: meeting } = await supabase
+    .from('sales_meetings')
+    .select('title, start_time, status')
+    .eq('conversation_id', conversationId)
+    .eq('status', 'scheduled')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  let result = `Etapa: ${contact.lead_stage || 'desconocida'}`;
+  if (meeting) {
+    const meetDate = new Date(meeting.start_time).toLocaleDateString('es-PA', {
+      day: '2-digit',
+      month: '2-digit',
+      timeZone: 'America/Panama',
+    });
+    result = `Reunion agendada: ${meeting.title} (${meetDate})`;
+  } else if (contact.lead_stage === 'perdido') {
+    result = 'Lead perdido';
+  } else if (contact.lead_stage === 'ganado') {
+    result = 'Lead ganado';
+  }
+
+  notifyDirector({
+    type: 'conversation_completed',
+    contactName: contact.display_name || 'Desconocido',
+    contactPhone: contact.phone_number || '',
+    details: result,
+  }).catch(() => {});
 }
 
 async function logAction(
