@@ -397,7 +397,7 @@ async function sendIntroMessage(
   persona: { full_name: string; first_name: string }
 ) {
   try {
-    const introText = `Hola, gracias por comunicarte con Obzide Tech. Te voy a comunicar con ${persona.first_name}, quien te va a atender. Un momento por favor.`;
+    const introText = 'Hola, gracias por comunicarte con Obzide Tech. En un momento te asigno con uno de nuestros asesores para atenderte. Por favor, espera un momento.';
 
     await setTypingIndicator(supabase, conversationId, true);
     await sleep(5_000 + Math.random() * 5_000);
