@@ -4,12 +4,13 @@ import { createLogger } from '../core/logger.js';
 const log = createLogger('crm');
 
 const VALID_LEAD_STAGES = [
-  'nuevo', 'en_negociacion', 'demo_solicitada',
+  'nuevo', 'en_proceso', 'demo_solicitada',
   'cotizacion_enviada', 'por_cerrar', 'ganado', 'perdido',
 ] as const;
 
 const STAGE_ALIASES: Record<string, string> = {
-  contactado: 'en_negociacion',
+  contactado: 'en_proceso',
+  en_negociacion: 'en_proceso',
   cerrado: 'ganado',
 };
 

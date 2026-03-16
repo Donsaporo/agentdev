@@ -122,6 +122,31 @@ function formatMeetingHistory(meetings: ConversationContext['meetingHistory']): 
   return lines.join('\n');
 }
 
+function formatUpcomingMeetings(meetings: ConversationContext['upcomingMeetings']): string {
+  if (!meetings || meetings.length === 0) return '';
+
+  const lines: string[] = ['\n=== REUNIONES PROGRAMADAS (PROXIMAS) ==='];
+  for (const m of meetings) {
+    const d = new Date(m.start_time);
+    const dateStr = d.toLocaleString('es-PA', {
+      weekday: 'long',
+      day: 'numeric',
+      month: 'long',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+      timeZone: 'America/Panama',
+    });
+    const type = m.meeting_type === 'virtual' ? 'virtual' : 'presencial';
+    const link = m.meet_link ? `, Google Meet: ${m.meet_link}` : '';
+    lines.push(`- "${m.title}" - ${dateStr} (${type}${link})`);
+  }
+
+  lines.push('\nSi el cliente ya tiene reunion programada, NO agendaras otra a menos que pida reprogramar. Si pregunta "cuando es nuestra reunion?", responde con los datos de arriba.');
+
+  return lines.join('\n');
+}
+
 function buildSystemPrompt(ctx: ConversationContext): string {
   const instructionBlock =
     ctx.instructions.length > 0
@@ -171,6 +196,7 @@ ${ctx.postVentaContext ? `\n${ctx.postVentaContext}` : ''}
 ${formatInsights(ctx.insights)}
 ${formatSummaries(ctx.conversationSummaries)}
 ${formatMeetingHistory(ctx.meetingHistory)}
+${formatUpcomingMeetings(ctx.upcomingMeetings)}
 
 === INSTRUCCIONES DEL DIRECTOR ===
 ${instructionBlock}
@@ -347,10 +373,16 @@ Si recibes un mensaje no-texto como [image], [audio], [document], [video]:
 9. NUNCA repitas el mismo mensaje o la misma estructura. Varia siempre.
 10. Si detectas que el cliente no es un lead real (spam, broma, proveedor vendiendote algo), marca como "perdido" y responde educadamente que no es algo que puedan ayudarle.
 
+=== CIERRE DE CONVERSACION ===
+- Cuando la conversacion ya llego a su conclusion natural (reunion agendada y confirmada, despedida mutua, o el cliente simplemente confirmo con "Listo", "Ok", "Perfecto", etc.), responde con UN cierre breve y natural de maximo 1 oracion. Ejemplo: "Perfecto, cualquier cosa aqui estamos!" o "Genial, nos vemos entonces!"
+- Si tu ultimo mensaje ya fue una despedida y el cliente responde con otra confirmacion ("Igualmente", "Gracias", "Dale"), responde con response_text vacio (""). No repitas despedidas ni agradecimientos.
+- NUNCA envies mas de UN mensaje de cierre por conversacion. Una vez que dijiste adios, la conversacion termino.
+- Si despues de un cierre el cliente escribe algo NUEVO (una pregunta, un pedido, un tema diferente), entonces SI responde normalmente. Pero si solo confirma o se despide, no respondas mas.
+
 === GESTION DE ETAPAS (PIPELINE CRM) ===
 Cambia la etapa del lead segun la conversacion. Estas son las UNICAS 7 etapas validas:
 - "nuevo" -> Contacto recien llegado, primera interaccion o ya se inicio conversacion y muestra interes
-- "en_negociacion" -> Tiene necesidad real identificada, se estan discutiendo detalles del proyecto
+- "en_proceso" -> Ya se hablo con el cliente, se agendo reunion, o se esta dando seguimiento activo
 - "demo_solicitada" -> Se agendo o solicito una reunion/demo
 - "cotizacion_enviada" -> Se envio cotizacion o propuesta formal
 - "por_cerrar" -> Cliente interesado en cerrar, en proceso de decision final
@@ -368,7 +400,7 @@ Responde UNICAMENTE con JSON valido. Sin texto antes ni despues:
 }
 
 === ACCIONES DISPONIBLES ===
-- {"type": "update_lead_stage", "params": {"stage": "nuevo|en_negociacion|demo_solicitada|cotizacion_enviada|por_cerrar|ganado|perdido"}}
+- {"type": "update_lead_stage", "params": {"stage": "nuevo|en_proceso|demo_solicitada|cotizacion_enviada|por_cerrar|ganado|perdido"}}
 - {"type": "schedule_meeting", "params": {"title": "...", "datetime": "ISO8601", "duration": "30", "meeting_type": "virtual|presencial"}}
 - {"type": "add_note", "params": {"note": "informacion importante extraida de la conversacion"}}
 - {"type": "update_client_profile", "params": {"field": "email|company|display_name|industry|estimated_budget|source", "value": "..."}}

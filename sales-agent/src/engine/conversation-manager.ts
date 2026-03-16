@@ -185,38 +185,6 @@ async function processMessage(
       await sendIntroMessage(supabase, msg.conversationId, msg.contactId, contact.wa_id || contact.phone_number, persona);
     }
 
-    const mediaTypes = ['image', 'audio', 'document', 'video'];
-    if (mediaTypes.includes(msg.messageType)) {
-      const { data: dbMsg } = await supabase
-        .from('whatsapp_messages')
-        .select('media_url, media_mime_type, media_local_path, media_download_status')
-        .eq('id', msg.id)
-        .maybeSingle();
-
-      const mediaId = dbMsg?.media_url || msg.mediaUrl || '';
-      const mimeType = dbMsg?.media_mime_type || msg.mediaMimeType || '';
-      const localPath = dbMsg?.media_local_path || '';
-      const downloadStatus = dbMsg?.media_download_status || '';
-
-      if (mediaId || localPath) {
-        const enriched = await processMediaContent(
-          msg.messageType,
-          mediaId,
-          mimeType,
-          localPath,
-          downloadStatus
-        );
-
-        if (enriched) {
-          msg.content = enriched;
-          await supabase
-            .from('whatsapp_messages')
-            .update({ metadata: { media_description: enriched } })
-            .eq('id', msg.id);
-        }
-      }
-    }
-
     const context = await buildContext(
       supabase,
       msg.conversationId,
@@ -253,7 +221,20 @@ async function processMessage(
         return;
       }
 
-      await executeActions(supabase, msg.conversationId, msg.contactId, decision.actions, persona.full_name);
+      const actionResult = await executeActions(supabase, msg.conversationId, msg.contactId, decision.actions, persona.full_name);
+
+      if (actionResult.messageSent) {
+        await logAction(supabase, msg.conversationId, msg.contactId, persona.id, {
+          type: 'send_message',
+          input: msg.content,
+          output: decision.responseText,
+          reasoning: decision.reasoning + ' [response suppressed: action already sent message]',
+          model: decision.model,
+          inputTokens: decision.inputTokens,
+          outputTokens: decision.outputTokens,
+        });
+        return;
+      }
 
       const chunks = shouldSplitMessage(sanitized.text);
       const recipientPhone = contact.wa_id || contact.phone_number;
@@ -566,7 +547,8 @@ async function executeActions(
   contactId: string,
   actions: AgentAction[],
   personaName = 'Sales Agent'
-) {
+): Promise<{ messageSent: boolean }> {
+  let messageSent = false;
   let cachedContact: Awaited<ReturnType<typeof loadContactForCrm>> = null;
 
   async function getContact() {
@@ -728,6 +710,7 @@ async function executeActions(
 
               const fallbackResult = await sendTextMessage(slotsPhone, fallbackMsg);
               await recordOutbound(supabase, conversationId, contactId, fallbackResult.messageId, fallbackMsg, persona.full_name);
+              messageSent = true;
             }
             break;
           }
@@ -998,6 +981,8 @@ async function executeActions(
       });
     }
   }
+
+  return { messageSent };
 }
 
 async function autoSyncToCrm(supabase: SupabaseClient, contactId: string, personaName: string) {

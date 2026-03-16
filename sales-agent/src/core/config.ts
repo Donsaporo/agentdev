@@ -57,7 +57,7 @@ export const config = {
     heartbeatInterval: 60_000,
     minResponseDelay: 4_000,
     maxResponseDelay: 25_000,
-    messageBatchWindow: 10_000,
-    messageBatchExtraDelay: 5_000,
+    messageBatchWindow: 15_000,
+    messageBatchExtraDelay: 8_000,
   },
 } as const;

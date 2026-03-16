@@ -24,6 +24,14 @@ export interface ConversationSummary {
   conversation_id: string;
 }
 
+export interface UpcomingMeeting {
+  title: string;
+  start_time: string;
+  end_time: string;
+  meeting_type: string;
+  meet_link: string | null;
+}
+
 export interface ConversationContext {
   persona: Persona;
   contactName: string;
@@ -43,6 +51,7 @@ export interface ConversationContext {
   insights: ClientInsight[];
   conversationSummaries: ConversationSummary[];
   meetingHistory: MeetingHistoryEntry[];
+  upcomingMeetings: UpcomingMeeting[];
   postVentaContext: string;
   isPostVenta: boolean;
 }
@@ -85,7 +94,10 @@ export async function buildContext(
     || convCategory === 'active_client'
     || leadStage === 'ganado';
 
-  const localMeetings = await loadCompletedMeetings(supabase, contactId);
+  const [localMeetings, upcomingMeetings] = await Promise.all([
+    loadCompletedMeetings(supabase, contactId),
+    loadUpcomingMeetings(supabase, contactId),
+  ]);
 
   if (crmClientId) {
     try {
@@ -221,6 +233,7 @@ export async function buildContext(
     insights,
     conversationSummaries: summaries,
     meetingHistory,
+    upcomingMeetings,
     postVentaContext,
     isPostVenta,
   };
@@ -308,6 +321,32 @@ async function loadCompletedMeetings(supabase: SupabaseClient, contactId: string
       });
   } catch (err) {
     log.warn('Failed to load local meetings', { contactId, error: err instanceof Error ? err.message : String(err) });
+    return [];
+  }
+}
+
+async function loadUpcomingMeetings(supabase: SupabaseClient, contactId: string): Promise<UpcomingMeeting[]> {
+  try {
+    const { data } = await supabase
+      .from('sales_meetings')
+      .select('title, start_time, end_time, meet_link, status')
+      .eq('contact_id', contactId)
+      .eq('status', 'scheduled')
+      .gt('start_time', new Date().toISOString())
+      .order('start_time', { ascending: true })
+      .limit(5);
+
+    if (!data || data.length === 0) return [];
+
+    return data.map((m) => ({
+      title: m.title,
+      start_time: m.start_time,
+      end_time: m.end_time,
+      meeting_type: m.meet_link ? 'virtual' : 'presencial',
+      meet_link: m.meet_link || null,
+    }));
+  } catch (err) {
+    log.warn('Failed to load upcoming meetings', { contactId, error: err instanceof Error ? err.message : String(err) });
     return [];
   }
 }

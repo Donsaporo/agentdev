@@ -44,7 +44,7 @@ export function sleep(ms: number): Promise<void> {
 }
 
 export function shouldSplitMessage(text: string): string[] {
-  if (text.length < 160) return [text];
+  if (text.length < 320) return [text];
 
   const sentences = text.match(/[^.!?\n]+[.!?\n]+/g) || [text];
 
@@ -54,7 +54,7 @@ export function shouldSplitMessage(text: string): string[] {
   let current = '';
 
   for (const sentence of sentences) {
-    if ((current + sentence).length > 250 && current.length > 30) {
+    if ((current + sentence).length > 450 && current.length > 30) {
       chunks.push(current.trim());
       current = sentence;
     } else {
