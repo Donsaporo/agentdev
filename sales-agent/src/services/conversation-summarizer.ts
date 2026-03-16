@@ -1,6 +1,6 @@
 import { SupabaseClient } from '@supabase/supabase-js';
 import { createLogger } from '../core/logger.js';
-import { callClaude } from './claude.js';
+import { callAISecondary } from './ai.js';
 import { addCrmClientInsight } from './crm-postventa.js';
 
 const log = createLogger('conversation-summarizer');
@@ -152,7 +152,7 @@ Categorias de insights:
 NO incluyas insights que ya existen en la lista proporcionada.
 Solo incluye insights con evidencia clara en la conversacion.`;
 
-  const response = await callClaude(systemPrompt, [
+  const response = await callAISecondary(systemPrompt, [
     { role: 'user', content: transcript },
   ], { maxTokens: 1024, temperature: 0.3 });
 

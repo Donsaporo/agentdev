@@ -6,6 +6,7 @@ import { buildContext } from './context-builder.js';
 import { decide, AgentAction } from './decision-engine.js';
 import { calculateDelay, sleep, shouldSplitMessage } from './human-simulator.js';
 import { sanitizeResponse } from './response-sanitizer.js';
+import { shouldSkipResponse, isFarewellMessage, markFarewellSent, clearFarewell } from './conversation-closer.js';
 import { sendTextMessage, sendTemplateMessage, setTypingIndicator } from '../services/whatsapp.js';
 import type { SendResult } from '../services/whatsapp.js';
 import { notifyDirector } from '../services/director-notifier.js';
@@ -154,6 +155,10 @@ async function processMessage(
         conversationId: msg.conversationId,
         mode: conversation?.agent_mode,
       });
+      return;
+    }
+
+    if (shouldSkipResponse(msg.conversationId, msg.content)) {
       return;
     }
 
@@ -361,6 +366,12 @@ async function processMessage(
       inputTokens: decision.inputTokens,
       outputTokens: decision.outputTokens,
     });
+
+    if (isFarewellMessage(msg.content) && decision.responseText) {
+      markFarewellSent(msg.conversationId);
+    } else if (!isFarewellMessage(msg.content)) {
+      clearFarewell(msg.conversationId);
+    }
 
     await autoSyncToCrm(supabase, msg.contactId, persona.full_name).catch((err) => {
       log.warn('Auto CRM sync failed (non-blocking)', { error: err instanceof Error ? err.message : String(err) });

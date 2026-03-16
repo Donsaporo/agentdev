@@ -7,7 +7,7 @@ import { loadPersonas, getOrAssignPersona } from './engine/persona-engine.js';
 import { invalidateInstructionsCache } from './engine/knowledge-search.js';
 import { sendTextMessage, sendTemplateMessage, setTypingIndicator } from './services/whatsapp.js';
 import { notifyDirector, flushPendingNotifications } from './services/director-notifier.js';
-import { callClaude } from './services/claude.js';
+import { callAISecondary } from './services/ai.js';
 import { calculateDelay, sleep } from './engine/human-simulator.js';
 
 const log = createLogger('main');
@@ -292,7 +292,7 @@ Reglas:
 
 Responde SOLO con el texto del mensaje, nada mas.`;
 
-  const response = await callClaude(prompt, [{ role: 'user', content: 'Genera el mensaje de seguimiento.' }], {
+  const response = await callAISecondary(prompt, [{ role: 'user', content: 'Genera el mensaje de seguimiento.' }], {
     maxTokens: 200,
     temperature: 0.8,
   });
@@ -627,7 +627,7 @@ async function startup() {
 
   log.info('Sales agent is ONLINE and listening for messages');
   log.info(`WhatsApp: 360dialog via ${config.d360.baseUrl}`);
-  log.info(`AI Model: ${config.anthropic.model}`);
+  log.info(`AI Primary: ${config.openai.primaryModel} | Secondary: ${config.openai.secondaryModel}${config.anthropic.apiKey ? ' | Fallback: Claude' : ''}`);
 }
 
 async function shutdown() {

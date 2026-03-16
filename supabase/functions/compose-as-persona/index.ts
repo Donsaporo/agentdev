@@ -61,8 +61,10 @@ Deno.serve(async (req: Request) => {
       );
     }
 
+    const openaiKey = Deno.env.get("OPENAI_KEY");
     const anthropicKey = Deno.env.get("ANTHROPIC_API_KEY");
-    if (!anthropicKey) {
+
+    if (!openaiKey && !anthropicKey) {
       return new Response(
         JSON.stringify({ transformed: text, persona: personaData.full_name }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
@@ -84,33 +86,56 @@ Reglas:
 - Si el mensaje original ya es adecuado, mejoralo minimamente
 - Responde SOLO con el texto transformado, nada mas`;
 
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "x-api-key": anthropicKey,
-        "anthropic-version": "2023-06-01",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 300,
-        temperature: 0.6,
-        system: systemPrompt,
-        messages: [{ role: "user", content: text }],
-      }),
-    });
+    let transformed = text;
 
-    if (!res.ok) {
-      const err = await res.text();
-      console.error("Claude API error:", err);
-      return new Response(
-        JSON.stringify({ transformed: text, persona: personaData.full_name, error: "AI unavailable" }),
-        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+    if (openaiKey) {
+      const res = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${openaiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          max_tokens: 300,
+          temperature: 0.6,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: text },
+          ],
+        }),
+      });
+
+      if (res.ok) {
+        const aiResponse = await res.json();
+        transformed = aiResponse.choices?.[0]?.message?.content?.trim() || text;
+      } else {
+        console.error("OpenAI API error:", await res.text());
+      }
+    } else if (anthropicKey) {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "x-api-key": anthropicKey,
+          "anthropic-version": "2023-06-01",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 300,
+          temperature: 0.6,
+          system: systemPrompt,
+          messages: [{ role: "user", content: text }],
+        }),
+      });
+
+      if (res.ok) {
+        const aiResponse = await res.json();
+        transformed = aiResponse.content?.[0]?.text?.trim() || text;
+      } else {
+        console.error("Claude API error:", await res.text());
+      }
     }
-
-    const aiResponse = await res.json();
-    const transformed = aiResponse.content?.[0]?.text?.trim() || text;
 
     return new Response(
       JSON.stringify({

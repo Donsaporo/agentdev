@@ -1,7 +1,7 @@
 import { SupabaseClient } from '@supabase/supabase-js';
 import { createLogger } from '../core/logger.js';
 import { sendTextMessage } from '../services/whatsapp.js';
-import { callClaude } from '../services/claude.js';
+import { callAISecondary } from '../services/ai.js';
 import { getOrAssignPersona } from './persona-engine.js';
 
 const log = createLogger('director-commands');
@@ -164,7 +164,7 @@ Reglas:
 - 1-3 oraciones maximo
 - Responde SOLO con el texto transformado`;
 
-    const res = await callClaude(systemPrompt, [{ role: 'user', content: message }], {
+    const res = await callAISecondary(systemPrompt, [{ role: 'user', content: message }], {
       maxTokens: 300,
       temperature: 0.6,
     });

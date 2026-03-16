@@ -10,6 +10,7 @@ const VALID_LEAD_STAGES = [
 
 const STAGE_ALIASES: Record<string, string> = {
   contactado: 'en_negociacion',
+  cerrado: 'ganado',
 };
 
 const VALID_EVENT_TYPES = [

@@ -19,13 +19,16 @@ export const config = {
     url: optional('CRM_SUPABASE_URL'),
     serviceRoleKey: optional('CRM_SUPABASE_SERVICE_ROLE_KEY'),
   },
+  openai: {
+    apiKey: required('OPENAI_KEY'),
+    primaryModel: optional('OPENAI_PRIMARY_MODEL', 'gpt-4o'),
+    secondaryModel: optional('OPENAI_SECONDARY_MODEL', 'gpt-4o-mini'),
+    maxTokens: parseInt(optional('OPENAI_MAX_TOKENS', '1024'), 10),
+  },
   anthropic: {
-    apiKey: required('ANTHROPIC_API_KEY'),
+    apiKey: optional('ANTHROPIC_API_KEY'),
     model: optional('ANTHROPIC_MODEL', 'claude-opus-4-20250514'),
     maxTokens: parseInt(optional('ANTHROPIC_MAX_TOKENS', '1024'), 10),
-  },
-  openai: {
-    apiKey: optional('OPENAI_KEY'),
   },
   d360: {
     apiKey: required('D360_API_KEY'),

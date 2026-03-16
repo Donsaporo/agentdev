@@ -1,5 +1,6 @@
 import { config } from '../core/config.js';
 import { createLogger } from '../core/logger.js';
+import { callOpenAIWithVision, ChatMessage } from './openai.js';
 
 const log = createLogger('media');
 
@@ -42,46 +43,26 @@ export async function describeImage(imageBuffer: Buffer, mimeType: string): Prom
   try {
     const base64 = imageBuffer.toString('base64');
     const mediaType = normalizeImageMimeType(mimeType);
+    const dataUrl = `data:${mediaType};base64,${base64}`;
 
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'x-api-key': config.anthropic.apiKey,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: config.anthropic.model,
-        max_tokens: 200,
-        messages: [
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'image',
-                source: { type: 'base64', media_type: mediaType, data: base64 },
-              },
-              { type: 'text', text: VISION_PROMPT },
-            ],
-          },
+    const messages: ChatMessage[] = [
+      {
+        role: 'user',
+        content: [
+          { type: 'image_url', image_url: { url: dataUrl, detail: 'low' } },
+          { type: 'text', text: VISION_PROMPT },
         ],
-      }),
+      },
+    ];
+
+    const response = await callOpenAIWithVision(messages, {
+      maxTokens: 200,
+      temperature: 0.3,
+      tier: 'secondary',
     });
 
-    if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`Claude Vision API error ${res.status}: ${err}`);
-    }
-
-    const data = await res.json();
-    const text =
-      data.content
-        ?.filter((b: { type: string }) => b.type === 'text')
-        .map((b: { text: string }) => b.text)
-        .join('') || '';
-
-    log.info('Image described', { length: text.length });
-    return { description: text.trim(), success: true };
+    log.info('Image described', { length: response.text.length });
+    return { description: response.text.trim(), success: true };
   } catch (err) {
     log.error('describeImage failed', { error: err instanceof Error ? err.message : String(err) });
     return { description: '', success: false };
@@ -129,10 +110,6 @@ export async function transcribeAudio(audioBuffer: Buffer, mimeType: string): Pr
 
 export async function describeDocument(docBuffer: Buffer, mimeType: string): Promise<MediaResult> {
   try {
-    if (mimeType === 'application/pdf' || mimeType.includes('pdf')) {
-      return await describeDocumentWithVision(docBuffer, mimeType);
-    }
-
     if (mimeType.includes('text') || mimeType.includes('json') || mimeType.includes('xml')) {
       const text = docBuffer.toString('utf-8').slice(0, 5000);
       return { description: `Documento de texto: ${text.slice(0, 500)}`, success: true };
@@ -147,46 +124,28 @@ export async function describeDocument(docBuffer: Buffer, mimeType: string): Pro
 
 async function describeDocumentWithVision(docBuffer: Buffer, mimeType: string): Promise<MediaResult> {
   const base64 = docBuffer.toString('base64');
+  const isPdf = mimeType === 'application/pdf' || mimeType.includes('pdf');
+  const resolvedMime = isPdf ? 'application/pdf' : normalizeImageMimeType(mimeType);
+  const dataUrl = `data:${resolvedMime};base64,${base64}`;
 
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'x-api-key': config.anthropic.apiKey,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: config.anthropic.model,
-      max_tokens: 300,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'document',
-              source: { type: 'base64', media_type: mimeType, data: base64 },
-            },
-            { type: 'text', text: DOCUMENT_PROMPT },
-          ],
-        },
+  const messages: ChatMessage[] = [
+    {
+      role: 'user',
+      content: [
+        { type: 'image_url', image_url: { url: dataUrl, detail: 'low' } },
+        { type: 'text', text: DOCUMENT_PROMPT },
       ],
-    }),
+    },
+  ];
+
+  const response = await callOpenAIWithVision(messages, {
+    maxTokens: 300,
+    temperature: 0.3,
+    tier: 'secondary',
   });
 
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Claude document API error ${res.status}: ${err}`);
-  }
-
-  const data = await res.json();
-  const text =
-    data.content
-      ?.filter((b: { type: string }) => b.type === 'text')
-      .map((b: { text: string }) => b.text)
-      .join('') || '';
-
-  log.info('Document described', { length: text.length, mimeType });
-  return { description: text.trim(), success: true };
+  log.info('Document described', { length: response.text.length, mimeType });
+  return { description: response.text.trim(), success: true };
 }
 
 function normalizeImageMimeType(mime: string): string {

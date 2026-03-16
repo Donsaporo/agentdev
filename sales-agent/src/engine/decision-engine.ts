@@ -1,5 +1,5 @@
 import { createLogger } from '../core/logger.js';
-import { callClaude, ClaudeMessage } from '../services/claude.js';
+import { callAI, AIMessage } from '../services/ai.js';
 import { ConversationContext } from './context-builder.js';
 
 const log = createLogger('decision-engine');
@@ -424,7 +424,7 @@ export async function decide(
     && lastMsg.role === 'user'
     && lastMsg.content === incomingMessage;
 
-  const claudeMessages: ClaudeMessage[] = isDuplicate
+  const aiMessages: AIMessage[] = isDuplicate
     ? history.map((m) => ({
         role: m.role as 'user' | 'assistant',
         content: m.content,
@@ -437,9 +437,10 @@ export async function decide(
         { role: 'user', content: incomingMessage },
       ];
 
-  const response = await callClaude(systemPrompt, claudeMessages, {
+  const response = await callAI(systemPrompt, aiMessages, {
     maxTokens: 1024,
     temperature: 0.7,
+    tier: 'primary',
   });
 
   try {
@@ -473,7 +474,7 @@ export async function decide(
 
     return decision;
   } catch {
-    log.warn('Failed to parse Claude response as JSON, using raw text', {
+    log.warn('Failed to parse AI response as JSON, using raw text', {
       responsePreview: response.text.slice(0, 200),
     });
 
@@ -499,7 +500,7 @@ export async function decide(
       actions: [],
       reasoning: 'Fallback: could not parse structured response',
       shouldEscalate: true,
-      escalationReason: 'Respuesta del modelo no pudo ser parseada como JSON',
+      escalationReason: 'Respuesta del modelo no pudo ser parseada',
       inputTokens: response.inputTokens,
       outputTokens: response.outputTokens,
       model: response.model,
