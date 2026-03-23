@@ -57,19 +57,41 @@ const PRICE_PATTERNS = [
 
 const BANNED_CONTENT_PATTERNS = [
   /\bonlyfans?\b/i,
-  /\bonly\s+fans?\b/i,
-  /\bcontenido\s+(?:adulto|para\s+adultos|explicito|erótico|erotico)\b/i,
+  /\bonly\s*fans?\b/i,
+  /\bo\.?f\.?\b/i,
+  /\bonlyfan\b/i,
+  /\bcontenido\s+(?:adulto|para\s+adultos|explicito|explícito|erótico|erotico|sexual)\b/i,
   /\bwebcam\b/i,
-  /\bapuestas?\s+deportivas?\b/i,
-  /\bcasino\s+online\b/i,
-  /\bcrypto\s+trading\b/i,
-  /\bbitcoin\s+trading\b/i,
+  /\bcam\s*(?:girl|boy|model)\b/i,
+  /\bapuestas?\b/i,
+  /\bcasino\b/i,
+  /\bcrypto\s*(?:trading|currency|moneda)\b/i,
+  /\bbitcoin\s*trading\b/i,
   /\b\+18\b/,
   /\bxxx\b/i,
   /\bpornograf/i,
   /\bescort[s]?\b/i,
+  /\bsugar\s*(?:daddy|baby|mama|papa)\b/i,
   /\bmultinivel\b/i,
   /\besquema\s+piramidal\b/i,
+  /\bhacking\b/i,
+  /\bcarding\b/i,
+  /\bphishing\b/i,
+  /\bpirateria\b/i,
+  /\bpirate(?:ar|ria)?\b/i,
+  /\bcrack(?:ear|eado)?\b/i,
+  /\bventa\s+de\s+(?:seguidores|likes|followers|bots)\b/i,
+  /\bcomprar\s+(?:seguidores|likes|followers)\b/i,
+  /\bespionaje\b/i,
+  /\bstalking\b/i,
+  /\brastreo\s+de\s+(?:personas|celular|telefono)\b/i,
+  /\blavado\s+de\s+(?:dinero|activos)\b/i,
+  /\bevasion\s+(?:fiscal|de\s+impuestos)\b/i,
+  /\barmas?\s+(?:de\s+fuego|blancas?|automatica)\b/i,
+  /\bexplosivos?\b/i,
+  /\bdrogas?\b/i,
+  /\bnarco/i,
+  /\bmariguana\b|\bmarihuana\b|\bcannabis\b|\bcocaina\b/i,
 ];
 
 const PRIVATE_INFO_PATTERNS = [
@@ -164,6 +186,10 @@ function stripReasoningPrefix(text: string): string {
 
 function isEmptyOrWhitespace(text: string): boolean {
   return !text || text.trim().length === 0;
+}
+
+export function detectBannedInbound(text: string): boolean {
+  return BANNED_CONTENT_PATTERNS.some((pattern) => pattern.test(text));
 }
 
 export function sanitizeResponse(text: string): SanitizeResult {

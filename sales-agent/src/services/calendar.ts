@@ -583,3 +583,31 @@ export async function scheduleMeetingViaCrm(params: {
     };
   }
 }
+
+export async function cancelGoogleCalendarEvent(eventId: string): Promise<boolean> {
+  if (!isConfigured() || !config.google.calendarId) {
+    log.warn('Google Calendar not configured, skipping event cancellation');
+    return false;
+  }
+
+  try {
+    const token = await getAccessToken();
+    const url = `${CALENDAR_BASE}/calendars/${encodeURIComponent(config.google.calendarId)}/events/${encodeURIComponent(eventId)}`;
+
+    const res = await fetch(url, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    if (res.ok || res.status === 204 || res.status === 410) {
+      log.info('Google Calendar event cancelled', { eventId });
+      return true;
+    }
+
+    log.warn('Failed to cancel Google Calendar event', { eventId, status: res.status });
+    return false;
+  } catch (err) {
+    log.error('cancelGoogleCalendarEvent error', { eventId, error: err instanceof Error ? err.message : String(err) });
+    return false;
+  }
+}

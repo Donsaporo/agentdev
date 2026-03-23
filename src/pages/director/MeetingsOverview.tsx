@@ -11,6 +11,12 @@ import {
   ChevronDown,
   ChevronUp,
   ExternalLink,
+  Copy,
+  Trash2,
+  CalendarClock,
+  Check,
+  X,
+  MessageSquare,
 } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { formatDistanceToNow, format, isToday, isTomorrow, isPast } from 'date-fns';
@@ -23,11 +29,16 @@ interface Meeting {
   end_time: string;
   meet_link: string | null;
   status: string;
+  meeting_type: string | null;
+  location: string | null;
+  cancellation_reason: string | null;
+  rescheduled_from: string | null;
   reminder_24h_sent: boolean;
   reminder_1h_sent: boolean;
   client_confirmed: boolean | null;
   confirmed_at: string | null;
   created_at: string;
+  conversation_id: string | null;
   contact: {
     display_name: string;
     phone_number: string;
@@ -48,7 +59,7 @@ interface ReminderQueueItem {
   created_at: string;
 }
 
-type FilterTab = 'upcoming' | 'today' | 'past';
+type FilterTab = 'upcoming' | 'today' | 'past' | 'cancelled';
 
 function getConfirmationBadge(confirmed: boolean | null) {
   if (confirmed === true) {
@@ -103,6 +114,10 @@ export default function MeetingsOverview() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<FilterTab>('upcoming');
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [cancelModal, setCancelModal] = useState<{ meeting: Meeting; reason: string } | null>(null);
+  const [rescheduleModal, setRescheduleModal] = useState<{ meeting: Meeting; date: string; time: string } | null>(null);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -117,10 +132,12 @@ export default function MeetingsOverview() {
       .from('sales_meetings')
       .select(`
         id, title, start_time, end_time, meet_link, status,
+        meeting_type, location, cancellation_reason, rescheduled_from,
         reminder_24h_sent, reminder_1h_sent, client_confirmed, confirmed_at, created_at,
+        conversation_id,
         contact:whatsapp_contacts(display_name, phone_number, lead_stage, company)
       `)
-      .order('start_time', { ascending: filter !== 'past' });
+      .order('start_time', { ascending: filter !== 'past' && filter !== 'cancelled' });
 
     if (filter === 'upcoming') {
       query = query.gte('start_time', now).in('status', ['scheduled', 'in_progress']);
@@ -128,6 +145,8 @@ export default function MeetingsOverview() {
       query = query
         .gte('start_time', todayStart.toISOString())
         .lte('start_time', todayEnd.toISOString());
+    } else if (filter === 'cancelled') {
+      query = query.eq('status', 'cancelled').order('start_time', { ascending: false });
     } else {
       query = query.lt('start_time', now).order('start_time', { ascending: false });
     }
@@ -160,6 +179,82 @@ export default function MeetingsOverview() {
     const interval = setInterval(loadData, 60_000);
     return () => clearInterval(interval);
   }, [loadData]);
+
+  const handleCancel = async () => {
+    if (!cancelModal) return;
+    setActionLoading(cancelModal.meeting.id);
+    await supabase
+      .from('sales_meetings')
+      .update({
+        status: 'cancelled',
+        cancellation_reason: cancelModal.reason || 'Cancelada desde el dashboard',
+        cancelled_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', cancelModal.meeting.id);
+    setCancelModal(null);
+    setActionLoading(null);
+    loadData();
+  };
+
+  const handleComplete = async (meetingId: string) => {
+    setActionLoading(meetingId);
+    await supabase
+      .from('sales_meetings')
+      .update({
+        status: 'completed',
+        completed_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', meetingId);
+    setActionLoading(null);
+    loadData();
+  };
+
+  const handleReschedule = async () => {
+    if (!rescheduleModal) return;
+    setActionLoading(rescheduleModal.meeting.id);
+
+    await supabase
+      .from('sales_meetings')
+      .update({
+        status: 'cancelled',
+        cancellation_reason: 'Reagendada desde el dashboard',
+        cancelled_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', rescheduleModal.meeting.id);
+
+    const [hours, minutes] = rescheduleModal.time.split(':').map(Number);
+    const endHour = hours + (minutes + 30 >= 60 ? 1 : 0);
+    const endMin = (minutes + 30) % 60;
+    const endTime = `${String(endHour).padStart(2, '0')}:${String(endMin).padStart(2, '0')}`;
+
+    const newStartIso = new Date(`${rescheduleModal.date}T${rescheduleModal.time}:00-05:00`).toISOString();
+    const newEndIso = new Date(`${rescheduleModal.date}T${endTime}:00-05:00`).toISOString();
+
+    await supabase.from('sales_meetings').insert({
+      conversation_id: rescheduleModal.meeting.conversation_id,
+      contact_id: (rescheduleModal.meeting as Record<string, unknown>).contact_id || null,
+      title: rescheduleModal.meeting.title,
+      start_time: newStartIso,
+      end_time: newEndIso,
+      meet_link: rescheduleModal.meeting.meet_link,
+      status: 'scheduled',
+      meeting_type: rescheduleModal.meeting.meeting_type || 'virtual',
+      rescheduled_from: rescheduleModal.meeting.id,
+    });
+
+    setRescheduleModal(null);
+    setActionLoading(null);
+    loadData();
+  };
+
+  const copyLink = (link: string, meetingId: string) => {
+    navigator.clipboard.writeText(link);
+    setCopied(meetingId);
+    setTimeout(() => setCopied(null), 2000);
+  };
 
   const stats = {
     total: meetings.length,
@@ -227,7 +322,7 @@ export default function MeetingsOverview() {
 
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1">
-          {(['upcoming', 'today', 'past'] as FilterTab[]).map((tab) => (
+          {(['upcoming', 'today', 'past', 'cancelled'] as FilterTab[]).map((tab) => (
             <button
               key={tab}
               onClick={() => setFilter(tab)}
@@ -237,7 +332,7 @@ export default function MeetingsOverview() {
                   : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.04]'
               }`}
             >
-              {tab === 'upcoming' ? 'Proximas' : tab === 'today' ? 'Hoy' : 'Pasadas'}
+              {tab === 'upcoming' ? 'Proximas' : tab === 'today' ? 'Hoy' : tab === 'past' ? 'Pasadas' : 'Canceladas'}
             </button>
           ))}
         </div>
@@ -252,21 +347,26 @@ export default function MeetingsOverview() {
       {meetings.length === 0 ? (
         <div className="glass-card flex flex-col items-center justify-center py-16 text-center">
           <Calendar className="w-10 h-10 text-slate-600 mb-3" />
-          <p className="text-sm text-slate-400">No hay reuniones {filter === 'upcoming' ? 'programadas' : filter === 'today' ? 'para hoy' : 'pasadas'}</p>
+          <p className="text-sm text-slate-400">
+            No hay reuniones {filter === 'upcoming' ? 'programadas' : filter === 'today' ? 'para hoy' : filter === 'cancelled' ? 'canceladas' : 'pasadas'}
+          </p>
         </div>
       ) : (
         <div className="space-y-3">
           {meetings.map((meeting) => {
             const isExpanded = expandedId === meeting.id;
-            const isVirtual = !!meeting.meet_link;
+            const isVirtual = meeting.meeting_type !== 'presencial';
             const meetingPast = isPast(new Date(meeting.start_time));
+            const canCancel = meeting.status === 'scheduled';
+            const canReschedule = meeting.status === 'scheduled';
+            const canComplete = meeting.status === 'scheduled' && meetingPast;
 
             return (
               <div
                 key={meeting.id}
                 className={`glass-card overflow-hidden transition-all ${
                   meetingPast && meeting.status === 'scheduled' ? 'border border-amber-500/20' : ''
-                }`}
+                } ${meeting.rescheduled_from ? 'border-l-2 border-l-blue-500/40' : ''}`}
               >
                 <button
                   onClick={() => setExpandedId(isExpanded ? null : meeting.id)}
@@ -287,6 +387,12 @@ export default function MeetingsOverview() {
                       <p className="text-sm font-medium text-white truncate">{meeting.title}</p>
                       {getStatusBadge(meeting.status)}
                       {meeting.status === 'scheduled' && getConfirmationBadge(meeting.client_confirmed)}
+                      {meeting.rescheduled_from && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 text-[10px] font-medium">
+                          <CalendarClock className="w-3 h-3" />
+                          Reagendada
+                        </span>
+                      )}
                     </div>
                     <div className="flex items-center gap-3 mt-1 text-xs text-slate-400">
                       <span>{formatMeetingDate(meeting.start_time)}</span>
@@ -315,7 +421,7 @@ export default function MeetingsOverview() {
                 </button>
 
                 {isExpanded && (
-                  <div className="px-5 pb-4 pt-0 border-t border-white/[0.04] space-y-3">
+                  <div className="px-5 pb-4 pt-0 border-t border-white/[0.04] space-y-4">
                     <div className="grid grid-cols-2 gap-4 pt-3">
                       <div>
                         <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Contacto</p>
@@ -334,6 +440,9 @@ export default function MeetingsOverview() {
                         </p>
                         <p className="text-xs text-slate-400">
                           {format(new Date(meeting.start_time), "EEEE d 'de' MMMM, yyyy", { locale: es })}
+                        </p>
+                        <p className="text-xs text-slate-500 mt-0.5">
+                          {isVirtual ? 'Virtual (Google Meet)' : `Presencial${meeting.location ? ` - ${meeting.location}` : ''}`}
                         </p>
                       </div>
                     </div>
@@ -377,25 +486,183 @@ export default function MeetingsOverview() {
                       </div>
                     </div>
 
+                    {meeting.cancellation_reason && (
+                      <div>
+                        <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Razon de cancelacion</p>
+                        <p className="text-xs text-red-400">{meeting.cancellation_reason}</p>
+                      </div>
+                    )}
+
                     {meeting.meet_link && (
                       <div>
                         <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Link de reunion</p>
-                        <a
-                          href={meeting.meet_link}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 transition-colors"
-                        >
-                          <ExternalLink className="w-3 h-3" />
-                          {meeting.meet_link}
-                        </a>
+                        <div className="flex items-center gap-2">
+                          <a
+                            href={meeting.meet_link}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 transition-colors"
+                          >
+                            <ExternalLink className="w-3 h-3" />
+                            {meeting.meet_link}
+                          </a>
+                          <button
+                            onClick={() => copyLink(meeting.meet_link!, meeting.id)}
+                            className="p-1 rounded hover:bg-white/[0.06] transition-colors"
+                            title="Copiar link"
+                          >
+                            {copied === meeting.id ? (
+                              <Check className="w-3.5 h-3.5 text-emerald-400" />
+                            ) : (
+                              <Copy className="w-3.5 h-3.5 text-slate-500" />
+                            )}
+                          </button>
+                        </div>
                       </div>
                     )}
+
+                    <div className="flex items-center gap-2 pt-2 border-t border-white/[0.04]">
+                      {canComplete && (
+                        <button
+                          onClick={() => handleComplete(meeting.id)}
+                          disabled={actionLoading === meeting.id}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 text-xs font-medium hover:bg-emerald-500/20 transition-colors disabled:opacity-50"
+                        >
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          Marcar completada
+                        </button>
+                      )}
+                      {canReschedule && (
+                        <button
+                          onClick={() => setRescheduleModal({ meeting, date: '', time: '' })}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-500/10 text-blue-400 text-xs font-medium hover:bg-blue-500/20 transition-colors"
+                        >
+                          <CalendarClock className="w-3.5 h-3.5" />
+                          Reagendar
+                        </button>
+                      )}
+                      {canCancel && (
+                        <button
+                          onClick={() => setCancelModal({ meeting, reason: '' })}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500/10 text-red-400 text-xs font-medium hover:bg-red-500/20 transition-colors"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          Cancelar
+                        </button>
+                      )}
+                      {meeting.meet_link && (
+                        <button
+                          onClick={() => copyLink(meeting.meet_link!, meeting.id)}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/[0.04] text-slate-400 text-xs font-medium hover:bg-white/[0.08] transition-colors"
+                        >
+                          <Copy className="w-3.5 h-3.5" />
+                          {copied === meeting.id ? 'Copiado' : 'Copiar link'}
+                        </button>
+                      )}
+                      {meeting.conversation_id && (
+                        <a
+                          href={`/inbox?conversation=${meeting.conversation_id}`}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/[0.04] text-slate-400 text-xs font-medium hover:bg-white/[0.08] transition-colors"
+                        >
+                          <MessageSquare className="w-3.5 h-3.5" />
+                          Ver chat
+                        </a>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
             );
           })}
+        </div>
+      )}
+
+      {cancelModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="glass-card w-full max-w-md p-6 space-y-4">
+            <h3 className="text-lg font-semibold text-white">Cancelar reunion</h3>
+            <p className="text-sm text-slate-400">
+              Cancelar "{cancelModal.meeting.title}" con {cancelModal.meeting.contact?.display_name || 'cliente'}
+            </p>
+            <div>
+              <label className="text-xs text-slate-500 block mb-1.5">Razon (opcional)</label>
+              <input
+                type="text"
+                value={cancelModal.reason}
+                onChange={(e) => setCancelModal({ ...cancelModal, reason: e.target.value })}
+                placeholder="Motivo de la cancelacion..."
+                className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:border-red-500/40"
+              />
+            </div>
+            <div className="flex items-center justify-end gap-2">
+              <button
+                onClick={() => setCancelModal(null)}
+                className="px-4 py-2 rounded-lg text-sm text-slate-400 hover:text-white hover:bg-white/[0.04] transition-colors"
+              >
+                No, volver
+              </button>
+              <button
+                onClick={handleCancel}
+                disabled={actionLoading === cancelModal.meeting.id}
+                className="px-4 py-2 rounded-lg text-sm font-medium bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-colors disabled:opacity-50"
+              >
+                <span className="flex items-center gap-1.5">
+                  <X className="w-3.5 h-3.5" />
+                  Cancelar reunion
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {rescheduleModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="glass-card w-full max-w-md p-6 space-y-4">
+            <h3 className="text-lg font-semibold text-white">Reagendar reunion</h3>
+            <p className="text-sm text-slate-400">
+              Reagendar "{rescheduleModal.meeting.title}" con {rescheduleModal.meeting.contact?.display_name || 'cliente'}
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-slate-500 block mb-1.5">Nueva fecha</label>
+                <input
+                  type="date"
+                  value={rescheduleModal.date}
+                  onChange={(e) => setRescheduleModal({ ...rescheduleModal, date: e.target.value })}
+                  min={new Date(Date.now() + 86400000).toISOString().split('T')[0]}
+                  className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500/40"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-slate-500 block mb-1.5">Nueva hora</label>
+                <input
+                  type="time"
+                  value={rescheduleModal.time}
+                  onChange={(e) => setRescheduleModal({ ...rescheduleModal, time: e.target.value })}
+                  className="w-full bg-white/[0.04] border border-white/[0.08] rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500/40"
+                />
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2">
+              <button
+                onClick={() => setRescheduleModal(null)}
+                className="px-4 py-2 rounded-lg text-sm text-slate-400 hover:text-white hover:bg-white/[0.04] transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleReschedule}
+                disabled={!rescheduleModal.date || !rescheduleModal.time || actionLoading === rescheduleModal.meeting.id}
+                className="px-4 py-2 rounded-lg text-sm font-medium bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 transition-colors disabled:opacity-50"
+              >
+                <span className="flex items-center gap-1.5">
+                  <CalendarClock className="w-3.5 h-3.5" />
+                  Reagendar
+                </span>
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

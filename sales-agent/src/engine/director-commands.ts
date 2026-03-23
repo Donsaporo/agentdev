@@ -530,6 +530,14 @@ $reunion <cliente> <fecha> <hora> [presencial] [ubicacion]
   Ej: $reunion juan 2026-03-20 10:00
   Ej: $reunion maria 2026-03-21 14:00 presencial PH World Trade Center Calle 50
 
+$cancelar <cliente> [razon]
+  Cancelar la proxima reunion de un cliente
+  Ej: $cancelar juan Cliente no puede asistir
+
+$reagendar <cliente> <fecha> <hora>
+  Reagendar la proxima reunion de un cliente
+  Ej: $reagendar juan 2026-03-25 14:00
+
 $ayuda
   Mostrar esta guia
 
@@ -603,6 +611,181 @@ function formatTimeAgo(date: Date): string {
   return `hace ${days}d`;
 }
 
+async function handleCancelar(
+  supabase: SupabaseClient,
+  directorWaId: string,
+  args: string
+) {
+  if (!args) {
+    await reply(directorWaId, 'Uso: $cancelar <cliente> [razon]\nEjemplo: $cancelar juan Cliente no puede asistir');
+    return;
+  }
+
+  const parts = args.split(/\s+/);
+  const clientQuery = parts[0];
+  const reason = parts.slice(1).join(' ') || 'Cancelada por el director';
+
+  const matches = await searchContacts(supabase, clientQuery);
+  if (matches.length === 0) {
+    await reply(directorWaId, `No encontre ningun cliente con "${clientQuery}".`);
+    return;
+  }
+  if (matches.length > 1) {
+    const list = matches.slice(0, 5).map((m, i) =>
+      `${i + 1}. ${m.display_name}${m.company ? ` (${m.company})` : ''} - ${m.phone_number}`
+    ).join('\n');
+    await reply(directorWaId, `Encontre ${matches.length} resultados. Se mas especifico:\n${list}`);
+    return;
+  }
+
+  const target = matches[0];
+  const { data: meeting } = await supabase
+    .from('sales_meetings')
+    .select('id, title, start_time, google_event_id')
+    .eq('contact_id', target.id)
+    .eq('status', 'scheduled')
+    .gt('start_time', new Date().toISOString())
+    .order('start_time', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (!meeting) {
+    await reply(directorWaId, `${target.display_name} no tiene reuniones programadas.`);
+    return;
+  }
+
+  await supabase
+    .from('sales_meetings')
+    .update({
+      status: 'cancelled',
+      cancellation_reason: reason,
+      cancelled_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', meeting.id);
+
+  if (meeting.google_event_id) {
+    const { cancelGoogleCalendarEvent } = await import('../services/calendar.js');
+    await cancelGoogleCalendarEvent(meeting.google_event_id).catch(() => {});
+  }
+
+  const meetDate = new Date(meeting.start_time).toLocaleString('es-PA', {
+    day: '2-digit', month: '2-digit', hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/Panama',
+  });
+  await reply(directorWaId, `Reunion cancelada:\n"${meeting.title}" con ${target.display_name}\nFecha: ${meetDate}\nRazon: ${reason}`);
+  log.info('Director cancelled meeting', { meetingId: meeting.id, contact: target.display_name });
+}
+
+async function handleReagendar(
+  supabase: SupabaseClient,
+  directorWaId: string,
+  args: string
+) {
+  if (!args) {
+    await reply(directorWaId, 'Uso: $reagendar <cliente> <fecha> <hora>\nEjemplo: $reagendar juan 2026-03-25 14:00');
+    return;
+  }
+
+  const parts = args.split(/\s+/);
+  if (parts.length < 3) {
+    await reply(directorWaId, 'Faltan datos. Uso: $reagendar <cliente> <YYYY-MM-DD> <HH:MM>');
+    return;
+  }
+
+  const clientQuery = parts[0];
+  const newDate = parts[1];
+  const newTime = parts[2];
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(newDate) || !/^\d{2}:\d{2}$/.test(newTime)) {
+    await reply(directorWaId, 'Formato incorrecto. Fecha: YYYY-MM-DD, Hora: HH:MM\nEjemplo: $reagendar juan 2026-03-25 14:00');
+    return;
+  }
+
+  const matches = await searchContacts(supabase, clientQuery);
+  if (matches.length === 0) {
+    await reply(directorWaId, `No encontre ningun cliente con "${clientQuery}".`);
+    return;
+  }
+  if (matches.length > 1) {
+    const list = matches.slice(0, 5).map((m, i) =>
+      `${i + 1}. ${m.display_name}${m.company ? ` (${m.company})` : ''} - ${m.phone_number}`
+    ).join('\n');
+    await reply(directorWaId, `Encontre ${matches.length} resultados. Se mas especifico:\n${list}`);
+    return;
+  }
+
+  const target = matches[0];
+  const { data: meeting } = await supabase
+    .from('sales_meetings')
+    .select('id, title, start_time, google_event_id')
+    .eq('contact_id', target.id)
+    .eq('status', 'scheduled')
+    .gt('start_time', new Date().toISOString())
+    .order('start_time', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (!meeting) {
+    await reply(directorWaId, `${target.display_name} no tiene reuniones programadas para reagendar.`);
+    return;
+  }
+
+  await supabase
+    .from('sales_meetings')
+    .update({
+      status: 'cancelled',
+      cancellation_reason: 'Reagendada por el director',
+      cancelled_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', meeting.id);
+
+  if (meeting.google_event_id) {
+    const { cancelGoogleCalendarEvent } = await import('../services/calendar.js');
+    await cancelGoogleCalendarEvent(meeting.google_event_id).catch(() => {});
+  }
+
+  const [hours, minutes] = newTime.split(':').map(Number);
+  const endHour = hours + (minutes + 30 >= 60 ? 1 : 0);
+  const endMin = (minutes + 30) % 60;
+  const newEnd = `${String(endHour).padStart(2, '0')}:${String(endMin).padStart(2, '0')}`;
+
+  const { scheduleMeetingViaCrm } = await import('../services/calendar.js');
+  const result = await scheduleMeetingViaCrm({
+    phoneNumber: target.phone_number || target.wa_id || '',
+    title: meeting.title,
+    date: newDate,
+    startTime: newTime,
+    endTime: newEnd,
+    meetingType: 'virtual',
+    attendees: target.email ? [target.email] : undefined,
+  });
+
+  if (!result.success) {
+    await reply(directorWaId, `No se pudo reagendar: ${result.message || result.reason || 'Error desconocido'}`);
+    return;
+  }
+
+  const newStartIso = new Date(`${newDate}T${newTime}:00-05:00`).toISOString();
+  const newEndIso = new Date(`${newDate}T${newEnd}:00-05:00`).toISOString();
+
+  await supabase.from('sales_meetings').insert({
+    conversation_id: target.conversationId,
+    contact_id: target.id,
+    google_event_id: result.googleEventId || null,
+    title: meeting.title,
+    start_time: newStartIso,
+    end_time: newEndIso,
+    meet_link: result.meetLink || null,
+    status: 'scheduled',
+    meeting_type: 'virtual',
+    rescheduled_from: meeting.id,
+  });
+
+  await reply(directorWaId, `Reunion reagendada:\n"${meeting.title}" con ${target.display_name}\nNueva fecha: ${newDate} ${newTime}-${newEnd}\n${result.meetLink ? `Meet: ${result.meetLink}` : ''}`);
+  log.info('Director rescheduled meeting', { oldMeetingId: meeting.id, newDate, contact: target.display_name });
+}
+
 export function isDirectorPhone(waId: string, directorPhones: readonly string[]): boolean {
   const cleaned = waId.replace(/[+\-\s()]/g, '');
   return directorPhones.some((dp) => {
@@ -652,6 +835,12 @@ export async function handleDirectorCommand(
       break;
     case 'reunion':
       await handleReunion(supabase, msg.directorWaId, parsed.args);
+      break;
+    case 'cancelar':
+      await handleCancelar(supabase, msg.directorWaId, parsed.args);
+      break;
+    case 'reagendar':
+      await handleReagendar(supabase, msg.directorWaId, parsed.args);
       break;
     case 'ayuda':
     case 'help':

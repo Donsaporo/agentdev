@@ -464,6 +464,16 @@ export interface SalesMeeting {
   transcript: string | null;
   summary: string | null;
   status: string;
+  meeting_type: string | null;
+  location: string | null;
+  cancellation_reason: string | null;
+  cancelled_at: string | null;
+  completed_at: string | null;
+  rescheduled_from: string | null;
+  reminder_24h_sent: boolean;
+  reminder_1h_sent: boolean;
+  client_confirmed: boolean;
+  confirmed_at: string | null;
   created_at: string;
   updated_at: string;
 }

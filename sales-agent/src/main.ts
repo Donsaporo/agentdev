@@ -302,6 +302,39 @@ Responde SOLO con el texto del mensaje, nada mas.`;
   return response.text.trim().replace(/^["']|["']$/g, '');
 }
 
+async function updateMeetingStatuses(supabase: ReturnType<typeof getSupabase>) {
+  try {
+    const thirtyMinAgo = new Date(Date.now() - 30 * 60_000).toISOString();
+
+    const { data: completable, error } = await supabase
+      .from('sales_meetings')
+      .select('id')
+      .eq('status', 'scheduled')
+      .lt('end_time', thirtyMinAgo);
+
+    if (error) {
+      log.error('Failed to query completable meetings', { error: error.message });
+      return;
+    }
+
+    if (completable && completable.length > 0) {
+      const ids = completable.map(m => m.id);
+      await supabase
+        .from('sales_meetings')
+        .update({
+          status: 'completed',
+          completed_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .in('id', ids);
+
+      log.info('Auto-completed past meetings', { count: ids.length });
+    }
+  } catch (err) {
+    log.error('updateMeetingStatuses failed', { error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
 async function processFollowUps(supabase: ReturnType<typeof getSupabase>) {
   try {
     const cutoff = new Date(Date.now() - FOLLOW_UP_AFTER_HOURS * 60 * 60_000).toISOString();
@@ -634,6 +667,15 @@ async function startup() {
     );
   }, MEETING_REMINDER_INTERVAL);
   log.info(`Meeting reminder scheduler active (every ${MEETING_REMINDER_INTERVAL / 1000}s)`);
+
+  const LIFECYCLE_INTERVAL = 15 * 60_000;
+  setInterval(() => {
+    updateMeetingStatuses(supabase).catch((err) =>
+      log.error('Meeting lifecycle update failed', { error: err instanceof Error ? err.message : String(err) })
+    );
+  }, LIFECYCLE_INTERVAL);
+  updateMeetingStatuses(supabase).catch(() => {});
+  log.info(`Meeting lifecycle updater active (every ${LIFECYCLE_INTERVAL / 1000}s)`);
 
   log.info('Sales agent is ONLINE and listening for messages');
   log.info(`WhatsApp: 360dialog via ${config.d360.baseUrl}`);

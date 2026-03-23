@@ -5,7 +5,7 @@ import { getOrAssignPersona } from './persona-engine.js';
 import { buildContext } from './context-builder.js';
 import { decide, AgentAction } from './decision-engine.js';
 import { calculateDelay, sleep, shouldSplitMessage } from './human-simulator.js';
-import { sanitizeResponse } from './response-sanitizer.js';
+import { sanitizeResponse, detectBannedInbound } from './response-sanitizer.js';
 import { shouldSkipResponse, isFarewellMessage, markFarewellSent, clearFarewell } from './conversation-closer.js';
 import { sendTextMessage, sendTemplateMessage, setTypingIndicator } from '../services/whatsapp.js';
 import type { SendResult } from '../services/whatsapp.js';
@@ -745,6 +745,27 @@ async function executeActions(
           break;
 
         case 'schedule_meeting': {
+          const { data: recentInbound } = await supabase
+            .from('whatsapp_messages')
+            .select('content')
+            .eq('contact_id', contactId)
+            .eq('direction', 'inbound')
+            .order('created_at', { ascending: false })
+            .limit(5);
+
+          const confirmationWords = ['si', 'sí', 'dale', 'perfecto', 'listo', 'ok', 'okay', 'claro', 'vamos', 'de acuerdo', 'confirmo', 'va', 'bien', 'sale', 'yes', 'sip', 'sep', 'agendemos', 'agenda', 'coordin', 'me apunto', 'me parece'];
+          const recentTexts = (recentInbound || []).map(m => (m.content || '').toLowerCase());
+          const hasClientConfirmation = recentTexts.some(text =>
+            confirmationWords.some(w => text.includes(w))
+          );
+
+          if (!hasClientConfirmation) {
+            log.warn('Blocking schedule_meeting: no explicit client confirmation found', { contactId, recentTexts: recentTexts.slice(0, 3) });
+            meetingFailed = true;
+            meetingFailureMessage = 'Perfecto, entonces quedo pendiente. Cuando me confirmes el horario agendo la reunion.';
+            break;
+          }
+
           const contactData = await supabase
             .from('whatsapp_contacts')
             .select('display_name, email, wa_id, phone_number')
@@ -847,6 +868,8 @@ async function executeActions(
             meet_link: crmResult.meetLink || null,
             recall_bot_id: recallBotId,
             status: 'scheduled',
+            meeting_type: isPresencial ? 'presencial' : 'virtual',
+            location: isPresencial ? (meetingLocation || 'PH Plaza Real, Costa del Este, Panama') : null,
           });
 
           const meetContact = await getContact();
@@ -1047,6 +1070,156 @@ async function executeActions(
               error: taskErr instanceof Error ? taskErr.message : String(taskErr),
             });
           }
+          break;
+        }
+
+        case 'cancel_meeting': {
+          const { data: meeting } = await supabase
+            .from('sales_meetings')
+            .select('id, title, start_time, google_event_id, contact_id')
+            .eq('contact_id', contactId)
+            .eq('status', 'scheduled')
+            .gt('start_time', new Date().toISOString())
+            .order('start_time', { ascending: true })
+            .limit(1)
+            .maybeSingle();
+
+          if (!meeting) {
+            log.warn('No upcoming meeting to cancel', { contactId });
+            break;
+          }
+
+          await supabase
+            .from('sales_meetings')
+            .update({
+              status: 'cancelled',
+              cancellation_reason: action.params.reason || 'Cancelada por el cliente',
+              cancelled_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', meeting.id);
+
+          if (meeting.google_event_id) {
+            const { cancelGoogleCalendarEvent } = await import('../services/calendar.js');
+            await cancelGoogleCalendarEvent(meeting.google_event_id).catch(err => {
+              log.warn('Failed to cancel Google Calendar event', { error: err instanceof Error ? err.message : String(err) });
+            });
+          }
+
+          const cancelContact = await getContact();
+          if (cancelContact?.crm_client_id) {
+            await crm.addTimelineEvent({
+              clientId: cancelContact.crm_client_id,
+              eventType: 'otro',
+              title: 'Reunion cancelada',
+              description: `"${meeting.title}" cancelada. Razon: ${action.params.reason || 'No especificada'}`,
+              metadata: { meeting_id: meeting.id, conversation_id: conversationId },
+            }).catch(() => {});
+          }
+
+          notifyDirector({
+            type: 'escalation',
+            contactName: cancelContact?.display_name || 'Desconocido',
+            contactPhone: cancelContact?.phone_number || '',
+            reason: `REUNION CANCELADA: "${meeting.title}" - Razon: ${action.params.reason || 'No especificada'}`,
+          }).catch(() => {});
+
+          log.info('Meeting cancelled', { meetingId: meeting.id, reason: action.params.reason });
+          break;
+        }
+
+        case 'reschedule_meeting': {
+          const { data: existingMeeting } = await supabase
+            .from('sales_meetings')
+            .select('id, title, start_time, google_event_id, contact_id, meet_link')
+            .eq('contact_id', contactId)
+            .eq('status', 'scheduled')
+            .gt('start_time', new Date().toISOString())
+            .order('start_time', { ascending: true })
+            .limit(1)
+            .maybeSingle();
+
+          if (!existingMeeting) {
+            log.warn('No upcoming meeting to reschedule', { contactId });
+            meetingFailed = true;
+            meetingFailureMessage = 'No encontre una reunion programada para reagendar. Me puedes confirmar los detalles?';
+            break;
+          }
+
+          await supabase
+            .from('sales_meetings')
+            .update({
+              status: 'cancelled',
+              cancellation_reason: `Reagendada: ${action.params.reason || 'Cliente solicito cambio'}`,
+              cancelled_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            })
+            .eq('id', existingMeeting.id);
+
+          if (existingMeeting.google_event_id) {
+            const { cancelGoogleCalendarEvent } = await import('../services/calendar.js');
+            await cancelGoogleCalendarEvent(existingMeeting.google_event_id).catch(err => {
+              log.warn('Failed to cancel old Google Calendar event for reschedule', { error: err instanceof Error ? err.message : String(err) });
+            });
+          }
+
+          const reschedContactData = await supabase
+            .from('whatsapp_contacts')
+            .select('display_name, email, wa_id, phone_number')
+            .eq('id', contactId)
+            .maybeSingle();
+
+          const reschedPhone = reschedContactData?.data?.wa_id || reschedContactData?.data?.phone_number || '';
+          const newDate = action.params.new_date || '';
+          const newStart = action.params.new_start_time || '';
+          const newEnd = action.params.new_end_time || '';
+
+          if (!newDate || !newStart || !newEnd || !reschedPhone) {
+            meetingFailed = true;
+            meetingFailureMessage = 'Me faltan datos para reagendar. Me confirmas la nueva fecha y hora?';
+            break;
+          }
+
+          const reschedResult: CrmScheduleResult = await scheduleMeetingViaCrm({
+            phoneNumber: reschedPhone,
+            title: existingMeeting.title,
+            date: newDate,
+            startTime: newStart,
+            endTime: newEnd,
+            meetingType: 'virtual',
+            attendees: reschedContactData?.data?.email ? [reschedContactData.data.email] : undefined,
+          });
+
+          if (!reschedResult.success) {
+            meetingFailed = true;
+            meetingFailureMessage = reschedResult.message || 'No pude reagendar la reunion. Me puedes confirmar otro horario?';
+            break;
+          }
+
+          const newStartIso = new Date(`${newDate}T${newStart}:00-05:00`).toISOString();
+          const newEndIso = new Date(`${newDate}T${newEnd}:00-05:00`).toISOString();
+
+          await supabase.from('sales_meetings').insert({
+            conversation_id: conversationId,
+            contact_id: contactId,
+            google_event_id: reschedResult.googleEventId || null,
+            title: existingMeeting.title,
+            start_time: newStartIso,
+            end_time: newEndIso,
+            meet_link: reschedResult.meetLink || null,
+            status: 'scheduled',
+            meeting_type: 'virtual',
+            rescheduled_from: existingMeeting.id,
+          });
+
+          const reschedContact = await getContact();
+          notifyDirector({
+            type: 'meeting_scheduled',
+            contactName: reschedContact?.display_name || 'Desconocido',
+            details: `REAGENDADA: "${existingMeeting.title}"\nNueva fecha: ${newDate} ${newStart}-${newEnd}\n${reschedResult.meetLink ? `Meet: ${reschedResult.meetLink}` : ''}`,
+          }).catch(() => {});
+
+          log.info('Meeting rescheduled', { oldMeetingId: existingMeeting.id, newDate, reason: action.params.reason });
           break;
         }
       }
