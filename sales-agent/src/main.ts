@@ -9,6 +9,7 @@ import { sendTextMessage, sendTemplateMessage, setTypingIndicator } from './serv
 import { notifyDirector, flushPendingNotifications } from './services/director-notifier.js';
 import { callAISecondary } from './services/ai.js';
 import { calculateDelay, sleep } from './engine/human-simulator.js';
+import { processMeetingReminders } from './engine/meeting-reminder.js';
 
 const log = createLogger('main');
 
@@ -37,6 +38,7 @@ async function getInternalPhones(supabase: ReturnType<typeof getSupabase>): Prom
 
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let followUpTimer: ReturnType<typeof setInterval> | null = null;
+let meetingReminderTimer: ReturnType<typeof setInterval> | null = null;
 let fallbackPollTimer: ReturnType<typeof setInterval> | null = null;
 let realtimeChannel: ReturnType<ReturnType<typeof getSupabase>['channel']> | null = null;
 let instructionsChannel: ReturnType<ReturnType<typeof getSupabase>['channel']> | null = null;
@@ -625,6 +627,14 @@ async function startup() {
     );
   }, FOLLOW_UP_INTERVAL);
 
+  const MEETING_REMINDER_INTERVAL = 5 * 60_000;
+  meetingReminderTimer = setInterval(() => {
+    processMeetingReminders(supabase).catch((err) =>
+      log.error('Meeting reminder check failed', { error: err instanceof Error ? err.message : String(err) })
+    );
+  }, MEETING_REMINDER_INTERVAL);
+  log.info(`Meeting reminder scheduler active (every ${MEETING_REMINDER_INTERVAL / 1000}s)`);
+
   log.info('Sales agent is ONLINE and listening for messages');
   log.info(`WhatsApp: 360dialog via ${config.d360.baseUrl}`);
   log.info(`AI Primary: ${config.openai.primaryModel} | Secondary: ${config.openai.secondaryModel}${config.anthropic.apiKey ? ' | Fallback: Claude' : ''}`);
@@ -641,6 +651,11 @@ async function shutdown() {
   if (followUpTimer) {
     clearInterval(followUpTimer);
     followUpTimer = null;
+  }
+
+  if (meetingReminderTimer) {
+    clearInterval(meetingReminderTimer);
+    meetingReminderTimer = null;
   }
 
   if (fallbackPollTimer) {

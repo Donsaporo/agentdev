@@ -1,16 +1,18 @@
 import { useState } from 'react';
-import { Shield, MessageSquareQuote, AlertTriangle, Users, Brain, BarChart3, MessageCircle } from 'lucide-react';
+import { Shield, MessageSquareQuote, AlertTriangle, Users, Brain, BarChart3, MessageCircle, Calendar } from 'lucide-react';
 import DirectorMetrics from './director/DirectorMetrics';
 import EscalationQueue from './director/EscalationQueue';
 import FeedbackHistory from './director/FeedbackHistory';
 import InstructionManager from './director/InstructionManager';
 import PersonaManager from './director/PersonaManager';
 import DirectorChat from './director/DirectorChat';
+import MeetingsOverview from './director/MeetingsOverview';
 
-type Tab = 'chat' | 'metrics' | 'escalations' | 'feedback' | 'instructions' | 'personas';
+type Tab = 'chat' | 'meetings' | 'metrics' | 'escalations' | 'feedback' | 'instructions' | 'personas';
 
 const TABS: { id: Tab; label: string; icon: typeof Shield }[] = [
   { id: 'chat', label: 'Chat Agente', icon: MessageCircle },
+  { id: 'meetings', label: 'Reuniones', icon: Calendar },
   { id: 'metrics', label: 'Metricas', icon: BarChart3 },
   { id: 'escalations', label: 'Escalaciones', icon: AlertTriangle },
   { id: 'feedback', label: 'Historial', icon: MessageSquareQuote },
@@ -52,6 +54,7 @@ export default function DirectorPage() {
 
       <div className="animate-fade-in-up">
         {activeTab === 'chat' && <DirectorChat />}
+        {activeTab === 'meetings' && <MeetingsOverview />}
         {activeTab === 'metrics' && <DirectorMetrics />}
         {activeTab === 'escalations' && <EscalationQueue />}
         {activeTab === 'feedback' && <FeedbackHistory />}

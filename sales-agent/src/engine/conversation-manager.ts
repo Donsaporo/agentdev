@@ -17,6 +17,7 @@ import { addCrmClientInsight } from '../services/crm-postventa.js';
 import * as crm from '../services/crm.js';
 import { classifyName } from '../services/name-classifier.js';
 import { shouldSummarize, summarizeConversation, saveInsight } from '../services/conversation-summarizer.js';
+import { checkPendingReminders, detectMeetingConfirmation, handleMeetingConfirmation, hasPendingReminderForContact, hasUpcomingMeetingForContact } from './meeting-reminder.js';
 
 const log = createLogger('conversation-manager');
 
@@ -197,6 +198,20 @@ async function processMessage(
       .from('whatsapp_contacts')
       .update({ follow_up_count: 0 })
       .eq('id', msg.contactId);
+
+    checkPendingReminders(supabase, msg.contactId, msg.conversationId).catch((err) => {
+      log.warn('Pending reminder check failed (non-blocking)', { error: err instanceof Error ? err.message : String(err) });
+    });
+
+    const hasPendingReminder = await hasPendingReminderForContact(supabase, msg.contactId);
+    const hasUpcoming = hasPendingReminder || await hasUpcomingMeetingForContact(supabase, msg.contactId);
+
+    if (hasUpcoming && msg.content) {
+      const confirmation = detectMeetingConfirmation(msg.content);
+      if (confirmation) {
+        await handleMeetingConfirmation(supabase, msg.contactId, msg.conversationId, confirmation === 'confirmed');
+      }
+    }
 
     const needsIntro = !contact.intro_sent && !contact.is_imported;
     if (needsIntro) {
