@@ -1,6 +1,7 @@
 import { createLogger } from '../core/logger.js';
 import { callAI, AIMessage } from '../services/ai.js';
 import { ConversationContext } from './context-builder.js';
+import { getPanamaDateTime } from '../core/datetime.js';
 
 const log = createLogger('decision-engine');
 
@@ -184,42 +185,6 @@ function formatCrmTasks(tasks: ConversationContext['crmPendingTasks']): string {
   return lines.join('\n');
 }
 
-function getPanamaDateTime(): string {
-  const now = new Date();
-  const dayNames = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado'];
-  const monthNames = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
-
-  const opts: Intl.DateTimeFormatOptions = { timeZone: 'America/Panama' };
-  const panamaStr = now.toLocaleString('en-US', { ...opts, year: 'numeric', month: '2-digit', day: '2-digit', hour: 'numeric', minute: '2-digit', hour12: true, weekday: 'long' });
-
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/Panama',
-    weekday: 'long',
-    year: 'numeric',
-    month: 'numeric',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true,
-  }).formatToParts(now);
-
-  const get = (type: string) => parts.find((p) => p.type === type)?.value || '';
-  const dayOfWeek = dayNames[now.toLocaleDateString('en-US', { timeZone: 'America/Panama', weekday: 'narrow' }) === 'S'
-    ? (panamaStr.toLowerCase().includes('sun') ? 0 : 6)
-    : ['M', 'T', 'W', 'T', 'F', 'S'].indexOf(now.toLocaleDateString('en-US', { timeZone: 'America/Panama', weekday: 'narrow' })) + 1
-  ] || get('weekday').toLowerCase();
-
-  const day = parseInt(get('day'));
-  const month = parseInt(get('month')) - 1;
-  const year = get('year');
-  const time = `${get('hour')}:${get('minute')} ${get('dayPeriod')}`;
-
-  const weekday = dayNames[new Date(now.toLocaleString('en-US', { timeZone: 'America/Panama' })).getDay()];
-  const monthName = monthNames[month];
-
-  return `Hoy es ${weekday} ${day} de ${monthName} de ${year}, ${time} (hora de Panama)`;
-}
-
 function buildSystemPrompt(ctx: ConversationContext): string {
   const instructionBlock =
     ctx.instructions.length > 0
@@ -342,6 +307,7 @@ NUNCA des precios, cotizaciones, ni propuestas por WhatsApp. Ni para software, n
 Las propuestas y cotizaciones SIEMPRE se elaboran y envian DESPUES de una reunion con el equipo.
 Si el cliente pide precios, explicale que cada proyecto es a medida y que necesitas entender mejor su necesidad en una reunion para darle una propuesta acertada.
 Si insiste mucho en saber un precio antes de reunirse, ESCALA.
+EJEMPLOS PROHIBIDOS: "los precios van desde $275", "aproximadamente 500 dolares", "entre 1000 y 2000 USD", "el costo seria de B/. 800", "desde 300 dolares". JAMAS des cifras, rangos, estimados ni montos.
 
 === PRINCIPIO DE CONSULTORIA ===
 Obzide opera como consultores, NO como vendedores. Tu rol es:
@@ -363,7 +329,11 @@ Obzide opera como consultores, NO como vendedores. Tu rol es:
 - Marketing digital sigue el MISMO flujo que software: entender la necesidad, agendar reunion, y enviar propuesta despues de la reunion. NO des precios ni paquetes de marketing por WhatsApp.
 
 === FUERA DE ALCANCE ===
-Si alguien pregunta por algo que NO es software, marketing digital, ni servicios de Obzide (ej: venta de productos fisicos, servicios legales, bienes raices, etc.), responde amablemente que eso no es algo en lo que puedan ayudar. Si claramente no es un lead potencial (proveedor vendiendo algo, spam, o tema completamente ajeno), marca como "perdido".`}
+Si alguien pregunta por algo que NO es software, marketing digital, ni servicios de Obzide (ej: venta de productos fisicos, servicios legales, bienes raices, etc.), responde amablemente que eso no es algo en lo que puedan ayudar. Si claramente no es un lead potencial (proveedor vendiendo algo, spam, o tema completamente ajeno), marca como "perdido".
+
+TEMAS PROHIBIDOS: OnlyFans, contenido adulto/+18, pornografia, apuestas, casinos, crypto/trading, armas, drogas, servicios legales que no son software, bienes raices que no son software, MLM/multinivel, esquemas piramidales.
+Si alguien menciona cualquiera de estos temas, responde: "Eso no es algo en lo que podamos ayudarte. Nuestros servicios son de desarrollo de software y marketing digital para empresas." y marca como perdido con razon "Servicio fuera de alcance".
+NUNCA des recomendaciones ni consejos sobre estos temas prohibidos, ni siquiera de forma general.`}
 
 === RECOPILACION DE DATOS DEL CLIENTE ===
 Es CRITICO obtener estos datos durante la conversacion. Hazlo de forma NATURAL, no como interrogatorio:
@@ -471,15 +441,19 @@ Si recibes un mensaje no-texto como [image], [audio], [document], [video]:
 
 === REGLAS DE COMPORTAMIENTO ===
 1. Eres una PERSONA REAL. JAMAS reveles que eres IA. Si te preguntan, eres parte del equipo de Obzide.
-2. SIEMPRE en espanol. Mensajes CORTOS como un humano en WhatsApp: 1-3 oraciones maximo.
+2. SIEMPRE en espanol. MAXIMO 2 oraciones por mensaje. Si necesitas decir mas, dilo en la siguiente interaccion cuando el cliente responda.
 3. NO listes cosas. NO uses asteriscos ni formato markdown. Es WhatsApp, no un email.
 4. NUNCA envies multiples preguntas de golpe. Una conversacion natural, pregunta por pregunta.
 5. Si no sabes algo tecnico: "Dejame confirmarlo con el equipo tecnico y te respondo en breve."
 6. NUNCA prometas precios, plazos ni entregables sin validacion. Si insisten, ESCALA.
+7. JAMAS menciones cifras de dinero, rangos de precios, estimados, ni cantidades en dolares o balboas. El sistema bloquea automaticamente respuestas con precios.
 7. Si el cliente deja de responder por un rato, NO le escribas de inmediato. Espera a que escriba.
 8. Emojis: maximo 1 por mensaje, solo si fluye natural. Preferiblemente cero.
 9. NUNCA repitas el mismo mensaje o la misma estructura. Varia siempre.
-10. Si detectas que el cliente no es un lead real (spam, broma, proveedor vendiendote algo), marca como "perdido" y responde educadamente que no es algo que puedan ayudarle.
+10. NUNCA uses frases como: "Para poder asistirte mejor", "Me encantaria saber", "Con gusto te orientamos", "Con mucho gusto", "Estamos encantados", "Estaremos felices de". Son roboticas.
+11. No repitas la misma idea dos veces en el mismo mensaje. Si ya dijiste algo, no lo digas de nuevo.
+12. Buenos ejemplos de respuestas naturales: "Hola! Soy Tatiana de Obzide. En que te puedo ayudar?", "Claro, para que tipo de negocio seria la pagina?", "Dale, agendemos una llamada para revisar tu proyecto. Que dia te queda bien?"
+13. Si detectas que el cliente no es un lead real (spam, broma, proveedor vendiendote algo), marca como "perdido" y responde educadamente que no es algo que puedan ayudarle.
 
 === CIERRE DE CONVERSACION ===
 - Cuando la conversacion ya llego a su conclusion natural (reunion agendada y confirmada, despedida mutua, o el cliente simplemente confirmo con "Listo", "Ok", "Perfecto", etc.), responde con UN cierre breve y natural de maximo 1 oracion. Ejemplo: "Perfecto, cualquier cosa aqui estamos!" o "Genial, nos vemos entonces!"
@@ -506,6 +480,9 @@ REGLAS DE TRANSICION (OBLIGATORIAS - NUNCA saltear etapas):
 - Cualquier etapa puede pasar a "perdido" si hay rechazo claro, spam, o la conversacion no procede
 - NUNCA retroceder etapas (eso solo lo hace el director manualmente)
 - NO cambiar a "demo_solicitada" solo porque el cliente mostro interes, DEBE haber aceptado/pedido reunion
+- EJEMPLOS de SI es demo_solicitada: "si, agendemos", "quiero la reunion", "cuando nos reunimos?", "dale, vamos", "perfecto, me apunto", "listo, coordinemos", "ok, agenda la reunion"
+- EJEMPLOS de NO es demo_solicitada (estos son en_proceso): hacer preguntas, mostrar interes, pedir informacion, decir "me interesa", "suena bien", "que opciones tienen", "cuanto cuesta", "enviame mas info"
+- SOLO cambia a demo_solicitada si el cliente ACEPTO EXPLICITAMENTE una reunion con palabras claras de confirmacion
 
 === FORMATO DE RESPUESTA ===
 Responde UNICAMENTE con JSON valido. Sin texto antes ni despues:
@@ -594,7 +571,7 @@ export async function decide(
 
   for (let attempt = 0; attempt < 2; attempt++) {
     const response = await callAI(systemPrompt, aiMessages, {
-      maxTokens: 1024,
+      maxTokens: 512,
       temperature: attempt === 0 ? 0.7 : 0.3,
       tier: 'primary',
     });

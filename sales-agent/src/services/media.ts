@@ -16,17 +16,45 @@ export interface MediaResult {
 }
 
 export async function downloadMedia(mediaId: string): Promise<{ buffer: Buffer; mimeType: string }> {
-  const res = await fetch(`${config.d360.baseUrl}/media/${mediaId}`, {
-    headers: { 'D360-API-KEY': config.d360.apiKey },
-  });
+  const MAX_RETRIES = 3;
+  const BACKOFF_MS = [1000, 2000, 4000];
 
-  if (!res.ok) {
-    throw new Error(`Media download failed: HTTP ${res.status}`);
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    try {
+      const res = await fetch(`${config.d360.baseUrl}/media/${mediaId}`, {
+        headers: { 'D360-API-KEY': config.d360.apiKey },
+      });
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        log.warn('Media download HTTP error', { mediaId, status: res.status, attempt: attempt + 1, body: body.slice(0, 200) });
+        if (attempt < MAX_RETRIES - 1) {
+          await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt]));
+          continue;
+        }
+        throw new Error(`Media download failed: HTTP ${res.status} - ${body.slice(0, 100)}`);
+      }
+
+      const contentType = res.headers.get('content-type') || 'application/octet-stream';
+      const arrayBuffer = await res.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+
+      if (buffer.length < 100) {
+        log.warn('Downloaded media suspiciously small', { mediaId, size: buffer.length, contentType });
+      }
+
+      return { buffer, mimeType: contentType };
+    } catch (err) {
+      if (attempt < MAX_RETRIES - 1) {
+        log.warn('Media download attempt failed, retrying', { mediaId, attempt: attempt + 1, error: err instanceof Error ? err.message : String(err) });
+        await new Promise((r) => setTimeout(r, BACKOFF_MS[attempt]));
+        continue;
+      }
+      throw err;
+    }
   }
 
-  const contentType = res.headers.get('content-type') || 'application/octet-stream';
-  const arrayBuffer = await res.arrayBuffer();
-  return { buffer: Buffer.from(arrayBuffer), mimeType: contentType };
+  throw new Error(`Media download exhausted all ${MAX_RETRIES} retries for ${mediaId}`);
 }
 
 export async function downloadFromUrl(url: string): Promise<{ buffer: Buffer; mimeType: string }> {
@@ -75,6 +103,15 @@ export async function transcribeAudio(audioBuffer: Buffer, mimeType: string): Pr
     return { description: '', success: false };
   }
 
+  if (audioBuffer.length < 1024) {
+    log.warn('Audio buffer too small for transcription', { size: audioBuffer.length, mimeType });
+    return { description: '', success: false };
+  }
+
+  if (!mimeType.includes('audio') && !mimeType.includes('ogg') && !mimeType.includes('mpeg') && !mimeType.includes('mp4') && !mimeType.includes('amr') && !mimeType.includes('wav')) {
+    log.warn('Unexpected mimeType for audio transcription', { mimeType, bufferSize: audioBuffer.length });
+  }
+
   try {
     const ext = audioMimeToExt(mimeType);
     const blob = new Blob([new Uint8Array(audioBuffer)], { type: mimeType });
@@ -93,17 +130,23 @@ export async function transcribeAudio(audioBuffer: Buffer, mimeType: string): Pr
     });
 
     if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`Whisper API error ${res.status}: ${err}`);
+      const errBody = await res.text();
+      log.error('Whisper API returned error', { status: res.status, body: errBody.slice(0, 300), mimeType, bufferSize: audioBuffer.length });
+      throw new Error(`Whisper API error ${res.status}: ${errBody}`);
     }
 
     const data = await res.json();
     const text = data.text?.trim() || '';
 
-    log.info('Audio transcribed', { length: text.length });
+    if (!text) {
+      log.warn('Whisper returned empty transcription', { mimeType, bufferSize: audioBuffer.length });
+      return { description: '', success: false };
+    }
+
+    log.info('Audio transcribed successfully', { length: text.length, preview: text.slice(0, 80) });
     return { description: text, success: true };
   } catch (err) {
-    log.error('transcribeAudio failed', { error: err instanceof Error ? err.message : String(err) });
+    log.error('transcribeAudio failed', { error: err instanceof Error ? err.message : String(err), mimeType, bufferSize: audioBuffer.length });
     return { description: '', success: false };
   }
 }

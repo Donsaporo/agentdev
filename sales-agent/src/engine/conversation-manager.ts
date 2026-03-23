@@ -11,7 +11,7 @@ import { sendTextMessage, sendTemplateMessage, setTypingIndicator } from '../ser
 import type { SendResult } from '../services/whatsapp.js';
 import { notifyDirector } from '../services/director-notifier.js';
 import { processMediaContent } from '../services/media-processor.js';
-import { scheduleMeetingViaCrm, type CrmScheduleResult } from '../services/calendar.js';
+import { scheduleMeetingViaCrm, getAvailableSlots, type CrmScheduleResult } from '../services/calendar.js';
 import { joinMeeting } from '../services/recall.js';
 import { addCrmClientInsight } from '../services/crm-postventa.js';
 import * as crm from '../services/crm.js';
@@ -23,6 +23,7 @@ const log = createLogger('conversation-manager');
 const processingLock = new Set<string>();
 const pendingMessages = new Map<string, { messages: IncomingMessage[]; timer: ReturnType<typeof setTimeout> }>();
 const requeueCount = new Map<string, number>();
+const cancelledResponses = new Set<string>();
 const MAX_REQUEUE = 3;
 
 interface IncomingMessage {
@@ -44,15 +45,28 @@ export async function handleIncomingMessage(
   if (existing) {
     clearTimeout(existing.timer);
     existing.messages.push(msg);
+
+    if (processingLock.has(msg.conversationId)) {
+      cancelledResponses.add(msg.conversationId);
+      log.info('Signalling cancellation for in-flight response', { conversationId: msg.conversationId });
+    }
+
     log.debug('Batching message', {
       conversationId: msg.conversationId,
       batchSize: existing.messages.length,
     });
 
-    const extraDelay = config.agent.messageBatchExtraDelay * existing.messages.length;
+    let extraDelay = config.agent.messageBatchExtraDelay * existing.messages.length;
+
+    const wordCount = (msg.content || '').trim().split(/\s+/).length;
+    if (wordCount <= 3) {
+      extraDelay = Math.round(extraDelay * 1.5);
+      log.debug('Short message detected, extending batch window', { words: wordCount, delayMs: extraDelay });
+    }
+
     existing.timer = setTimeout(() => {
       processBatch(supabase, msg.conversationId);
-    }, Math.min(extraDelay, 30_000));
+    }, Math.min(extraDelay, 40_000));
     return;
   }
 
@@ -92,7 +106,7 @@ async function processBatch(supabase: SupabaseClient, conversationId: string): P
           enrichedContents.push(enriched);
           await supabase
             .from('whatsapp_messages')
-            .update({ metadata: { media_description: enriched } })
+            .update({ content: enriched, metadata: { media_description: enriched } })
             .eq('id', m.id);
           continue;
         }
@@ -281,11 +295,23 @@ async function processMessage(
         }).catch(() => {});
       } else {
         for (let i = 0; i < chunks.length; i++) {
+          if (cancelledResponses.has(msg.conversationId) || pendingMessages.has(msg.conversationId)) {
+            log.info('Response cancelled: new messages arrived during delay', { conversationId: msg.conversationId, chunkIndex: i });
+            cancelledResponses.delete(msg.conversationId);
+            break;
+          }
+
           const isShort = chunks[i].split(/\s+/).length <= 5;
           const delay = calculateDelay(chunks[i], isShort);
           await setTypingIndicator(supabase, msg.conversationId, true);
           await sleep(delay);
           await setTypingIndicator(supabase, msg.conversationId, false);
+
+          if (cancelledResponses.has(msg.conversationId) || pendingMessages.has(msg.conversationId)) {
+            log.info('Response cancelled after delay: new messages arrived', { conversationId: msg.conversationId, chunkIndex: i });
+            cancelledResponses.delete(msg.conversationId);
+            break;
+          }
 
           let result: SendResult;
           try {
@@ -397,10 +423,18 @@ async function sendIntroMessage(
   persona: { full_name: string; first_name: string }
 ) {
   try {
-    const introText = 'Hola, gracias por comunicarte con Obzide Tech. En un momento te asigno con uno de nuestros asesores para atenderte. Por favor, espera un momento.';
+    const introVariations = [
+      `Hola! Gracias por escribirnos. Ya te conecto con ${persona.first_name} para que te atienda.`,
+      `Hola! En un momento ${persona.first_name} te atiende. Gracias por tu paciencia.`,
+      `Hola! Recibimos tu mensaje. ${persona.first_name} te va a atender en un momento.`,
+      `Hola! Ya te asigno con ${persona.first_name}, nuestro asesor. Un momento por favor.`,
+      `Hola! Gracias por contactarnos. ${persona.first_name} te atendera enseguida.`,
+      `Hola! Te estamos conectando con ${persona.first_name}. Gracias por esperar.`,
+    ];
+    const introText = introVariations[Math.floor(Math.random() * introVariations.length)];
 
     await setTypingIndicator(supabase, conversationId, true);
-    await sleep(5_000 + Math.random() * 5_000);
+    await sleep(2_000 + Math.random() * 2_000);
     await setTypingIndicator(supabase, conversationId, false);
 
     const result = await sendTextMessage(recipientPhone, introText);
@@ -572,6 +606,36 @@ async function executeActions(
     try {
       switch (action.type) {
         case 'update_lead_stage': {
+          if (action.params.stage === 'demo_solicitada') {
+            const { data: existingMeeting } = await supabase
+              .from('sales_meetings')
+              .select('id')
+              .eq('contact_id', contactId)
+              .eq('status', 'scheduled')
+              .limit(1)
+              .maybeSingle();
+
+            if (!existingMeeting) {
+              const { data: lastInbound } = await supabase
+                .from('whatsapp_messages')
+                .select('content')
+                .eq('contact_id', contactId)
+                .eq('direction', 'inbound')
+                .order('created_at', { ascending: false })
+                .limit(1)
+                .maybeSingle();
+
+              const acceptanceWords = ['si', 'sí', 'dale', 'agendemos', 'cuando', 'vamos', 'perfecto', 'listo', 'ok', 'claro', 'reunión', 'reunion', 'agenda', 'coordin'];
+              const lastContent = (lastInbound?.content || '').toLowerCase();
+              const hasExplicitAcceptance = acceptanceWords.some((w) => lastContent.includes(w));
+
+              if (!hasExplicitAcceptance) {
+                log.warn('Rejecting premature demo_solicitada stage change', { contactId, lastMessage: lastContent.slice(0, 100) });
+                break;
+              }
+            }
+          }
+
           await supabase
             .from('whatsapp_contacts')
             .update({ lead_stage: action.params.stage })
@@ -719,9 +783,22 @@ async function executeActions(
 
             meetingFailed = true;
 
-            if (crmResult.reason === 'schedule_conflict' && crmResult.conflicts) {
-              const conflictLines = crmResult.conflicts.map((c) => `- ${c.label}: ${c.time_range}`);
-              meetingFailureMessage = `Ese horario no esta disponible.\n\n${conflictLines.join('\n')}\n\nTe parece otro horario?`;
+            if (crmResult.reason === 'schedule_conflict') {
+              log.info('Schedule conflict details (internal only)', { conflicts: crmResult.conflicts });
+              let alternativeMsg = 'Ese horario no esta disponible. Te parece otro horario?';
+              try {
+                const slots = await getAvailableSlots(supabase, meetingDate);
+                if (slots.length > 0) {
+                  const slotLabels = slots.slice(0, 4).map((s) => {
+                    const d = new Date(s.start);
+                    return d.toLocaleTimeString('es-PA', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/Panama' });
+                  });
+                  alternativeMsg = `Ese horario no esta disponible. Te puedo ofrecer estos otros para el mismo dia: ${slotLabels.join(', ')}. Cual te queda mejor?`;
+                }
+              } catch (slotErr) {
+                log.warn('Failed to fetch alternative slots', { error: slotErr instanceof Error ? slotErr.message : String(slotErr) });
+              }
+              meetingFailureMessage = alternativeMsg;
             } else if (crmResult.reason === 'no_client_found') {
               meetingFailureMessage = crmResult.message || 'No encontre tu registro en el sistema. Me puedes confirmar tu nombre y telefono?';
             } else {

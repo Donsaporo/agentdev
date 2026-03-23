@@ -247,6 +247,14 @@ export async function buildContext(
     messageHistory: messages.map((m) => {
       let content = m.content || `[${m.message_type}]`;
 
+      const mediaPlaceholders = ['[audio]', '[imagen]', '[image]', '[documento]', '[document]', '[video]'];
+      if (mediaPlaceholders.includes(content.toLowerCase()) || content === `[${m.message_type}]`) {
+        const mediaDesc = (m.metadata as Record<string, unknown>)?.media_description as string | undefined;
+        if (mediaDesc && mediaDesc.length > 5) {
+          content = mediaDesc;
+        }
+      }
+
       const replyToId = (m.metadata as Record<string, unknown>)?.reply_to_wa_message_id as string | undefined;
       if (replyToId) {
         const replyTarget = messages.find((r) => r.wa_message_id === replyToId);
