@@ -873,6 +873,28 @@ async function executeActions(
           });
 
           const meetContact = await getContact();
+
+          if (meetContact?.crm_client_id) {
+            const meetTitle = action.params.title || `Reunion Obzide - ${contactData?.data?.display_name || 'Cliente'}`;
+            await crm.addMeeting({
+              clientId: meetContact.crm_client_id,
+              title: meetTitle,
+              startTime: startIso,
+              endTime: endIso,
+              meetLink: crmResult.meetLink || undefined,
+              googleEventId: crmResult.googleEventId || undefined,
+              meetingType: isPresencial ? 'presencial' : 'virtual',
+            }).catch(() => {});
+
+            await crm.addTimelineEvent({
+              clientId: meetContact.crm_client_id,
+              eventType: 'reunion_programada',
+              title: `Reunion agendada: "${meetTitle}"`,
+              description: `${isPresencial ? 'Presencial' : 'Virtual'} - ${meetingDate} ${startTime}-${endTime}${crmResult.meetLink ? ` - Meet: ${crmResult.meetLink}` : ''}`,
+              metadata: { google_event_id: crmResult.googleEventId, conversation_id: conversationId },
+            }).catch(() => {});
+          }
+
           notifyDirector({
             type: 'meeting_scheduled',
             contactName: meetContact?.display_name || contactData?.data?.display_name || 'Desconocido',
@@ -1108,13 +1130,12 @@ async function executeActions(
 
           const cancelContact = await getContact();
           if (cancelContact?.crm_client_id) {
-            await crm.addTimelineEvent({
-              clientId: cancelContact.crm_client_id,
-              eventType: 'otro',
-              title: 'Reunion cancelada',
-              description: `"${meeting.title}" cancelada. Razon: ${action.params.reason || 'No especificada'}`,
-              metadata: { meeting_id: meeting.id, conversation_id: conversationId },
-            }).catch(() => {});
+            await crm.cancelMeetingInCrm(
+              cancelContact.crm_client_id,
+              meeting.google_event_id,
+              action.params.reason || 'Cancelada por el cliente',
+              meeting.title
+            ).catch(() => {});
           }
 
           notifyDirector({
@@ -1213,6 +1234,25 @@ async function executeActions(
           });
 
           const reschedContact = await getContact();
+
+          if (reschedContact?.crm_client_id) {
+            await crm.rescheduleMeetingInCrm(
+              reschedContact.crm_client_id,
+              existingMeeting.google_event_id,
+              existingMeeting.title,
+              action.params.reason || 'Cliente solicito cambio',
+              {
+                clientId: reschedContact.crm_client_id,
+                title: existingMeeting.title,
+                startTime: newStartIso,
+                endTime: newEndIso,
+                meetLink: reschedResult.meetLink || undefined,
+                googleEventId: reschedResult.googleEventId || undefined,
+                meetingType: 'virtual',
+              }
+            ).catch(() => {});
+          }
+
           notifyDirector({
             type: 'meeting_scheduled',
             contactName: reschedContact?.display_name || 'Desconocido',

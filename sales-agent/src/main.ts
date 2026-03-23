@@ -308,7 +308,7 @@ async function updateMeetingStatuses(supabase: ReturnType<typeof getSupabase>) {
 
     const { data: completable, error } = await supabase
       .from('sales_meetings')
-      .select('id')
+      .select('id, title, google_event_id, contact_id')
       .eq('status', 'scheduled')
       .lt('end_time', thirtyMinAgo);
 
@@ -327,6 +327,25 @@ async function updateMeetingStatuses(supabase: ReturnType<typeof getSupabase>) {
           updated_at: new Date().toISOString(),
         })
         .in('id', ids);
+
+      const { completeMeetingInCrm } = await import('./services/crm.js');
+
+      for (const m of completable) {
+        if (!m.contact_id) continue;
+        const { data: contact } = await supabase
+          .from('whatsapp_contacts')
+          .select('crm_client_id')
+          .eq('id', m.contact_id)
+          .maybeSingle();
+
+        if (contact?.crm_client_id) {
+          await completeMeetingInCrm(
+            contact.crm_client_id,
+            m.google_event_id,
+            m.title
+          ).catch(() => {});
+        }
+      }
 
       log.info('Auto-completed past meetings', { count: ids.length });
     }

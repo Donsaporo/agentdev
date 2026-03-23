@@ -408,6 +408,153 @@ export async function addMeeting(params: CrmMeetingParams): Promise<string | nul
   }
 }
 
+export async function cancelMeetingInCrm(
+  clientId: string,
+  googleEventId: string | null,
+  reason: string,
+  meetingTitle: string
+): Promise<boolean> {
+  if (!isAvailable()) return false;
+  const crm = getCrmSupabase()!;
+
+  try {
+    if (googleEventId) {
+      const { data: crmMeeting } = await crm
+        .from('tech_lead_meetings')
+        .select('id')
+        .eq('client_id', clientId)
+        .eq('google_event_id', googleEventId)
+        .maybeSingle();
+
+      if (crmMeeting) {
+        await crm
+          .from('tech_lead_meetings')
+          .update({ status: 'cancelada', updated_at: new Date().toISOString() })
+          .eq('id', crmMeeting.id);
+        log.info('CRM meeting cancelled', { crmMeetingId: crmMeeting.id, clientId });
+      }
+    }
+
+    if (!googleEventId) {
+      const { data: latestMeeting } = await crm
+        .from('tech_lead_meetings')
+        .select('id')
+        .eq('client_id', clientId)
+        .in('status', ['programada', 'scheduled'])
+        .order('start_time', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (latestMeeting) {
+        await crm
+          .from('tech_lead_meetings')
+          .update({ status: 'cancelada', updated_at: new Date().toISOString() })
+          .eq('id', latestMeeting.id);
+        log.info('CRM meeting cancelled (by latest)', { crmMeetingId: latestMeeting.id, clientId });
+      }
+    }
+
+    await addTimelineEvent({
+      clientId,
+      eventType: 'reunion_cancelada',
+      title: `Reunion cancelada: "${meetingTitle}"`,
+      description: `Razon: ${reason}`,
+      metadata: { google_event_id: googleEventId, source: 'whatsapp_agent' },
+    });
+
+    await addComment(clientId, `[REUNION CANCELADA] "${meetingTitle}" - Razon: ${reason}`);
+
+    return true;
+  } catch (err) {
+    log.error('CRM cancelMeetingInCrm error', { error: err instanceof Error ? err.message : String(err) });
+    return false;
+  }
+}
+
+export async function completeMeetingInCrm(
+  clientId: string,
+  googleEventId: string | null,
+  meetingTitle: string
+): Promise<boolean> {
+  if (!isAvailable()) return false;
+  const crm = getCrmSupabase()!;
+
+  try {
+    if (googleEventId) {
+      const { data: crmMeeting } = await crm
+        .from('tech_lead_meetings')
+        .select('id')
+        .eq('client_id', clientId)
+        .eq('google_event_id', googleEventId)
+        .maybeSingle();
+
+      if (crmMeeting) {
+        await crm
+          .from('tech_lead_meetings')
+          .update({ status: 'completada', updated_at: new Date().toISOString() })
+          .eq('id', crmMeeting.id);
+      }
+    } else {
+      const { data: latestMeeting } = await crm
+        .from('tech_lead_meetings')
+        .select('id')
+        .eq('client_id', clientId)
+        .in('status', ['programada', 'scheduled'])
+        .order('start_time', { ascending: true })
+        .limit(1)
+        .maybeSingle();
+
+      if (latestMeeting) {
+        await crm
+          .from('tech_lead_meetings')
+          .update({ status: 'completada', updated_at: new Date().toISOString() })
+          .eq('id', latestMeeting.id);
+      }
+    }
+
+    await addTimelineEvent({
+      clientId,
+      eventType: 'reunion_completada',
+      title: `Reunion completada: "${meetingTitle}"`,
+      metadata: { google_event_id: googleEventId },
+    });
+
+    return true;
+  } catch (err) {
+    log.error('CRM completeMeetingInCrm error', { error: err instanceof Error ? err.message : String(err) });
+    return false;
+  }
+}
+
+export async function rescheduleMeetingInCrm(
+  clientId: string,
+  oldGoogleEventId: string | null,
+  oldTitle: string,
+  reason: string,
+  newMeeting: CrmMeetingParams
+): Promise<string | null> {
+  if (!isAvailable()) return null;
+
+  try {
+    await cancelMeetingInCrm(clientId, oldGoogleEventId, `Reagendada: ${reason}`, oldTitle);
+
+    const newMeetingId = await addMeeting(newMeeting);
+
+    await addTimelineEvent({
+      clientId,
+      eventType: 'reunion_programada',
+      title: `Reunion reagendada: "${newMeeting.title}"`,
+      description: `Reunion original "${oldTitle}" fue reagendada. Nueva fecha: ${newMeeting.startTime}`,
+      metadata: { old_google_event_id: oldGoogleEventId, source: 'whatsapp_agent' },
+    });
+
+    return newMeetingId;
+  } catch (err) {
+    log.error('CRM rescheduleMeetingInCrm error', { error: err instanceof Error ? err.message : String(err) });
+    return null;
+  }
+}
+
 export async function getClientHistory(clientId: string): Promise<{
   timeline: Array<{ event_type: string; title: string; description: string; created_at: string }>;
   meetings: Array<{ title: string; start_time: string; status: string; meeting_link: string }>;

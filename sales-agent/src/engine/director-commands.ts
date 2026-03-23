@@ -4,7 +4,7 @@ import { sendTextMessage } from '../services/whatsapp.js';
 import { callAISecondary } from '../services/ai.js';
 import { getOrAssignPersona } from './persona-engine.js';
 import { handleDirectorConversation } from './director-agent.js';
-import { searchClientsByName } from '../services/crm.js';
+import { searchClientsByName, cancelMeetingInCrm, rescheduleMeetingInCrm } from '../services/crm.js';
 
 const log = createLogger('director-commands');
 
@@ -669,6 +669,15 @@ async function handleCancelar(
     await cancelGoogleCalendarEvent(meeting.google_event_id).catch(() => {});
   }
 
+  if (target.crmClientId) {
+    await cancelMeetingInCrm(
+      target.crmClientId,
+      meeting.google_event_id,
+      reason,
+      meeting.title
+    ).catch(() => {});
+  }
+
   const meetDate = new Date(meeting.start_time).toLocaleString('es-PA', {
     day: '2-digit', month: '2-digit', hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/Panama',
   });
@@ -781,6 +790,24 @@ async function handleReagendar(
     meeting_type: 'virtual',
     rescheduled_from: meeting.id,
   });
+
+  if (target.crmClientId) {
+    await rescheduleMeetingInCrm(
+      target.crmClientId,
+      meeting.google_event_id,
+      meeting.title,
+      'Reagendada por el director',
+      {
+        clientId: target.crmClientId,
+        title: meeting.title,
+        startTime: newStartIso,
+        endTime: newEndIso,
+        meetLink: result.meetLink || undefined,
+        googleEventId: result.googleEventId || undefined,
+        meetingType: 'virtual',
+      }
+    ).catch(() => {});
+  }
 
   await reply(directorWaId, `Reunion reagendada:\n"${meeting.title}" con ${target.display_name}\nNueva fecha: ${newDate} ${newTime}-${newEnd}\n${result.meetLink ? `Meet: ${result.meetLink}` : ''}`);
   log.info('Director rescheduled meeting', { oldMeetingId: meeting.id, newDate, contact: target.display_name });
