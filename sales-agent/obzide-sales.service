@@ -2,6 +2,8 @@
 Description=Obzide Sales Agent
 After=network-online.target
 Wants=network-online.target
+StartLimitBurst=10
+StartLimitIntervalSec=300
 
 [Service]
 Type=simple
@@ -10,8 +12,6 @@ WorkingDirectory=/opt/obzide-sales
 ExecStart=/usr/bin/node dist/main.js
 Restart=always
 RestartSec=5
-StartLimitBurst=10
-StartLimitIntervalSec=300
 Environment=NODE_ENV=production
 EnvironmentFile=/opt/obzide-sales/.env
 StandardOutput=journal
