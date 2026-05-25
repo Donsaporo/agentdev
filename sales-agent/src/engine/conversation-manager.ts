@@ -487,7 +487,7 @@ async function sendIntroMessage(
       .update({ intro_sent: true })
       .eq('id', contactId);
 
-    await sleep(8_000 + Math.random() * 7_000);
+    await sleep(12_000 + Math.random() * 8_000);
 
     log.info('Intro message sent', { conversationId, persona: persona.full_name });
   } catch (err) {

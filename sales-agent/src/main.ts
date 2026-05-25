@@ -51,7 +51,7 @@ let realtimeChannel: ReturnType<ReturnType<typeof getSupabase>['channel']> | nul
 let instructionsChannel: ReturnType<ReturnType<typeof getSupabase>['channel']> | null = null;
 let realtimeConnected = false;
 let lastPolledAt: string = new Date().toISOString();
-const FALLBACK_POLL_INTERVAL = 30_000;
+const FALLBACK_POLL_INTERVAL = 15_000;
 const REALTIME_RETRY_BASE = 5_000;
 const REALTIME_RETRY_MAX = 60_000;
 let realtimeRetryCount = 0;
@@ -147,7 +147,6 @@ async function routeMessage(supabase: ReturnType<typeof getSupabase>, msg: Recor
 }
 
 async function fallbackPoll(supabase: ReturnType<typeof getSupabase>) {
-  if (realtimeConnected) return;
 
   try {
     const { data: messages, error } = await supabase
