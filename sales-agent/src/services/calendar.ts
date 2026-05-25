@@ -91,8 +91,14 @@ function getPanamaDate(date: Date): string {
 }
 
 function getPanamaNow(): Date {
-  const nowStr = new Date().toLocaleString('en-US', { timeZone: TIMEZONE });
-  return new Date(nowStr);
+  const now = new Date();
+  const panamaStr = now.toLocaleString('en-US', { timeZone: TIMEZONE, hour12: false });
+  const parsed = new Date(panamaStr);
+  if (isNaN(parsed.getTime())) {
+    const offsetMs = -5 * 60 * 60 * 1000;
+    return new Date(now.getTime() + now.getTimezoneOffset() * 60000 + offsetMs);
+  }
+  return parsed;
 }
 
 function isSameOrBeforeToday(dateStr: string): boolean {
@@ -256,12 +262,12 @@ export async function checkAvailability(
     };
   }
 
-  const panamaHour = parseInt(
-    requestedDate.toLocaleString('en-US', { hour: 'numeric', hour12: false, timeZone: TIMEZONE })
-  );
-  const panamaMinute = parseInt(
-    requestedDate.toLocaleString('en-US', { minute: 'numeric', timeZone: TIMEZONE })
-  );
+  const panamaTimeStr = requestedDate.toLocaleString('en-US', {
+    hour: '2-digit', minute: '2-digit', hour12: false, timeZone: TIMEZONE,
+  });
+  const [hourStr, minuteStr] = panamaTimeStr.split(':');
+  const panamaHour = parseInt(hourStr, 10) || 0;
+  const panamaMinute = parseInt(minuteStr, 10) || 0;
 
   const meetingEndHour = panamaHour + Math.floor((panamaMinute + durationMinutes) / 60);
   const meetingEndMin = (panamaMinute + durationMinutes) % 60;

@@ -273,6 +273,34 @@ async function processMessage(
         ? actionResult.meetingFailureMessage
         : sanitized.text;
 
+      const { data: recentOutbound } = await supabase
+        .from('whatsapp_messages')
+        .select('content')
+        .eq('conversation_id', msg.conversationId)
+        .eq('direction', 'outbound')
+        .order('created_at', { ascending: false })
+        .limit(3);
+
+      const recentContents = (recentOutbound || []).map(m => (m.content || '').trim().toLowerCase());
+      const normalizedFinal = finalText.trim().toLowerCase();
+      const isRepeatedMessage = recentContents.some(c => c === normalizedFinal);
+
+      if (isRepeatedMessage) {
+        log.warn('Blocking repeated message - switching to manual', { conversationId: msg.conversationId, repeatedText: finalText.slice(0, 80) });
+        await supabase
+          .from('whatsapp_conversations')
+          .update({ agent_mode: 'manual', needs_director_attention: true })
+          .eq('id', msg.conversationId);
+        const repeatContact = await loadContactForCrm(supabase, msg.contactId);
+        notifyDirector({
+          type: 'escalation',
+          contactName: repeatContact?.display_name || 'Desconocido',
+          contactPhone: repeatContact?.phone_number || '',
+          reason: `Bot intento repetir el mismo mensaje. Conversacion pasada a manual. Mensaje: "${finalText.slice(0, 100)}"`,
+        }).catch(() => {});
+        return;
+      }
+
       const chunks = shouldSplitMessage(finalText);
       const recipientPhone = contact.wa_id || contact.phone_number;
 
@@ -895,18 +923,51 @@ async function executeActions(
             }).catch(() => {});
           }
 
+          await supabase
+            .from('whatsapp_conversations')
+            .update({
+              agent_mode: 'manual',
+              needs_director_attention: true,
+            })
+            .eq('id', conversationId);
+
           notifyDirector({
             type: 'meeting_scheduled',
             contactName: meetContact?.display_name || contactData?.data?.display_name || 'Desconocido',
-            details: `${action.params.title || 'Reunion Obzide'}\n${isPresencial ? `Presencial - ${meetingLocation || 'PH Plaza Real, Costa del Este'}` : `Virtual: ${crmResult.meetLink}`}\nFecha: ${meetingDate} ${startTime}-${endTime}`,
+            details: `${action.params.title || 'Reunion Obzide'}\n${isPresencial ? `Presencial - ${meetingLocation || 'PH Plaza Real, Costa del Este'}` : `Virtual: ${crmResult.meetLink}`}\nFecha: ${meetingDate} ${startTime}-${endTime}\n\n*Conversacion pasada a MANUAL automaticamente.*`,
           }).catch(() => {});
 
-          log.info('Meeting scheduled via CRM and recorded', {
+          log.info('Meeting scheduled via CRM - conversation switched to MANUAL', {
             meetingId: crmResult.meetingId,
             googleEventId: crmResult.googleEventId,
             meetLink: crmResult.meetLink,
             type: isPresencial ? 'presencial' : 'virtual',
             recallBotId,
+          });
+          break;
+        }
+
+        case 'defer_meeting_to_director': {
+          const deferContact = await getContact();
+          const proposedDate = action.params.proposed_date || 'sin fecha';
+          const proposedTime = action.params.proposed_time || 'sin hora';
+          const clientContext = action.params.context || '';
+
+          await supabase
+            .from('whatsapp_conversations')
+            .update({ agent_mode: 'manual', needs_director_attention: true })
+            .eq('id', conversationId);
+
+          notifyDirector({
+            type: 'meeting_scheduled',
+            contactName: deferContact?.display_name || 'Desconocido',
+            details: `*SOLICITUD DE REUNION - REQUIERE CONFIRMACION*\nCliente: ${deferContact?.display_name || 'Desconocido'} (${deferContact?.phone_number || ''})\nFecha propuesta: ${proposedDate}\nHora propuesta: ${proposedTime}\nContexto: ${clientContext}\n\n*Conversacion pasada a MANUAL. Confirma y agenda la reunion manualmente.*`,
+          }).catch(() => {});
+
+          log.info('Meeting deferred to director - conversation switched to MANUAL', {
+            contactId,
+            proposedDate,
+            proposedTime,
           });
           break;
         }
@@ -1161,9 +1222,20 @@ async function executeActions(
             .maybeSingle();
 
           if (!existingMeeting) {
-            log.warn('No upcoming meeting to reschedule', { contactId });
+            log.warn('No upcoming meeting to reschedule - switching to manual', { contactId });
+            await supabase
+              .from('whatsapp_conversations')
+              .update({ agent_mode: 'manual', needs_director_attention: true })
+              .eq('id', conversationId);
+            const reschedFailContact = await getContact();
+            notifyDirector({
+              type: 'escalation',
+              contactName: reschedFailContact?.display_name || 'Desconocido',
+              contactPhone: reschedFailContact?.phone_number || '',
+              reason: 'Cliente quiere reagendar pero no se encontro reunion activa. Conversacion pasada a manual.',
+            }).catch(() => {});
             meetingFailed = true;
-            meetingFailureMessage = 'No encontre una reunion programada para reagendar. Me puedes confirmar los detalles?';
+            meetingFailureMessage = 'Dejame verificar con el equipo y te confirmo. Un momento por favor.';
             break;
           }
 
@@ -1253,13 +1325,18 @@ async function executeActions(
             ).catch(() => {});
           }
 
+          await supabase
+            .from('whatsapp_conversations')
+            .update({ agent_mode: 'manual', needs_director_attention: true })
+            .eq('id', conversationId);
+
           notifyDirector({
             type: 'meeting_scheduled',
             contactName: reschedContact?.display_name || 'Desconocido',
-            details: `REAGENDADA: "${existingMeeting.title}"\nNueva fecha: ${newDate} ${newStart}-${newEnd}\n${reschedResult.meetLink ? `Meet: ${reschedResult.meetLink}` : ''}`,
+            details: `REAGENDADA: "${existingMeeting.title}"\nNueva fecha: ${newDate} ${newStart}-${newEnd}\n${reschedResult.meetLink ? `Meet: ${reschedResult.meetLink}` : ''}\n\n*Conversacion pasada a MANUAL automaticamente.*`,
           }).catch(() => {});
 
-          log.info('Meeting rescheduled', { oldMeetingId: existingMeeting.id, newDate, reason: action.params.reason });
+          log.info('Meeting rescheduled - conversation switched to MANUAL', { oldMeetingId: existingMeeting.id, newDate, reason: action.params.reason });
           break;
         }
       }

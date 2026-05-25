@@ -28,12 +28,19 @@ async function getInternalPhones(supabase: ReturnType<typeof getSupabase>): Prom
   const map = new Map<string, string>();
   if (data) {
     for (const row of data) {
+      const cleaned = row.phone_number.replace(/[+\-\s()]/g, '');
+      map.set(cleaned, row.role);
       map.set(row.phone_number, row.role);
     }
   }
 
   internalPhonesCache = { phones: map, fetchedAt: Date.now() };
   return map;
+}
+
+function lookupInternalRole(internalPhones: Map<string, string>, waId: string): string | undefined {
+  const cleaned = waId.replace(/[+\-\s()]/g, '');
+  return internalPhones.get(cleaned) || internalPhones.get(waId);
 }
 
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -81,6 +88,10 @@ async function routeMessage(supabase: ReturnType<typeof getSupabase>, msg: Recor
   if (waId) {
     if (config.director.phones.length > 0 && isDirectorPhone(waId, config.director.phones)) {
       log.info('Director message detected (env config), routing to command handler', { waId });
+      await supabase
+        .from('whatsapp_conversations')
+        .update({ agent_mode: 'manual', category: 'archived' })
+        .eq('id', msg.conversation_id);
       flushPendingNotifications(waId).catch((err) => {
         log.warn('Failed to flush pending notifications', { error: err instanceof Error ? err.message : String(err) });
       });
@@ -94,10 +105,14 @@ async function routeMessage(supabase: ReturnType<typeof getSupabase>, msg: Recor
     }
 
     const internalPhones = await getInternalPhones(supabase);
-    const role = internalPhones.get(waId);
+    const role = lookupInternalRole(internalPhones, waId);
 
     if (role === 'director') {
       log.info('Director message detected (DB), routing to command handler', { waId });
+      await supabase
+        .from('whatsapp_conversations')
+        .update({ agent_mode: 'manual', category: 'archived' })
+        .eq('id', msg.conversation_id);
       flushPendingNotifications(waId).catch((err) => {
         log.warn('Failed to flush pending notifications', { error: err instanceof Error ? err.message : String(err) });
       });
@@ -114,7 +129,7 @@ async function routeMessage(supabase: ReturnType<typeof getSupabase>, msg: Recor
       log.info('Team member message detected, setting to manual mode', { waId });
       await supabase
         .from('whatsapp_conversations')
-        .update({ agent_mode: 'manual' })
+        .update({ agent_mode: 'manual', category: 'archived' })
         .eq('id', msg.conversation_id);
       return;
     }

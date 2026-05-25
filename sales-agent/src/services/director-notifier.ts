@@ -34,6 +34,34 @@ const TEMPLATES: Record<NotificationType, (p: NotificationPayload) => string> = 
     `*CONVERSACION COMPLETADA*\nContacto: ${p.contactName || 'Desconocido'}\nTel: ${p.contactPhone || 'N/A'}${p.details ? `\nResultado: ${p.details}` : ''}`,
 };
 
+const recentNotifications = new Map<string, number>();
+const DEDUP_WINDOW_MS = 5 * 60_000;
+
+function getDedupeKey(payload: NotificationPayload): string {
+  return `${payload.type}:${payload.contactName || ''}:${payload.contactPhone || ''}`;
+}
+
+function isDuplicate(payload: NotificationPayload): boolean {
+  const key = getDedupeKey(payload);
+  const lastSent = recentNotifications.get(key);
+  if (lastSent && Date.now() - lastSent < DEDUP_WINDOW_MS) {
+    return true;
+  }
+  recentNotifications.set(key, Date.now());
+  if (recentNotifications.size > 200) {
+    const cutoff = Date.now() - DEDUP_WINDOW_MS;
+    for (const [k, v] of recentNotifications) {
+      if (v < cutoff) recentNotifications.delete(k);
+    }
+  }
+  return false;
+}
+
+function getPrimaryDirectorPhone(): string | null {
+  const phones = config.director.phones;
+  return phones.length > 0 ? phones[0] : null;
+}
+
 async function isDirectorWindowOpen(phone: string): Promise<boolean> {
   try {
     const supabase = getSupabase();
@@ -60,6 +88,23 @@ async function isDirectorWindowOpen(phone: string): Promise<boolean> {
 async function queuePendingNotification(phone: string, payload: NotificationPayload): Promise<void> {
   try {
     const supabase = getSupabase();
+
+    const fiveMinAgo = new Date(Date.now() - DEDUP_WINDOW_MS).toISOString();
+    const { data: existing } = await supabase
+      .from('director_pending_notifications')
+      .select('id')
+      .eq('director_phone', phone)
+      .eq('notification_type', payload.type)
+      .eq('status', 'pending')
+      .gt('created_at', fiveMinAgo)
+      .limit(1)
+      .maybeSingle();
+
+    if (existing) {
+      log.debug('Duplicate pending notification skipped', { phone, type: payload.type });
+      return;
+    }
+
     await supabase.from('director_pending_notifications').insert({
       director_phone: phone,
       notification_type: payload.type,
@@ -88,9 +133,14 @@ async function sendTemplateToDirector(phone: string): Promise<boolean> {
 }
 
 export async function notifyDirector(payload: NotificationPayload): Promise<void> {
-  const phones = config.director.phones;
-  if (!phones || phones.length === 0) {
+  const phone = getPrimaryDirectorPhone();
+  if (!phone) {
     log.debug('No director phones configured, skipping notification');
+    return;
+  }
+
+  if (isDuplicate(payload)) {
+    log.debug('Duplicate notification suppressed', { type: payload.type, contact: payload.contactName });
     return;
   }
 
@@ -102,26 +152,24 @@ export async function notifyDirector(payload: NotificationPayload): Promise<void
 
   const message = template(payload);
 
-  for (const phone of phones) {
-    try {
-      const windowOpen = await isDirectorWindowOpen(phone);
+  try {
+    const windowOpen = await isDirectorWindowOpen(phone);
 
-      if (windowOpen) {
-        await sendTextMessage(phone, message);
-        log.info('Director notified', { phone, type: payload.type });
-      } else {
-        log.info('Director window closed, queuing notification and sending template', { phone, type: payload.type });
-        await queuePendingNotification(phone, payload);
-        await sendTemplateToDirector(phone);
-      }
-    } catch (err) {
-      log.error('Failed to notify director', {
-        phone,
-        type: payload.type,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      await queuePendingNotification(phone, payload).catch(() => {});
+    if (windowOpen) {
+      await sendTextMessage(phone, message);
+      log.info('Director notified', { phone, type: payload.type });
+    } else {
+      log.info('Director window closed, queuing notification and sending template', { phone, type: payload.type });
+      await queuePendingNotification(phone, payload);
+      await sendTemplateToDirector(phone);
     }
+  } catch (err) {
+    log.error('Failed to notify director', {
+      phone,
+      type: payload.type,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    await queuePendingNotification(phone, payload).catch(() => {});
   }
 }
 
@@ -133,32 +181,14 @@ export async function flushPendingNotifications(directorPhone: string): Promise<
     const { data: pending } = await supabase
       .from('director_pending_notifications')
       .select('id, notification_type, payload')
-      .eq('director_phone', cleanPhone)
+      .or(`director_phone.eq.${cleanPhone},director_phone.eq.${directorPhone}`)
       .eq('status', 'pending')
       .order('created_at', { ascending: true })
       .limit(20);
 
-    if (!pending || pending.length === 0) {
-      const partialMatch = config.director.phones.find((p) => {
-        const cp = p.replace(/[\s\-\+\(\)]/g, '');
-        return cleanPhone.endsWith(cp) || cp.endsWith(cleanPhone);
-      });
-      if (partialMatch) {
-        const { data: retryPending } = await supabase
-          .from('director_pending_notifications')
-          .select('id, notification_type, payload')
-          .eq('director_phone', partialMatch.replace(/[\s\-\+\(\)]/g, ''))
-          .eq('status', 'pending')
-          .order('created_at', { ascending: true })
-          .limit(20);
-        if (!retryPending || retryPending.length === 0) return;
-        await deliverPending(supabase, retryPending);
-        return;
-      }
-      return;
-    }
+    if (!pending || pending.length === 0) return;
 
-    await deliverPending(supabase, pending);
+    await deliverPending(supabase, pending, directorPhone);
   } catch (err) {
     log.error('Failed to flush pending notifications', { error: err instanceof Error ? err.message : String(err) });
   }
@@ -166,7 +196,8 @@ export async function flushPendingNotifications(directorPhone: string): Promise<
 
 async function deliverPending(
   supabase: ReturnType<typeof getSupabase>,
-  pending: { id: string; notification_type: string; payload: unknown }[]
+  pending: { id: string; notification_type: string; payload: unknown }[],
+  targetPhone: string
 ): Promise<void> {
   log.info(`Flushing ${pending.length} pending notifications to director`);
 
@@ -177,15 +208,13 @@ async function deliverPending(
 
     const message = templateFn(payload);
 
-    for (const phone of config.director.phones) {
-      try {
-        await sendTextMessage(phone, message);
-      } catch (err) {
-        log.warn('Failed to deliver pending notification', {
-          id: notification.id,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
+    try {
+      await sendTextMessage(targetPhone, message);
+    } catch (err) {
+      log.warn('Failed to deliver pending notification', {
+        id: notification.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
 
     await supabase
