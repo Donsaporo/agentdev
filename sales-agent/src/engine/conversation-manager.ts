@@ -467,12 +467,11 @@ async function sendIntroMessage(
 ) {
   try {
     const introVariations = [
-      `Hola! Gracias por escribirnos. Ya te conecto con ${persona.first_name} para que te atienda.`,
-      `Hola! En un momento ${persona.first_name} te atiende. Gracias por tu paciencia.`,
-      `Hola! Recibimos tu mensaje. ${persona.first_name} te va a atender en un momento.`,
-      `Hola! Ya te asigno con ${persona.first_name}, nuestro asesor. Un momento por favor.`,
-      `Hola! Gracias por contactarnos. ${persona.first_name} te atendera enseguida.`,
-      `Hola! Te estamos conectando con ${persona.first_name}. Gracias por esperar.`,
+      `Hola, gracias por comunicarte con Obzide Tech. En breve ${persona.full_name} te asistira con tu consulta.`,
+      `Hola, bienvenido a Obzide Tech. ${persona.full_name} sera quien te atienda, te responde en un momento.`,
+      `Hola, gracias por escribirnos. Te estamos asignando con ${persona.full_name}, nuestra asesora de proyectos. Un momento por favor.`,
+      `Hola, recibimos tu mensaje. ${persona.full_name} de nuestro equipo comercial te atendera enseguida.`,
+      `Hola, bienvenido. Ya estamos conectandote con ${persona.full_name}, quien te dara toda la informacion que necesites.`,
     ];
     const introText = introVariations[Math.floor(Math.random() * introVariations.length)];
 
