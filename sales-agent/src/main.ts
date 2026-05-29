@@ -135,6 +135,20 @@ async function routeMessage(supabase: ReturnType<typeof getSupabase>, msg: Recor
     }
   }
 
+  const { data: convMode } = await supabase
+    .from('whatsapp_conversations')
+    .select('agent_mode')
+    .eq('id', msg.conversation_id)
+    .maybeSingle();
+
+  if (convMode?.agent_mode !== 'ai') {
+    log.debug('Conversation not in AI mode, discarding at router level', {
+      conversationId: msg.conversation_id,
+      mode: convMode?.agent_mode ?? 'not_found',
+    });
+    return;
+  }
+
   await handleIncomingMessage(supabase, {
     id: msg.id,
     conversationId: msg.conversation_id,

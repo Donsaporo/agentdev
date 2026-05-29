@@ -273,6 +273,11 @@ async function processMessage(
         ? actionResult.meetingFailureMessage
         : sanitized.text;
 
+      // Silent pause: meetingFailed with no message means AI was paused without responding
+      if (actionResult.meetingFailed && !finalText) {
+        return;
+      }
+
       const { data: recentOutbound } = await supabase
         .from('whatsapp_messages')
         .select('content')
@@ -787,9 +792,25 @@ async function executeActions(
           );
 
           if (!hasClientConfirmation) {
-            log.warn('Blocking schedule_meeting: no explicit client confirmation found', { contactId, recentTexts: recentTexts.slice(0, 3) });
+            log.warn('Blocking schedule_meeting: no explicit client confirmation found - pausing AI and notifying director', { contactId, recentTexts: recentTexts.slice(0, 3) });
+
+            await supabase
+              .from('whatsapp_conversations')
+              .update({ agent_mode: 'manual', needs_director_attention: true })
+              .eq('id', conversationId);
+
+            const ambiguousContact = await getContact();
+            const lastClientMsg = recentTexts[0] || '(sin mensaje)';
+
+            notifyDirector({
+              type: 'escalation',
+              contactName: ambiguousContact?.display_name || 'Desconocido',
+              details: `*REUNION PENDIENTE DE CONFIRMACION*\nCliente: ${ambiguousContact?.display_name || 'Desconocido'} (${ambiguousContact?.phone_number || ''})\nUltimo mensaje del cliente: "${lastClientMsg}"\n\nNo se detecto confirmacion explicita del horario propuesto. *La IA fue pausada automaticamente.* Revisa la conversacion y confirma o reagenda manualmente.`,
+            }).catch(() => {});
+
+            // Do NOT send anything to the client - silent pause
             meetingFailed = true;
-            meetingFailureMessage = 'Perfecto, entonces quedo pendiente. Cuando me confirmes el horario agendo la reunion.';
+            meetingFailureMessage = '';
             break;
           }
 
