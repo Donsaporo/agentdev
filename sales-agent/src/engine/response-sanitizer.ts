@@ -115,7 +115,7 @@ const AI_REVEAL_PATTERNS = [
   /\bopenai\b/i,
 ];
 
-const MAX_RESPONSE_LENGTH = 280;
+const MAX_RESPONSE_LENGTH = 600;
 
 function looksLikeInternalJson(text: string): boolean {
   const matchCount = INTERNAL_JSON_KEYS.filter((key) => text.includes(`"${key}"`)).length;

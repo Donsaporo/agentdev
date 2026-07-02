@@ -233,14 +233,6 @@ function buildSystemPrompt(ctx: ConversationContext): string {
       : '';
   })();
 
-  const responseBudget = (() => {
-    const wc = lm.incomingWordCount;
-    if (wc <= 3) return 'PRESUPUESTO DE RESPUESTA: maximo 80 caracteres (el cliente mando pocas palabras, responde MUY corto).';
-    if (wc <= 8) return 'PRESUPUESTO DE RESPUESTA: maximo 150 caracteres.';
-    if (wc <= 20) return 'PRESUPUESTO DE RESPUESTA: maximo 220 caracteres.';
-    return 'PRESUPUESTO DE RESPUESTA: maximo 280 caracteres.';
-  })();
-
   const nameIsUnknown = !ctx.contactName
     || ctx.contactName === 'Desconocido'
     || /^\d+$/.test(ctx.contactName);
@@ -500,9 +492,12 @@ Si recibes un mensaje no-texto como [image], [audio], [document], [video]:
 
 === REGLAS DE COMPORTAMIENTO ===
 1. Eres una PERSONA REAL. JAMAS reveles que eres IA. Si te preguntan, eres parte del equipo de Obzide.
-2. SIEMPRE en espanol. MAXIMO 2 oraciones por mensaje. Si tu mensaje tiene mas de 2 oraciones, REESCRIBELO mas corto. Preguntate: puedo decir esto en menos palabras? La respuesta siempre es si. ELIMINA frases de relleno como "para poder ofrecerte una propuesta mas ajustada a tus necesidades" -- eso sobra.
-   REGLA DE PROPORCIONALIDAD: Si el cliente manda 1-3 palabras ("ok", "gracias", "dale"), tu respuesta debe ser IGUAL de corta (1 oracion max). Si el cliente manda un parrafo largo explicando su proyecto, ahi si puedes responder con 2 oraciones. NUNCA mandes una biblia cuando el cliente mando 3 palabras.
-   ${responseBudget}
+2. SIEMPRE en espanol. Responde con la longitud que la situacion exige — ni mas ni menos. Usa tu criterio:
+   - Una confirmacion ("ok", "dale", "gracias", "perfecto") merece UNA oracion corta, maximo.
+   - Una pregunta directa merece la respuesta directa y nada mas. Sin relleno.
+   - Un parrafo del cliente explicando su proyecto merece una respuesta de 1-2 oraciones que avancen la conversacion.
+   - NUNCA agregues oraciones de relleno como "para poder ofrecerte una propuesta mas ajustada a tus necesidades", "con mucho gusto", "estoy aqui para ayudarte". Sobran siempre.
+   - Si puedes decir lo mismo en menos palabras, hazlo. La brevedad es inteligencia, no descortesia.
 3. NO listes cosas. NO uses asteriscos ni formato markdown. Es WhatsApp, no un email.
 4. NUNCA envies multiples preguntas de golpe. Una conversacion natural, pregunta por pregunta.
 5. Si no sabes algo tecnico: "Dejame confirmarlo con el equipo tecnico y te respondo en breve."
@@ -638,7 +633,7 @@ export async function decide(
 
   for (let attempt = 0; attempt < 2; attempt++) {
     const response = await callAI(systemPrompt, aiMessages, {
-      maxTokens: 350,
+      maxTokens: 600,
       temperature: attempt === 0 ? 0.7 : 0.3,
       tier: 'primary',
     });

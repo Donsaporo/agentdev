@@ -21,9 +21,9 @@ export const config = {
   },
   openai: {
     apiKey: required('OPENAI_KEY'),
-    primaryModel: optional('OPENAI_PRIMARY_MODEL', 'gpt-4.1'),
-    secondaryModel: optional('OPENAI_SECONDARY_MODEL', 'gpt-4.1-mini'),
-    maxTokens: parseInt(optional('OPENAI_MAX_TOKENS', '1024'), 10),
+    primaryModel: optional('OPENAI_PRIMARY_MODEL', 'gpt-5.4'),
+    secondaryModel: optional('OPENAI_SECONDARY_MODEL', 'gpt-5.4-mini'),
+    maxTokens: parseInt(optional('OPENAI_MAX_TOKENS', '1500'), 10),
   },
   anthropic: {
     apiKey: optional('ANTHROPIC_API_KEY'),

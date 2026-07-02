@@ -62,7 +62,6 @@ export interface ConversationContext {
     botPriceEvasionsCount: number;
     meetingRefusalsCount: number;
     clientRejectionSignal: boolean;
-    incomingWordCount: number;
   };
 }
 
@@ -405,14 +404,11 @@ function computeLoopMetrics(
   const meetingRefusalsCount = inbound.filter(m => meetingRefusalTerms.test(m.content)).length;
   const clientRejectionSignal = rejectionTerms.test(incomingMessage) ||
     inbound.slice(-3).some(m => rejectionTerms.test(m.content));
-  const incomingWordCount = incomingMessage.trim().split(/\s+/).filter(Boolean).length;
-
   return {
     priceAsksCount,
     botPriceEvasionsCount,
     meetingRefusalsCount,
     clientRejectionSignal,
-    incomingWordCount,
   };
 }
 
