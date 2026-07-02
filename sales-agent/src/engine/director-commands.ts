@@ -538,6 +538,12 @@ $reagendar <cliente> <fecha> <hora>
   Reagendar la proxima reunion de un cliente
   Ej: $reagendar juan 2026-03-25 14:00
 
+$apagar
+  Apagar el bot completamente (silencio total para todos los clientes)
+
+$encender
+  Encender el bot de nuevo
+
 $ayuda
   Mostrar esta guia
 
@@ -813,6 +819,32 @@ async function handleReagendar(
   log.info('Director rescheduled meeting', { oldMeetingId: meeting.id, newDate, contact: target.display_name });
 }
 
+async function handleApagar(
+  supabase: SupabaseClient,
+  directorWaId: string
+) {
+  await supabase
+    .from('sales_agent_heartbeat')
+    .update({ agent_paused: true })
+    .not('id', 'is', null);
+
+  await reply(directorWaId, 'Sistema APAGADO. El bot no respondera a nadie hasta que uses $encender.');
+  log.info('Director triggered global kill switch: agent_paused = true');
+}
+
+async function handleEncender(
+  supabase: SupabaseClient,
+  directorWaId: string
+) {
+  await supabase
+    .from('sales_agent_heartbeat')
+    .update({ agent_paused: false })
+    .not('id', 'is', null);
+
+  await reply(directorWaId, 'Sistema ENCENDIDO. El bot responde normalmente.');
+  log.info('Director restored global kill switch: agent_paused = false');
+}
+
 export function isDirectorPhone(waId: string, directorPhones: readonly string[]): boolean {
   const cleaned = waId.replace(/[+\-\s()]/g, '');
   return directorPhones.some((dp) => {
@@ -868,6 +900,12 @@ export async function handleDirectorCommand(
       break;
     case 'reagendar':
       await handleReagendar(supabase, msg.directorWaId, parsed.args);
+      break;
+    case 'apagar':
+      await handleApagar(supabase, msg.directorWaId);
+      break;
+    case 'encender':
+      await handleEncender(supabase, msg.directorWaId);
       break;
     case 'ayuda':
     case 'help':

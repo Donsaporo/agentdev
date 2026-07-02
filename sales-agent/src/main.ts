@@ -56,6 +56,16 @@ const REALTIME_RETRY_BASE = 5_000;
 const REALTIME_RETRY_MAX = 60_000;
 let realtimeRetryCount = 0;
 const processingMessages = new Set<string>();
+let systemPaused = false;
+
+async function syncSystemPaused(supabase: ReturnType<typeof getSupabase>) {
+  const { data } = await supabase
+    .from('sales_agent_heartbeat')
+    .select('agent_paused')
+    .eq('id', 'sales-agent')
+    .maybeSingle();
+  systemPaused = data?.agent_paused === true;
+}
 
 async function updateHeartbeat(supabase: ReturnType<typeof getSupabase>) {
   await supabase.from('sales_agent_heartbeat').upsert(
@@ -77,6 +87,11 @@ async function setOffline(supabase: ReturnType<typeof getSupabase>) {
 }
 
 async function routeMessage(supabase: ReturnType<typeof getSupabase>, msg: Record<string, string>) {
+  if (systemPaused) {
+    log.info('System paused ($apagar), ignoring message', { conversationId: msg.conversation_id });
+    return;
+  }
+
   const { data: contact } = await supabase
     .from('whatsapp_contacts')
     .select('wa_id')
@@ -289,6 +304,44 @@ function subscribeToInstructions(supabase: ReturnType<typeof getSupabase>) {
         supabase.removeChannel(instructionsChannel!);
         instructionsChannel = null;
         setTimeout(() => subscribeToInstructions(supabase), 10_000);
+      }
+    });
+}
+
+let heartbeatPauseChannel: ReturnType<ReturnType<typeof getSupabase>['channel']> | null = null;
+
+function subscribeToHeartbeatPause(supabase: ReturnType<typeof getSupabase>) {
+  if (heartbeatPauseChannel) {
+    supabase.removeChannel(heartbeatPauseChannel);
+    heartbeatPauseChannel = null;
+  }
+
+  heartbeatPauseChannel = supabase
+    .channel(`sales-agent-heartbeat-pause-${Date.now()}`)
+    .on(
+      'postgres_changes',
+      {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'sales_agent_heartbeat',
+        filter: 'id=eq.sales-agent',
+      },
+      (payload) => {
+        const updated = payload.new as Record<string, unknown>;
+        const wasPaused = systemPaused;
+        systemPaused = updated.agent_paused === true;
+        if (systemPaused !== wasPaused) {
+          log.info(`System pause state changed: ${systemPaused ? 'PAUSED ($apagar)' : 'ACTIVE ($encender)'}`);
+        }
+      }
+    )
+    .subscribe((status) => {
+      if (status === 'SUBSCRIBED') {
+        log.info('Heartbeat pause realtime connected');
+      } else if (status === 'TIMED_OUT' || status === 'CHANNEL_ERROR') {
+        supabase.removeChannel(heartbeatPauseChannel!);
+        heartbeatPauseChannel = null;
+        setTimeout(() => subscribeToHeartbeatPause(supabase), 10_000);
       }
     });
 }
@@ -697,6 +750,9 @@ async function startup() {
 
   subscribeToMessages(supabase);
   subscribeToInstructions(supabase);
+  await syncSystemPaused(supabase);
+  subscribeToHeartbeatPause(supabase);
+  if (systemPaused) log.warn('Agent started in PAUSED state ($apagar is active)');
 
   fallbackPollTimer = setInterval(() => fallbackPoll(supabase), FALLBACK_POLL_INTERVAL);
   log.info(`Fallback poll active (every ${FALLBACK_POLL_INTERVAL / 1000}s, only when realtime is down)`);
@@ -726,7 +782,7 @@ async function startup() {
 
   log.info('Sales agent is ONLINE and listening for messages');
   log.info(`WhatsApp: 360dialog via ${config.d360.baseUrl}`);
-  log.info(`AI Primary: ${config.openai.primaryModel} | Secondary: ${config.openai.secondaryModel}${config.anthropic.apiKey ? ' | Fallback: Claude' : ''}`);
+  log.info(`AI Primary: ${config.openai.primaryModel} | Secondary: ${config.openai.secondaryModel}`);
 }
 
 async function shutdown() {
@@ -762,6 +818,12 @@ async function shutdown() {
     const supabase = getSupabase();
     supabase.removeChannel(instructionsChannel);
     instructionsChannel = null;
+  }
+
+  if (heartbeatPauseChannel) {
+    const supabase = getSupabase();
+    supabase.removeChannel(heartbeatPauseChannel);
+    heartbeatPauseChannel = null;
   }
 
   try {

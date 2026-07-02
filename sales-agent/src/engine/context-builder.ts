@@ -57,6 +57,13 @@ export interface ConversationContext {
   crmProjects: CrmClientContext['projects'];
   crmPendingTasks: CrmClientContext['pending_tasks'];
   crmQuotations: CrmClientContext['quotations'];
+  loopMetrics: {
+    priceAsksCount: number;
+    botPriceEvasionsCount: number;
+    meetingRefusalsCount: number;
+    clientRejectionSignal: boolean;
+    incomingWordCount: number;
+  };
 }
 
 export interface MeetingHistoryEntry {
@@ -234,17 +241,7 @@ export async function buildContext(
     meetingHistory = localMeetings;
   }
 
-  const context: ConversationContext = {
-    persona,
-    contactName: contact?.display_name || contact?.profile_name || contact?.phone_number || 'Desconocido',
-    contactPhone: contact?.phone_number || '',
-    contactEmail: contact?.email || '',
-    contactCompany: contact?.company || '',
-    leadStage: contact?.lead_stage || 'nuevo',
-    conversationCategory: conversation?.category || 'new_lead',
-    windowStatus: conversation?.window_status || 'closed',
-    windowExpiresAt: conversation?.window_expires_at || null,
-    messageHistory: messages.map((m) => {
+  const builtMessages = messages.map((m) => {
       let content = m.content || `[${m.message_type}]`;
 
       const mediaPlaceholders = ['[audio]', '[imagen]', '[image]', '[documento]', '[document]', '[video]'];
@@ -271,7 +268,19 @@ export async function buildContext(
         messageType: m.message_type,
         hasMedia: !!m.media_url,
       };
-    }),
+    });
+
+  const context: ConversationContext = {
+    persona,
+    contactName: contact?.display_name || contact?.profile_name || contact?.phone_number || 'Desconocido',
+    contactPhone: contact?.phone_number || '',
+    contactEmail: contact?.email || '',
+    contactCompany: contact?.company || '',
+    leadStage: contact?.lead_stage || 'nuevo',
+    conversationCategory: conversation?.category || 'new_lead',
+    windowStatus: conversation?.window_status || 'closed',
+    windowExpiresAt: conversation?.window_expires_at || null,
+    messageHistory: builtMessages,
     knowledge: knowledge.map((k) => ({ title: k.title, content: k.content })),
     instructions: instructions.map((i) => ({ instruction: i.instruction, priority: i.priority })),
     crmNotes: contact?.notes || '',
@@ -286,6 +295,10 @@ export async function buildContext(
     crmProjects,
     crmPendingTasks,
     crmQuotations,
+    loopMetrics: computeLoopMetrics(
+      builtMessages,
+      incomingMessage
+    ),
   };
 
   log.debug('Context built', {
@@ -373,6 +386,34 @@ async function loadCompletedMeetings(supabase: SupabaseClient, contactId: string
     log.warn('Failed to load local meetings', { contactId, error: err instanceof Error ? err.message : String(err) });
     return [];
   }
+}
+
+function computeLoopMetrics(
+  messages: { role: string; content: string }[],
+  incomingMessage: string
+): ConversationContext['loopMetrics'] {
+  const priceTerms = /precio|costo|cuanto|cu[aá]nto|presupuesto|cobran|cobrar|cobras|rango|tarifa|sale|cu[aá]nto cuesta|cu[aá]nto cobran|cuanto sale/i;
+  const evasionTerms = /a medida|cada proyecto|para darte una propuesta|entender (mejor|tus necesidades)|reunion|reuni[oó]n|agenda|agendar|reunamos|llamada/i;
+  const meetingRefusalTerms = /no (quiero|puedo|tengo tiempo|me interesa).{0,20}(reuni[oó]n|llamada|reunirme|virtual|meet)|sin reuni[oó]n|antes de (la reuni[oó]n|reunirn|agendar)|primero.{0,20}precio|no necesito (reuni[oó]n|llamada)/i;
+  const rejectionTerms = /buscar[eé] otra empresa|busco otra opci[oó]n|continuar[eé] (mi b[uú]squeda|buscando)|no (gracias|me interesa|necesito|sirve).*empresa|adios|voy a (buscar|ver) otras? opciones|seguir[eé] con otra|no es lo que busco|muy caro|fuera de mi presupuesto|time (perdido|wasted)|no vale la pena|gracias de todas formas.*busco|no (es para m[ií]|me conviene)/i;
+
+  const inbound = messages.filter(m => m.role === 'user');
+  const outbound = messages.filter(m => m.role === 'assistant');
+
+  const priceAsksCount = inbound.filter(m => priceTerms.test(m.content)).length;
+  const botPriceEvasionsCount = outbound.filter(m => evasionTerms.test(m.content)).length;
+  const meetingRefusalsCount = inbound.filter(m => meetingRefusalTerms.test(m.content)).length;
+  const clientRejectionSignal = rejectionTerms.test(incomingMessage) ||
+    inbound.slice(-3).some(m => rejectionTerms.test(m.content));
+  const incomingWordCount = incomingMessage.trim().split(/\s+/).filter(Boolean).length;
+
+  return {
+    priceAsksCount,
+    botPriceEvasionsCount,
+    meetingRefusalsCount,
+    clientRejectionSignal,
+    incomingWordCount,
+  };
 }
 
 async function loadUpcomingMeetings(supabase: SupabaseClient, contactId: string): Promise<UpcomingMeeting[]> {

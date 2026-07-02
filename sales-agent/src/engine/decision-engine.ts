@@ -212,6 +212,35 @@ function buildSystemPrompt(ctx: ConversationContext): string {
     || ctx.conversationCategory === 'active_client'
     || ctx.leadStage === 'ganado';
 
+  const lm = ctx.loopMetrics;
+  const loopWarningBlock = (() => {
+    const warnings: string[] = [];
+
+    if (lm.clientRejectionSignal) {
+      warnings.push(`ALERTA CRITICA: El cliente acaba de indicar que se va o que no le interesa continuar. NO respondas con argumentos de venta ni invitaciones a reunion. Marca etapa como "perdido", usa escalate con razon "Cliente indico que abandona la conversacion", y deja response_text VACIO (""). El director tomara el control.`);
+    }
+
+    if (lm.priceAsksCount >= 2 && lm.botPriceEvasionsCount >= 1) {
+      warnings.push(`ALERTA PRECIO: El cliente ha preguntado por precio ${lm.priceAsksCount} veces y el bot ya evadio ${lm.botPriceEvasionsCount} veces con "a medida / reunion". ESTA ES LA ULTIMA VEZ que puedes manejar esto. Si el cliente insiste EN ESTE MENSAJE en saber el precio antes de reunirse, usa "escalate" inmediatamente con razon "Cliente insiste en precio: ${lm.priceAsksCount} preguntas, ${lm.botPriceEvasionsCount} evasiones". NO repitas la misma respuesta de "cada proyecto es a medida".`);
+    }
+
+    if (lm.meetingRefusalsCount >= 2) {
+      warnings.push(`ALERTA REUNION: El cliente ha rechazado o cuestionado la propuesta de reunion ${lm.meetingRefusalsCount} veces. NO propongas reunion de nuevo en este mensaje. Busca otra forma de generar valor o escala al director.`);
+    }
+
+    return warnings.length > 0
+      ? `\n=== ALERTAS DE CONVERSACION ===\n${warnings.join('\n')}\n`
+      : '';
+  })();
+
+  const responseBudget = (() => {
+    const wc = lm.incomingWordCount;
+    if (wc <= 3) return 'PRESUPUESTO DE RESPUESTA: maximo 80 caracteres (el cliente mando pocas palabras, responde MUY corto).';
+    if (wc <= 8) return 'PRESUPUESTO DE RESPUESTA: maximo 150 caracteres.';
+    if (wc <= 20) return 'PRESUPUESTO DE RESPUESTA: maximo 220 caracteres.';
+    return 'PRESUPUESTO DE RESPUESTA: maximo 280 caracteres.';
+  })();
+
   const nameIsUnknown = !ctx.contactName
     || ctx.contactName === 'Desconocido'
     || /^\d+$/.test(ctx.contactName);
@@ -226,7 +255,7 @@ function buildSystemPrompt(ctx: ConversationContext): string {
 === FECHA Y HORA ACTUAL ===
 ${dateTimeStr}
 Usa esta referencia para interpretar correctamente expresiones como "manana", "el martes", "esta semana", "la proxima semana", etc.
-
+${loopWarningBlock}
 === TU PERSONALIDAD ===
 ${ctx.persona.communication_style ? `Estilo: ${ctx.persona.communication_style}` : ''}
 ${ctx.persona.personality_traits?.length ? `Rasgos: ${ctx.persona.personality_traits.join(', ')}` : ''}
@@ -473,6 +502,7 @@ Si recibes un mensaje no-texto como [image], [audio], [document], [video]:
 1. Eres una PERSONA REAL. JAMAS reveles que eres IA. Si te preguntan, eres parte del equipo de Obzide.
 2. SIEMPRE en espanol. MAXIMO 2 oraciones por mensaje. Si tu mensaje tiene mas de 2 oraciones, REESCRIBELO mas corto. Preguntate: puedo decir esto en menos palabras? La respuesta siempre es si. ELIMINA frases de relleno como "para poder ofrecerte una propuesta mas ajustada a tus necesidades" -- eso sobra.
    REGLA DE PROPORCIONALIDAD: Si el cliente manda 1-3 palabras ("ok", "gracias", "dale"), tu respuesta debe ser IGUAL de corta (1 oracion max). Si el cliente manda un parrafo largo explicando su proyecto, ahi si puedes responder con 2 oraciones. NUNCA mandes una biblia cuando el cliente mando 3 palabras.
+   ${responseBudget}
 3. NO listes cosas. NO uses asteriscos ni formato markdown. Es WhatsApp, no un email.
 4. NUNCA envies multiples preguntas de golpe. Una conversacion natural, pregunta por pregunta.
 5. Si no sabes algo tecnico: "Dejame confirmarlo con el equipo tecnico y te respondo en breve."
@@ -570,7 +600,10 @@ Usa "save_insight" para registrar informacion estructurada del cliente que sea N
 - Situacion fuera de tu conocimiento o capacidad
 - Cliente pide hablar con alguien mas senior
 - Cliente post-venta necesita informacion que NO aparece en ninguna seccion de datos (proyectos, facturas, hosting)
-- Cliente quiere renegociar precios o alcance del proyecto`;
+- Cliente quiere renegociar precios o alcance del proyecto
+- Cliente ha preguntado por precio 2 o mas veces y el bot ya evadio la pregunta: escala inmediatamente, NO repitas la evasion
+- Cliente ha rechazado la reunion 2 o mas veces: escala, no insistas mas con la reunion
+- Cliente indica que se va, que buscara otra empresa, o que ya no le interesa: escala con etapa "perdido" y response_text vacio`;
 }
 
 export async function decide(
@@ -605,7 +638,7 @@ export async function decide(
 
   for (let attempt = 0; attempt < 2; attempt++) {
     const response = await callAI(systemPrompt, aiMessages, {
-      maxTokens: 512,
+      maxTokens: 350,
       temperature: attempt === 0 ? 0.7 : 0.3,
       tier: 'primary',
     });

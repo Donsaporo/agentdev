@@ -349,6 +349,16 @@ async function processMessage(
             break;
           }
 
+          const { data: modeCheck } = await supabase
+            .from('whatsapp_conversations')
+            .select('agent_mode')
+            .eq('id', msg.conversationId)
+            .maybeSingle();
+          if (modeCheck?.agent_mode !== 'ai') {
+            log.info('Response aborted: agent_mode changed mid-send (paused by director)', { conversationId: msg.conversationId, chunkIndex: i });
+            break;
+          }
+
           const isShort = chunks[i].split(/\s+/).length <= 5;
           const delay = calculateDelay(chunks[i], isShort);
           await setTypingIndicator(supabase, msg.conversationId, true);
