@@ -64,7 +64,7 @@ async function callOpenAIRaw(
 ): Promise<ChatResponse> {
   const body = {
     model: opts.model,
-    max_tokens: opts.maxTokens,
+    max_completion_tokens: opts.maxTokens,
     temperature: opts.temperature,
     messages,
   };
