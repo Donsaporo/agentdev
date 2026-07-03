@@ -713,11 +713,16 @@ async function resumeStuckConversations(supabase: ReturnType<typeof getSupabase>
   try {
     log.info('Checking for stuck conversations...');
 
-    const tenMinutesAgo = new Date(Date.now() - 10 * 60_000).toISOString();
+    // Only recover messages between 20 minutes and 6 hours old.
+    // 20 min minimum: avoids races with recoverMissedMessages and in-flight processing.
+    // 6 hour maximum: guarantees the 24h WhatsApp window is still open (18h margin),
+    // and limits recovery to genuine downtime scenarios — not historical stuck leads.
+    const twentyMinutesAgo = new Date(Date.now() - 20 * 60_000).toISOString();
+    const sixHoursAgo = new Date(Date.now() - 6 * 60 * 60_000).toISOString();
 
     const { data: aiConversations } = await supabase
       .from('whatsapp_conversations')
-      .select('id, contact_id, window_status')
+      .select('id, contact_id')
       .eq('agent_mode', 'ai')
       .eq('status', 'active')
       .eq('needs_director_attention', false)
@@ -739,8 +744,6 @@ async function resumeStuckConversations(supabase: ReturnType<typeof getSupabase>
     }> = [];
 
     for (const conv of aiConversations) {
-      if (conv.window_status === 'closed') continue;
-
       const { data: lastMsg } = await supabase
         .from('whatsapp_messages')
         .select('id, direction, content, message_type, media_url, media_mime_type, created_at')
@@ -750,17 +753,24 @@ async function resumeStuckConversations(supabase: ReturnType<typeof getSupabase>
         .maybeSingle();
 
       if (!lastMsg || lastMsg.direction !== 'inbound') continue;
-      if (lastMsg.created_at > tenMinutesAgo) continue;
+      // Must be older than 20 min (not currently being processed) and younger than 6h (window open)
+      if (lastMsg.created_at > twentyMinutesAgo) continue;
+      if (lastMsg.created_at < sixHoursAgo) continue;
       if (processingMessages.has(lastMsg.id)) continue;
 
       const { data: contact } = await supabase
         .from('whatsapp_contacts')
-        .select('lead_stage')
+        .select('lead_stage, last_inbound_at')
         .eq('id', conv.contact_id)
         .maybeSingle();
 
       if (!contact) continue;
       if (['ganado', 'perdido'].includes(contact.lead_stage || '')) continue;
+      // Double-check window using the same source of truth as conversation-manager
+      const lastInboundMs = contact.last_inbound_at
+        ? new Date(contact.last_inbound_at as string).getTime()
+        : 0;
+      if (Date.now() - lastInboundMs >= 22 * 60 * 60 * 1000) continue;
 
       stuckList.push({
         conversationId: conv.id,
