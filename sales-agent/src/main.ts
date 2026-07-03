@@ -709,6 +709,176 @@ async function recoverMissedMessages(supabase: ReturnType<typeof getSupabase>) {
   }
 }
 
+async function resumeStuckConversations(supabase: ReturnType<typeof getSupabase>) {
+  try {
+    log.info('Checking for stuck conversations...');
+
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60_000).toISOString();
+
+    const { data: aiConversations } = await supabase
+      .from('whatsapp_conversations')
+      .select('id, contact_id, window_status')
+      .eq('agent_mode', 'ai')
+      .eq('status', 'active')
+      .eq('needs_director_attention', false)
+      .limit(50);
+
+    if (!aiConversations || aiConversations.length === 0) {
+      log.info('No active AI conversations for stuck check');
+      return;
+    }
+
+    const stuckList: Array<{
+      conversationId: string;
+      contactId: string;
+      msgId: string;
+      msgContent: string;
+      msgType: string;
+      mediaUrl: string;
+      mediaMimeType: string;
+    }> = [];
+
+    for (const conv of aiConversations) {
+      if (conv.window_status === 'closed') continue;
+
+      const { data: lastMsg } = await supabase
+        .from('whatsapp_messages')
+        .select('id, direction, content, message_type, media_url, media_mime_type, created_at')
+        .eq('conversation_id', conv.id)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (!lastMsg || lastMsg.direction !== 'inbound') continue;
+      if (lastMsg.created_at > tenMinutesAgo) continue;
+      if (processingMessages.has(lastMsg.id)) continue;
+
+      const { data: contact } = await supabase
+        .from('whatsapp_contacts')
+        .select('lead_stage')
+        .eq('id', conv.contact_id)
+        .maybeSingle();
+
+      if (!contact) continue;
+      if (['ganado', 'perdido'].includes(contact.lead_stage || '')) continue;
+
+      stuckList.push({
+        conversationId: conv.id,
+        contactId: conv.contact_id,
+        msgId: lastMsg.id,
+        msgContent: lastMsg.content || '',
+        msgType: lastMsg.message_type || 'text',
+        mediaUrl: lastMsg.media_url || '',
+        mediaMimeType: lastMsg.media_mime_type || '',
+      });
+    }
+
+    if (stuckList.length === 0) {
+      log.info('No stuck conversations found');
+      return;
+    }
+
+    log.info(`Found ${stuckList.length} stuck conversation(s), resuming with apology...`);
+
+    const apologyVariations = [
+      'Disculpa la demora, aqui estoy.',
+      'Perdon por la espera, aqui te atiendo.',
+      'Disculpa la tardanza, siguiendo con tu consulta.',
+      'Aqui estoy, disculpa la espera.',
+    ];
+
+    for (const s of stuckList) {
+      try {
+        const persona = await getOrAssignPersona(supabase, s.conversationId, s.contactId);
+
+        const { data: contactData } = await supabase
+          .from('whatsapp_contacts')
+          .select('wa_id, phone_number, display_name')
+          .eq('id', s.contactId)
+          .maybeSingle();
+
+        if (!contactData) continue;
+        const recipientPhone = contactData.wa_id || contactData.phone_number;
+        if (!recipientPhone) continue;
+
+        const apologyText = apologyVariations[Math.floor(Math.random() * apologyVariations.length)];
+
+        await setTypingIndicator(supabase, s.conversationId, true);
+        await sleep(1500 + Math.random() * 1500);
+        await setTypingIndicator(supabase, s.conversationId, false);
+
+        const sendResult = await sendTextMessage(recipientPhone, apologyText);
+
+        await supabase.from('whatsapp_messages').insert({
+          conversation_id: s.conversationId,
+          contact_id: s.contactId,
+          wa_message_id: sendResult.messageId || '',
+          direction: 'outbound',
+          message_type: 'text',
+          content: apologyText,
+          status: 'sent',
+          sender_name: persona.full_name,
+          metadata: { sent_by: 'sales_agent', recovery: true },
+        });
+
+        await supabase
+          .from('whatsapp_conversations')
+          .update({
+            last_message_at: new Date().toISOString(),
+            last_message_preview: apologyText.slice(0, 100),
+          })
+          .eq('id', s.conversationId);
+
+        await supabase
+          .from('whatsapp_contacts')
+          .update({ last_message_direction: 'outbound' })
+          .eq('id', s.contactId);
+
+        log.info('Recovery apology sent', {
+          conversationId: s.conversationId,
+          contact: contactData.display_name,
+          persona: persona.full_name,
+        });
+
+        await sleep(2000 + Math.random() * 2000);
+
+        if (!processingMessages.has(s.msgId)) {
+          processingMessages.add(s.msgId);
+
+          handleIncomingMessage(supabase, {
+            id: s.msgId,
+            conversationId: s.conversationId,
+            contactId: s.contactId,
+            content: s.msgContent,
+            messageType: s.msgType,
+            mediaUrl: s.mediaUrl,
+            mediaMimeType: s.mediaMimeType,
+          }).catch((err) => {
+            log.error('Failed to process recovered message', {
+              conversationId: s.conversationId,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }).finally(() => {
+            setTimeout(() => processingMessages.delete(s.msgId), 60_000);
+          });
+        }
+
+        await sleep(3000);
+
+      } catch (err) {
+        log.error('Failed to resume stuck conversation', {
+          conversationId: s.conversationId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    log.info('Stuck conversation recovery complete');
+  } catch (err) {
+    log.error('resumeStuckConversations failed', { error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
 async function checkCrmConnection() {
   const crm = getCrmSupabase();
   if (!crm) {
@@ -740,6 +910,7 @@ async function startup() {
   await checkCrmConnection();
 
   await recoverMissedMessages(supabase);
+  await resumeStuckConversations(supabase);
 
   await updateHeartbeat(supabase);
   heartbeatTimer = setInterval(() => {
