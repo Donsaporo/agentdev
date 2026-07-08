@@ -27,6 +27,10 @@ const requeueCount = new Map<string, number>();
 const cancelledResponses = new Set<string>();
 const MAX_REQUEUE = 3;
 
+export function cancelInFlightResponse(conversationId: string): void {
+  cancelledResponses.add(conversationId);
+}
+
 interface IncomingMessage {
   id: string;
   conversationId: string;
@@ -368,6 +372,16 @@ async function processMessage(
           if (cancelledResponses.has(msg.conversationId) || pendingMessages.has(msg.conversationId)) {
             log.info('Response cancelled after delay: new messages arrived', { conversationId: msg.conversationId, chunkIndex: i });
             cancelledResponses.delete(msg.conversationId);
+            break;
+          }
+
+          const { data: modeCheckAfterSleep } = await supabase
+            .from('whatsapp_conversations')
+            .select('agent_mode')
+            .eq('id', msg.conversationId)
+            .maybeSingle();
+          if (modeCheckAfterSleep?.agent_mode !== 'ai') {
+            log.info('Response aborted: agent_mode changed during typing delay', { conversationId: msg.conversationId, chunkIndex: i });
             break;
           }
 

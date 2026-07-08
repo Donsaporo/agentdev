@@ -5,6 +5,7 @@ import { callAISecondary } from '../services/ai.js';
 import { getOrAssignPersona } from './persona-engine.js';
 import { handleDirectorConversation } from './director-agent.js';
 import { searchClientsByName, cancelMeetingInCrm, rescheduleMeetingInCrm } from '../services/crm.js';
+import { cancelInFlightResponse } from './conversation-manager.js';
 
 const log = createLogger('director-commands');
 
@@ -315,9 +316,17 @@ async function handlePausar(
   }
 
   const target = matches[0];
+
+  if (!target.conversationId) {
+    await reply(directorWaId, `${target.display_name} no tiene conversacion activa en WhatsApp. Puede que ya este en modo manual.`);
+    return;
+  }
+
+  cancelInFlightResponse(target.conversationId);
+
   await supabase
     .from('whatsapp_conversations')
-    .update({ agent_mode: 'manual' })
+    .update({ agent_mode: 'manual', needs_director_attention: true })
     .eq('id', target.conversationId);
 
   await reply(directorWaId, `IA pausada para ${target.display_name}. La conversacion esta en modo manual.`);
