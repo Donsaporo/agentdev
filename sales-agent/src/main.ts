@@ -10,6 +10,7 @@ import { notifyDirector, flushPendingNotifications } from './services/director-n
 import { callAISecondary } from './services/ai.js';
 import { calculateDelay, sleep } from './engine/human-simulator.js';
 import { processMeetingReminders } from './engine/meeting-reminder.js';
+import { isSystemPaused, setSystemPaused } from './core/agent-state.js';
 
 const log = createLogger('main');
 
@@ -56,15 +57,13 @@ const REALTIME_RETRY_BASE = 5_000;
 const REALTIME_RETRY_MAX = 60_000;
 let realtimeRetryCount = 0;
 const processingMessages = new Set<string>();
-let systemPaused = false;
-
 async function syncSystemPaused(supabase: ReturnType<typeof getSupabase>) {
   const { data } = await supabase
     .from('sales_agent_heartbeat')
     .select('agent_paused')
     .eq('id', 'sales-agent')
     .maybeSingle();
-  systemPaused = data?.agent_paused === true;
+  setSystemPaused(data?.agent_paused === true);
 }
 
 async function updateHeartbeat(supabase: ReturnType<typeof getSupabase>) {
@@ -87,11 +86,6 @@ async function setOffline(supabase: ReturnType<typeof getSupabase>) {
 }
 
 async function routeMessage(supabase: ReturnType<typeof getSupabase>, msg: Record<string, string>) {
-  if (systemPaused) {
-    log.info('System paused ($apagar), ignoring message', { conversationId: msg.conversation_id });
-    return;
-  }
-
   const { data: contact } = await supabase
     .from('whatsapp_contacts')
     .select('wa_id')
@@ -148,6 +142,11 @@ async function routeMessage(supabase: ReturnType<typeof getSupabase>, msg: Recor
         .eq('id', msg.conversation_id);
       return;
     }
+  }
+
+  if (isSystemPaused()) {
+    log.info('System paused ($apagar), ignoring message', { conversationId: msg.conversation_id });
+    return;
   }
 
   const { data: convMode } = await supabase
@@ -328,10 +327,10 @@ function subscribeToHeartbeatPause(supabase: ReturnType<typeof getSupabase>) {
       },
       (payload) => {
         const updated = payload.new as Record<string, unknown>;
-        const wasPaused = systemPaused;
-        systemPaused = updated.agent_paused === true;
-        if (systemPaused !== wasPaused) {
-          log.info(`System pause state changed: ${systemPaused ? 'PAUSED ($apagar)' : 'ACTIVE ($encender)'}`);
+        const wasPaused = isSystemPaused();
+        setSystemPaused(updated.agent_paused === true);
+        if (isSystemPaused() !== wasPaused) {
+          log.info(`System pause state changed: ${isSystemPaused() ? 'PAUSED ($apagar)' : 'ACTIVE ($encender)'}`);
         }
       }
     )
@@ -933,7 +932,7 @@ async function startup() {
   subscribeToInstructions(supabase);
   await syncSystemPaused(supabase);
   subscribeToHeartbeatPause(supabase);
-  if (systemPaused) log.warn('Agent started in PAUSED state ($apagar is active)');
+  if (isSystemPaused()) log.warn('Agent started in PAUSED state ($apagar is active)');
 
   fallbackPollTimer = setInterval(() => fallbackPoll(supabase), FALLBACK_POLL_INTERVAL);
   log.info(`Fallback poll active (every ${FALLBACK_POLL_INTERVAL / 1000}s, only when realtime is down)`);

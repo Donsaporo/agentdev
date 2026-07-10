@@ -4,6 +4,7 @@ import { sendTextMessage } from '../services/whatsapp.js';
 import { callAISecondary } from '../services/ai.js';
 import { getOrAssignPersona } from './persona-engine.js';
 import { handleDirectorConversation } from './director-agent.js';
+import { setSystemPaused } from '../core/agent-state.js';
 import { searchClientsByName, cancelMeetingInCrm, rescheduleMeetingInCrm } from '../services/crm.js';
 import { cancelInFlightResponse } from './conversation-manager.js';
 
@@ -837,6 +838,8 @@ async function handleApagar(
     .update({ agent_paused: true })
     .not('id', 'is', null);
 
+  setSystemPaused(true);
+
   await reply(directorWaId, 'Sistema APAGADO. El bot no respondera a nadie hasta que uses $encender.');
   log.info('Director triggered global kill switch: agent_paused = true');
 }
@@ -849,6 +852,8 @@ async function handleEncender(
     .from('sales_agent_heartbeat')
     .update({ agent_paused: false })
     .not('id', 'is', null);
+
+  setSystemPaused(false);
 
   await reply(directorWaId, 'Sistema ENCENDIDO. El bot responde normalmente.');
   log.info('Director restored global kill switch: agent_paused = false');
