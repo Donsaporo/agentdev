@@ -41,11 +41,15 @@ async function reply(directorWaId: string, text: string) {
   });
 }
 
+function normalizeUnicode(str: string): string {
+  return str.normalize('NFKD').replace(/[\u2010-\u2015\uFE58\uFE63\uFF0D]/g, '-').replace(/[\u00A0\u2000-\u200B\u202F\u205F\u3000\uFEFF]/g, ' ');
+}
+
 function tokenMatch(haystack: string, query: string): boolean {
-  const normalizedFull = query.toLowerCase().replace(/[+\-\s()&.,]/g, '');
+  const normalizedFull = normalizeUnicode(query).toLowerCase().replace(/[+\-\s()&.,]/g, '');
   if (haystack.includes(normalizedFull)) return true;
 
-  const tokens = query.toLowerCase().replace(/[&.,()]/g, ' ').split(/\s+/).filter((t) => t.length >= 2);
+  const tokens = normalizeUnicode(query).toLowerCase().replace(/[&.,()]/g, ' ').split(/\s+/).filter((t) => t.length >= 2);
   if (tokens.length === 0) return false;
 
   return tokens.every((token) => haystack.includes(token));
@@ -55,7 +59,8 @@ async function searchContacts(
   supabase: SupabaseClient,
   query: string
 ): Promise<ContactMatch[]> {
-  const normalizedPhone = query.replace(/[+\-\s()]/g, '');
+  const normalizedQuery = normalizeUnicode(query);
+  const normalizedPhone = normalizedQuery.replace(/\D/g, '');
 
   const { data: conversations } = await supabase
     .from('whatsapp_conversations')
@@ -79,13 +84,13 @@ async function searchContacts(
 
     const name = (contact.display_name || contact.profile_name || '').toLowerCase();
     const company = (contact.company || '').toLowerCase();
-    const phone = (contact.phone_number || '').replace(/[+\-\s()]/g, '');
-    const waId = (contact.wa_id || '').replace(/[+\-\s()]/g, '');
+    const phone = (contact.phone_number || '').replace(/\D/g, '');
+    const waId = (contact.wa_id || '').replace(/\D/g, '');
 
     const isMatch =
       tokenMatch(name, query) ||
       tokenMatch(company, query) ||
-      (name + ' ' + company).includes(query.toLowerCase().replace(/[&.,()]/g, ' ').replace(/\s+/g, ' ').trim()) ||
+      (name + ' ' + company).includes(normalizedQuery.toLowerCase().replace(/[&.,()]/g, ' ').replace(/\s+/g, ' ').trim()) ||
       phone.includes(normalizedPhone) ||
       waId.includes(normalizedPhone) ||
       normalizedPhone.includes(phone.slice(-7));
@@ -114,7 +119,7 @@ async function searchContacts(
 
   if (matches.length === 0) {
     try {
-      const crmResults = await searchClientsByName(query);
+      const crmResults = await searchClientsByName(normalizedQuery);
       const matchedPhones = new Set(matches.map((m) => m.phone_number.replace(/\D/g, '')));
 
       for (const client of crmResults) {
@@ -145,6 +150,36 @@ async function searchContacts(
   }
 
   return matches;
+}
+
+async function findConversationByPhone(
+  supabase: SupabaseClient,
+  rawPhone: string
+): Promise<string | null> {
+  const digits = rawPhone.replace(/\D/g, '');
+  if (digits.length < 7) return null;
+
+  const { data } = await supabase
+    .from('whatsapp_contacts')
+    .select('id')
+    .or(`phone_number.ilike.%${digits}%,wa_id.ilike.%${digits}%`)
+    .limit(5);
+
+  if (!data || data.length === 0) return null;
+
+  const contactIds = data.map((c) => c.id);
+
+  const { data: conv } = await supabase
+    .from('whatsapp_conversations')
+    .select('id, status')
+    .in('contact_id', contactIds)
+    .eq('status', 'active')
+    .order('last_message_at', { ascending: false })
+    .limit(1);
+
+  if (!conv || conv.length === 0) return null;
+
+  return conv[0].id as string;
 }
 
 function parseCommand(text: string): { command: string; args: string } | null {
@@ -200,7 +235,12 @@ async function handleChatear(
   }
 
   const target = matches[0];
-  const persona = await getOrAssignPersona(supabase, target.conversationId, target.id);
+  let conversationId: string | null = target.conversationId;
+  if (!conversationId) {
+    conversationId = await findConversationByPhone(supabase, target.phone_number || target.wa_id || clientRef);
+  }
+
+  const persona = await getOrAssignPersona(supabase, conversationId || '', target.id);
 
   let finalMessage = message;
   try {
@@ -226,7 +266,7 @@ Reglas:
   const result = await sendTextMessage(target.wa_id || target.phone_number, finalMessage);
 
   await supabase.from('whatsapp_messages').insert({
-    conversation_id: target.conversationId,
+    conversation_id: conversationId || target.conversationId,
     contact_id: target.id,
     wa_message_id: result.messageId || '',
     direction: 'outbound',
@@ -243,7 +283,7 @@ Reglas:
       last_message_at: new Date().toISOString(),
       last_message_preview: finalMessage.slice(0, 100),
     })
-    .eq('id', target.conversationId);
+    .eq('id', conversationId || target.conversationId);
 
   await reply(directorWaId, `Enviado a ${target.display_name} como ${persona.full_name}:\n"${finalMessage}"`);
   log.info('Director chatear command executed', { target: target.display_name, persona: persona.full_name });
@@ -267,11 +307,15 @@ async function handleEstado(
   }
 
   const target = matches[0];
+  let conversationId: string | null = target.conversationId;
+  if (!conversationId) {
+    conversationId = await findConversationByPhone(supabase, target.phone_number || target.wa_id || args);
+  }
 
   const { data: recentMsgs } = await supabase
     .from('whatsapp_messages')
     .select('direction, content, created_at')
-    .eq('conversation_id', target.conversationId)
+    .eq('conversation_id', conversationId || '')
     .order('created_at', { ascending: false })
     .limit(3);
 
@@ -318,17 +362,22 @@ async function handlePausar(
 
   const target = matches[0];
 
-  if (!target.conversationId) {
+  let conversationId: string | null = target.conversationId;
+  if (!conversationId) {
+    conversationId = await findConversationByPhone(supabase, target.phone_number || target.wa_id || args);
+  }
+
+  if (!conversationId) {
     await reply(directorWaId, `${target.display_name} no tiene conversacion activa en WhatsApp. Puede que ya este en modo manual.`);
     return;
   }
 
-  cancelInFlightResponse(target.conversationId);
+  cancelInFlightResponse(conversationId);
 
   await supabase
     .from('whatsapp_conversations')
     .update({ agent_mode: 'manual', needs_director_attention: true })
-    .eq('id', target.conversationId);
+    .eq('id', conversationId);
 
   await reply(directorWaId, `IA pausada para ${target.display_name}. La conversacion esta en modo manual.`);
   log.info('Director paused AI', { target: target.display_name });
@@ -351,10 +400,20 @@ async function handleReanudar(
   }
 
   const target = matches[0];
+  let conversationId: string | null = target.conversationId;
+  if (!conversationId) {
+    conversationId = await findConversationByPhone(supabase, target.phone_number || target.wa_id || args);
+  }
+
+  if (!conversationId) {
+    await reply(directorWaId, `${target.display_name} no tiene conversacion activa en WhatsApp.`);
+    return;
+  }
+
   await supabase
     .from('whatsapp_conversations')
     .update({ agent_mode: 'ai' })
-    .eq('id', target.conversationId);
+    .eq('id', conversationId);
 
   await reply(directorWaId, `IA reactivada para ${target.display_name}.`);
   log.info('Director resumed AI', { target: target.display_name });
@@ -500,6 +559,20 @@ async function handleReunion(
       meet_link: result.meetLink || null,
       status: 'scheduled',
     });
+  } else {
+    const convId = await findConversationByPhone(supabase, target.phone_number || target.wa_id || clientRef);
+    if (convId) {
+      await supabase.from('sales_meetings').insert({
+        conversation_id: convId,
+        contact_id: target.id,
+        google_event_id: result.googleEventId || null,
+        title: `Reunion Obzide - ${target.display_name}`,
+        start_time: new Date(`${date}T${startTime}:00-05:00`).toISOString(),
+        end_time: new Date(`${date}T${endTime}:00-05:00`).toISOString(),
+        meet_link: result.meetLink || null,
+        status: 'scheduled',
+      });
+    }
   }
 
   const sourceLabel = target.source === 'crm' ? ' (desde CRM)' : '';
@@ -589,6 +662,10 @@ async function handleReiniciar(
   }
 
   const target = matches[0];
+  let conversationId: string | null = target.conversationId;
+  if (!conversationId) {
+    conversationId = await findConversationByPhone(supabase, target.phone_number || target.wa_id || args);
+  }
 
   await supabase
     .from('whatsapp_contacts')
@@ -598,10 +675,10 @@ async function handleReiniciar(
   await supabase
     .from('whatsapp_conversations')
     .update({ agent_mode: 'ai', category: 'new_lead' })
-    .eq('id', target.conversationId);
+    .eq('id', conversationId || '');
 
   await supabase.from('whatsapp_messages').insert({
-    conversation_id: target.conversationId,
+    conversation_id: conversationId || '',
     contact_id: target.id,
     wa_message_id: '',
     direction: 'inbound',
@@ -795,7 +872,7 @@ async function handleReagendar(
   const newEndIso = new Date(`${newDate}T${newEnd}:00-05:00`).toISOString();
 
   await supabase.from('sales_meetings').insert({
-    conversation_id: target.conversationId,
+    conversation_id: target.conversationId || (await findConversationByPhone(supabase, target.phone_number || target.wa_id || args)) || '',
     contact_id: target.id,
     google_event_id: result.googleEventId || null,
     title: meeting.title,
