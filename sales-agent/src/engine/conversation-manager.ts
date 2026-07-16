@@ -232,7 +232,30 @@ async function processMessage(
 
     const decision = await decide(context, msg.content);
 
+    if (decision.shouldEscalate && !decision.responseText) {
+      decision.responseText = 'Te paso con el equipo para que te atiendan mejor. Un momento por favor.';
+    }
+
     if (decision.shouldEscalate) {
+      if (decision.responseText) {
+        const sanitized = sanitizeResponse(decision.responseText);
+        if (!sanitized.blocked) {
+          const recipientPhone = contact.wa_id || contact.phone_number;
+          try {
+            await setTypingIndicator(supabase, msg.conversationId, true);
+            await sleep(2_000 + Math.random() * 2_000);
+            await setTypingIndicator(supabase, msg.conversationId, false);
+            const sendResult = await sendTextMessage(recipientPhone, sanitized.text);
+            await recordOutbound(supabase, msg.conversationId, msg.contactId, sendResult.messageId, sanitized.text, persona.full_name);
+            log.info('Sent message before escalation', { conversationId: msg.conversationId, preview: sanitized.text.slice(0, 80) });
+          } catch (sendErr) {
+            log.warn('Failed to send pre-escalation message', { error: sendErr instanceof Error ? sendErr.message : String(sendErr) });
+          }
+        }
+      }
+      if (decision.actions.length > 0) {
+        await executeActions(supabase, msg.conversationId, msg.contactId, decision.actions, persona.full_name);
+      }
       await handleEscalation(
         supabase,
         msg.conversationId,
@@ -241,7 +264,7 @@ async function processMessage(
       );
     }
 
-    if (decision.responseText) {
+    if (decision.responseText && !decision.shouldEscalate) {
       const sanitized = sanitizeResponse(decision.responseText);
 
       if (sanitized.blocked) {
@@ -440,8 +463,21 @@ async function processMessage(
           }
         }
       }
-    } else if (decision.actions.length > 0) {
-      await executeActions(supabase, msg.conversationId, msg.contactId, decision.actions, persona.full_name);
+    } else if (!decision.shouldEscalate && decision.actions.length > 0) {
+      const actionResult = await executeActions(supabase, msg.conversationId, msg.contactId, decision.actions, persona.full_name);
+      if (!decision.responseText && actionResult.meetingFailed && actionResult.meetingFailureMessage) {
+        decision.responseText = actionResult.meetingFailureMessage;
+        const recipientPhone = contact.wa_id || contact.phone_number;
+        try {
+          await setTypingIndicator(supabase, msg.conversationId, true);
+          await sleep(2_000 + Math.random() * 2_000);
+          await setTypingIndicator(supabase, msg.conversationId, false);
+          const sendResult = await sendTextMessage(recipientPhone, decision.responseText);
+          await recordOutbound(supabase, msg.conversationId, msg.contactId, sendResult.messageId, decision.responseText, persona.full_name);
+        } catch (sendErr) {
+          log.warn('Failed to send action failure message', { error: sendErr instanceof Error ? sendErr.message : String(sendErr) });
+        }
+      }
     }
 
     await logAction(supabase, msg.conversationId, msg.contactId, persona.id, {
@@ -496,11 +532,11 @@ async function sendIntroMessage(
 ) {
   try {
     const introVariations = [
-      `Hola, gracias por comunicarte con Obzide Tech. En breve ${persona.full_name} te asistira con tu consulta.`,
-      `Hola, bienvenido a Obzide Tech. ${persona.full_name} sera quien te atienda, te responde en un momento.`,
-      `Hola, gracias por escribirnos. Te estamos asignando con ${persona.full_name}, nuestra asesora de proyectos. Un momento por favor.`,
-      `Hola, recibimos tu mensaje. ${persona.full_name} de nuestro equipo comercial te atendera enseguida.`,
-      `Hola, bienvenido. Ya estamos conectandote con ${persona.full_name}, quien te dara toda la informacion que necesites.`,
+      `Hola, bienvenido a la casa Obzide. Ofrecemos desde desarrollo de software hasta marketing digital. En breve ${persona.full_name} te atiende.`,
+      `Hola, bienvenido a Obzide. Somos Obzide Group, tenemos Obzide Tech y Obzide Marketing. ${persona.full_name} te responde en un momento.`,
+      `Hola, gracias por escribirnos a Obzide. Desarrollamos software y manejamos marketing digital. Te conecto con ${persona.full_name}, un momento.`,
+      `Hola, bienvenido a la casa Obzide. Desde paginas web y apps hasta marketing y redes sociales. ${persona.full_name} del equipo te atendera ahora.`,
+      `Hola, llegaste a Obzide. Hacemos desarrollo de software y marketing digital. Ya te conecto con ${persona.full_name}.`,
     ];
     const introText = introVariations[Math.floor(Math.random() * introVariations.length)];
 
@@ -509,7 +545,7 @@ async function sendIntroMessage(
     await setTypingIndicator(supabase, conversationId, false);
 
     const result = await sendTextMessage(recipientPhone, introText);
-    await recordOutbound(supabase, conversationId, contactId, result.messageId, introText, 'Obzide Tech');
+    await recordOutbound(supabase, conversationId, contactId, result.messageId, introText, 'Obzide');
 
     await supabase
       .from('whatsapp_contacts')

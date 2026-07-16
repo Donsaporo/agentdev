@@ -93,7 +93,7 @@ async function searchContacts(
       (name + ' ' + company).includes(normalizedQuery.toLowerCase().replace(/[&.,()]/g, ' ').replace(/\s+/g, ' ').trim()) ||
       phone.includes(normalizedPhone) ||
       waId.includes(normalizedPhone) ||
-      normalizedPhone.includes(phone.slice(-7));
+      (normalizedPhone.length >= 8 && normalizedPhone.includes(phone.slice(-8)));
 
     if (isMatch) {
       const rawPersona = conv.persona as unknown;
@@ -157,7 +157,7 @@ async function findConversationByPhone(
   rawPhone: string
 ): Promise<string | null> {
   const digits = rawPhone.replace(/\D/g, '');
-  if (digits.length < 7) return null;
+  if (digits.length < 8) return null;
 
   const { data } = await supabase
     .from('whatsapp_contacts')
