@@ -40,16 +40,54 @@ export interface AgentAction {
 }
 
 function extractJson(text: string): string {
+  // Try fenced JSON block first
   const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   if (fenceMatch) return sanitizeJsonString(fenceMatch[1].trim());
 
+  // Try extracting between first { and last }
   const braceStart = text.indexOf('{');
   const braceEnd = text.lastIndexOf('}');
   if (braceStart !== -1 && braceEnd > braceStart) {
     return sanitizeJsonString(text.slice(braceStart, braceEnd + 1));
   }
 
+  // Try to find a JSON-like structure starting with response_text key
+  const responseKeyIdx = text.indexOf('"response_text"');
+  if (responseKeyIdx !== -1) {
+    const startIdx = text.lastIndexOf('{', responseKeyIdx);
+    const endIdx = text.lastIndexOf('}');
+    if (startIdx !== -1 && endIdx > startIdx) {
+      return sanitizeJsonString(text.slice(startIdx, endIdx + 1));
+    }
+  }
+
   return text;
+}
+
+function tryParseJson(text: string): Record<string, unknown> | null {
+  try {
+    return JSON.parse(text);
+  } catch {
+    // Try progressively removing common issues
+    let fixed = text;
+
+    // Replace single quotes with double quotes for JSON keys/values
+    fixed = fixed.replace(/'/g, '"');
+
+    // Remove trailing commas before } or ]
+    fixed = fixed.replace(/,\s*([\]}])/g, '$1');
+
+    // Try to fix unescaped newlines inside string values
+    fixed = fixed.replace(/:\s*"([^"]*)\n([^"]*)"/g, (_m, p1, p2) => {
+      return ': "' + p1 + '\\n' + p2 + '"';
+    });
+
+    try {
+      return JSON.parse(fixed);
+    } catch {
+      return null;
+    }
+  }
 }
 
 function sanitizeJsonString(raw: string): string {
@@ -678,11 +716,12 @@ export async function decide(
   let totalOutputTokens = 0;
   let lastModel = '';
   let lastRawText = '';
+  const MAX_ATTEMPTS = 3;
 
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const response = await callAI(systemPrompt, aiMessages, {
-      maxTokens: 600,
-      temperature: attempt === 0 ? 0.7 : 0.3,
+      maxTokens: 1000,
+      temperature: attempt === 0 ? 0.7 : 0.2,
       tier: 'primary',
     });
 
@@ -691,10 +730,10 @@ export async function decide(
     lastModel = response.model;
     lastRawText = response.text;
 
-    try {
-      const cleaned = extractJson(response.text);
-      const parsed = JSON.parse(cleaned);
+    const cleaned = extractJson(response.text);
+    const parsed = tryParseJson(cleaned);
 
+    if (parsed && typeof parsed.response_text !== 'undefined') {
       const actions = Array.isArray(parsed.actions)
         ? parsed.actions.filter(
             (a: { type?: string }) => a && typeof a.type === 'string'
@@ -702,11 +741,11 @@ export async function decide(
         : [];
 
       const decision: AgentDecision = {
-        responseText: parsed.response_text || '',
+        responseText: (parsed.response_text as string) || '',
         actions: actions as AgentAction[],
-        reasoning: parsed.reasoning || '',
-        shouldEscalate: parsed.should_escalate || false,
-        escalationReason: parsed.escalation_reason || '',
+        reasoning: (parsed.reasoning as string) || '',
+        shouldEscalate: Boolean(parsed.should_escalate),
+        escalationReason: (parsed.escalation_reason as string) || '',
         inputTokens: totalInputTokens,
         outputTokens: totalOutputTokens,
         model: response.model,
@@ -725,47 +764,37 @@ export async function decide(
       });
 
       return decision;
-    } catch {
-      log.warn(`Failed to parse AI response (attempt ${attempt + 1}/2)`, {
-        responsePreview: response.text.slice(0, 300),
-      });
+    }
 
-      if (attempt === 0) {
-        aiMessages.push(
-          { role: 'assistant', content: response.text },
-          { role: 'user', content: 'ERROR: Tu respuesta no fue JSON valido. Responde UNICAMENTE con el objeto JSON, sin texto adicional antes ni despues. No uses comentarios ni trailing commas.' }
-        );
-      }
+    log.warn(`Failed to parse AI response (attempt ${attempt + 1}/${MAX_ATTEMPTS})`, {
+      responsePreview: response.text.slice(0, 500),
+      contact: ctx.contactName,
+    });
+
+    if (attempt < MAX_ATTEMPTS - 1) {
+      const correctionMsg = attempt === 0
+        ? 'ERROR: Tu respuesta no fue JSON valido. Responde UNICAMENTE con el objeto JSON, sin texto adicional antes ni despues. No uses comentarios ni trailing commas.'
+        : 'ERROR CRITICO: Tu respuesta ANTERIOR no fue JSON valido. Responde AHORA unicamente con este JSON: {"response_text":"tu mensaje","actions":[],"reasoning":"tu razonamiento","should_escalate":false,"escalation_reason":""}. Sin texto adicional. Sin markdown. Sin explicaciones. SOLO el JSON.';
+      aiMessages.push(
+        { role: 'assistant', content: response.text },
+        { role: 'user', content: correctionMsg }
+      );
     }
   }
 
-  log.warn('All parse attempts failed, using fallback (no escalation)', {
-    responsePreview: lastRawText.slice(0, 300),
+  log.error('All parse attempts failed, escalating to director', {
+    responsePreview: lastRawText.slice(0, 500),
+    contact: ctx.contactName,
+    totalAttempts: MAX_ATTEMPTS,
+    totalTokens: totalInputTokens + totalOutputTokens,
   });
 
-  let cleaned = lastRawText.replace(/```json|```/g, '').trim();
-
-  const reasoningPrefixes = /^(Let me|I'll|I will|Based on|Reasoning:|Actions:|Analizando|Basandome en|Voy a|Analizar|Here is|Here's)[^\n]*/gim;
-  cleaned = cleaned.replace(reasoningPrefixes, '').trim();
-
-  const jsonBlockStart = cleaned.indexOf('{');
-  if (jsonBlockStart > 0) {
-    const maybeJson = cleaned.slice(jsonBlockStart);
-    if (/"response_text"|"actions"|"should_escalate"/.test(maybeJson)) {
-      cleaned = cleaned.slice(0, jsonBlockStart).trim();
-    }
-  }
-
-  if (cleaned.length < 10 || /"response_text"|"actions"|"should_escalate"/.test(cleaned)) {
-    cleaned = 'Dame un momento por favor, ya te respondo.';
-  }
-
   return {
-    responseText: cleaned,
+    responseText: '',
     actions: [],
-    reasoning: 'Fallback: could not parse structured response after 2 attempts',
-    shouldEscalate: false,
-    escalationReason: '',
+    reasoning: `Fallback: could not parse structured response after ${MAX_ATTEMPTS} attempts. Raw response logged.`,
+    shouldEscalate: true,
+    escalationReason: 'IA no pudo generar una respuesta valida despues de 3 intentos. Se requiere atencion manual del director.',
     inputTokens: totalInputTokens,
     outputTokens: totalOutputTokens,
     model: lastModel,
