@@ -241,6 +241,9 @@ export function sanitizeResponse(text: string): SanitizeResult {
     }
   }
 
+  cleaned = cleaned.replace(/;/g, ',');
+  cleaned = cleaned.replace(/\s*;\s*/g, ', ');
+
   if (cleaned.length > MAX_RESPONSE_LENGTH) {
     const original = cleaned;
     cleaned = truncateIfTooLong(cleaned);

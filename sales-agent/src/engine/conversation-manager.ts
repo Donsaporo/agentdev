@@ -7,7 +7,7 @@ import { decide, AgentAction } from './decision-engine.js';
 import { calculateDelay, sleep, shouldSplitMessage } from './human-simulator.js';
 import { sanitizeResponse, detectBannedInbound } from './response-sanitizer.js';
 import { shouldSkipResponse, isFarewellMessage, markFarewellSent, clearFarewell } from './conversation-closer.js';
-import { sendTextMessage, sendTemplateMessage, setTypingIndicator } from '../services/whatsapp.js';
+import { sendTextMessage, sendTemplateMessage, setTypingIndicator, sendInteractiveButtons, sendDocumentMessage } from '../services/whatsapp.js';
 import type { SendResult } from '../services/whatsapp.js';
 import { notifyDirector } from '../services/director-notifier.js';
 import { processMediaContent } from '../services/media-processor.js';
@@ -220,6 +220,26 @@ async function processMessage(
     const needsIntro = !contact.intro_sent && !contact.is_imported;
     if (needsIntro) {
       await sendIntroMessage(supabase, msg.conversationId, msg.contactId, contact.wa_id || contact.phone_number, persona);
+    }
+
+    const buttonContent = (msg.content || '').trim().toLowerCase();
+    if (BUTTON_TITLES.has(buttonContent)) {
+      log.info('Service selection button received', { conversationId: msg.conversationId, button: buttonContent });
+
+      if (buttonContent === 'marketing digital') {
+        await handleMarketingSelection(supabase, msg.conversationId, msg.contactId, contact.wa_id || contact.phone_number, persona);
+        return;
+      }
+
+      if (buttonContent === 'ambos') {
+        await handleBothSelection(supabase, msg.conversationId, msg.contactId, contact.wa_id || contact.phone_number, persona);
+        return;
+      }
+
+      if (buttonContent === 'desarrollo de software') {
+        await handleSoftwareSelection(supabase, msg.conversationId, msg.contactId, contact.wa_id || contact.phone_number, persona);
+        return;
+      }
     }
 
     const context = await buildContext(
@@ -523,6 +543,18 @@ async function processMessage(
   }
 }
 
+const MARKETING_PDF_URL = 'https://vzjzmljlvzbxhjzemigg.supabase.co/storage/v1/object/public/media/marketing/Propuesta_general_marketing.pdf';
+const MARKETING_PDF_FILENAME = 'Propuesta_general_marketing.pdf';
+const JULIANA_PERSONA_FIRST_NAME = 'Juliana';
+
+const SERVICE_SELECTION_BUTTONS = [
+  { id: 'software', title: 'Desarrollo de Software' },
+  { id: 'marketing', title: 'Marketing Digital' },
+  { id: 'ambos', title: 'Ambos' },
+];
+
+const BUTTON_TITLES = new Set(SERVICE_SELECTION_BUTTONS.map((b) => b.title.toLowerCase()));
+
 async function sendIntroMessage(
   supabase: SupabaseClient,
   conversationId: string,
@@ -552,15 +584,153 @@ async function sendIntroMessage(
       .update({ intro_sent: true })
       .eq('id', contactId);
 
-    await sleep(12_000 + Math.random() * 8_000);
+    await sleep(10_000 + Math.random() * 6_000);
 
-    log.info('Intro message sent', { conversationId, persona: persona.full_name });
+    await setTypingIndicator(supabase, conversationId, true);
+    await sleep(1_500 + Math.random() * 1_500);
+    await setTypingIndicator(supabase, conversationId, false);
+
+    const buttonBody = 'Para orientarte mejor, cuento me que necesitas?';
+    const buttonResult = await sendInteractiveButtons(recipientPhone, buttonBody, SERVICE_SELECTION_BUTTONS);
+    await recordOutbound(supabase, conversationId, contactId, buttonResult.messageId, `${buttonBody}\n[Botones: ${SERVICE_SELECTION_BUTTONS.map((b) => b.title).join(' | ')}]`, 'Obzide');
+
+    log.info('Intro message and service selection buttons sent', { conversationId, persona: persona.full_name });
   } catch (err) {
     log.warn('Failed to send intro message', { error: err instanceof Error ? err.message : String(err) });
     await supabase
       .from('whatsapp_contacts')
       .update({ intro_sent: true })
       .eq('id', contactId);
+  }
+}
+
+async function handleMarketingSelection(
+  supabase: SupabaseClient,
+  conversationId: string,
+  contactId: string,
+  recipientPhone: string,
+  persona: { full_name: string; first_name: string }
+) {
+  try {
+    const { data: juliana } = await supabase
+      .from('sales_agent_personas')
+      .select('id, full_name, first_name')
+      .eq('first_name', JULIANA_PERSONA_FIRST_NAME)
+      .eq('is_active', true)
+      .maybeSingle();
+
+    if (juliana) {
+      await supabase
+        .from('whatsapp_conversations')
+        .update({ agent_persona_id: juliana.id })
+        .eq('id', conversationId);
+
+      const { data: assignment } = await supabase
+        .from('sales_agent_assignments')
+        .select('id')
+        .eq('conversation_id', conversationId)
+        .maybeSingle();
+
+      if (assignment) {
+        await supabase
+          .from('sales_agent_assignments')
+          .update({ persona_id: juliana.id })
+          .eq('id', assignment.id);
+      } else {
+        await supabase
+          .from('sales_agent_assignments')
+          .insert({
+            conversation_id: conversationId,
+            persona_id: juliana.id,
+            mode: 'ai',
+          });
+      }
+
+      log.info('Reassigned conversation to Juliana (marketing)', { conversationId, personaId: juliana.id });
+    }
+
+    const julianaName = juliana?.full_name || 'Juliana Ramirez';
+
+    await setTypingIndicator(supabase, conversationId, true);
+    await sleep(3_000 + Math.random() * 3_000);
+    await setTypingIndicator(supabase, conversationId, false);
+
+    const introMsg = `Hola que tal? Soy ${julianaName} de Obzide Marketing. Me cuentas un poco de tu negocio y que buscas lograr?`;
+
+    const sendResult = await sendTextMessage(recipientPhone, introMsg);
+    await recordOutbound(supabase, conversationId, contactId, sendResult.messageId, introMsg, julianaName);
+
+    await sleep(8_000 + Math.random() * 5_000);
+
+    await setTypingIndicator(supabase, conversationId, true);
+    await sleep(2_000 + Math.random() * 2_000);
+    await setTypingIndicator(supabase, conversationId, false);
+
+    const pdfCaption = 'Aqui te dejo nuestra propuesta general con los paquetes que manejamos. Es para que tengas una idea de precios y servicios. El plan final lo armamos personalizado segun tu negocio';
+
+    const docResult = await sendDocumentMessage(recipientPhone, MARKETING_PDF_URL, MARKETING_PDF_FILENAME, pdfCaption);
+    await recordOutbound(supabase, conversationId, contactId, docResult.messageId, `[Documento: ${MARKETING_PDF_FILENAME}]`, julianaName);
+
+    await sleep(6_000 + Math.random() * 4_000);
+
+    await setTypingIndicator(supabase, conversationId, true);
+    await sleep(2_000 + Math.random() * 2_000);
+    await setTypingIndicator(supabase, conversationId, false);
+
+    const followUpMsg = 'Que te parece? Teniendo en cuenta esos rangos, me cuentas un poco de tu negocio y que buscas lograr para armarte algo a tu medida?';
+
+    const followResult = await sendTextMessage(recipientPhone, followUpMsg);
+    await recordOutbound(supabase, conversationId, contactId, followResult.messageId, followUpMsg, julianaName);
+
+    log.info('Marketing flow completed - intro + PDF + follow-up sent', { conversationId });
+  } catch (err) {
+    log.warn('Marketing selection handler failed', { error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+async function handleBothSelection(
+  supabase: SupabaseClient,
+  conversationId: string,
+  contactId: string,
+  recipientPhone: string,
+  persona: { full_name: string; first_name: string }
+) {
+  try {
+    await setTypingIndicator(supabase, conversationId, true);
+    await sleep(3_000 + Math.random() * 3_000);
+    await setTypingIndicator(supabase, conversationId, false);
+
+    const msg = `Genial, podemos ayudarte con ambas cosas. Software y marketing van de la mano. Me cuentas que necesitas y armamos algo integral?`;
+
+    const sendResult = await sendTextMessage(recipientPhone, msg);
+    await recordOutbound(supabase, conversationId, contactId, sendResult.messageId, msg, persona.full_name);
+
+    log.info('Both selection response sent', { conversationId });
+  } catch (err) {
+    log.warn('Both selection handler failed', { error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+async function handleSoftwareSelection(
+  supabase: SupabaseClient,
+  conversationId: string,
+  contactId: string,
+  recipientPhone: string,
+  persona: { full_name: string; first_name: string }
+) {
+  try {
+    await setTypingIndicator(supabase, conversationId, true);
+    await sleep(3_000 + Math.random() * 3_000);
+    await setTypingIndicator(supabase, conversationId, false);
+
+    const msg = `Dale, cuento me que necesitas? Paginas web, sistemas, CRMs, IA, automatizaciones, lo que sea de software lo armamos a tu medida`;
+
+    const sendResult = await sendTextMessage(recipientPhone, msg);
+    await recordOutbound(supabase, conversationId, contactId, sendResult.messageId, msg, persona.full_name);
+
+    log.info('Software selection response sent', { conversationId });
+  } catch (err) {
+    log.warn('Software selection handler failed', { error: err instanceof Error ? err.message : String(err) });
   }
 }
 
@@ -1419,6 +1589,30 @@ async function executeActions(
           log.info('Meeting rescheduled - conversation switched to MANUAL', { oldMeetingId: existingMeeting.id, newDate, reason: action.params.reason });
           break;
         }
+
+        case 'send_document': {
+          const docContact = await getContact();
+          const docPhone = docContact?.wa_id || docContact?.phone_number || '';
+          if (!docPhone) {
+            log.warn('send_document: no phone number found', { contactId });
+            break;
+          }
+
+          const docUrl = action.params.url || MARKETING_PDF_URL;
+          const docFilename = action.params.filename || MARKETING_PDF_FILENAME;
+          const docCaption = action.params.caption || '';
+
+          await setTypingIndicator(supabase, conversationId, true);
+          await sleep(2_000 + Math.random() * 2_000);
+          await setTypingIndicator(supabase, conversationId, false);
+
+          const docResult = await sendDocumentMessage(docPhone, docUrl, docFilename, docCaption);
+          await recordOutbound(supabase, conversationId, contactId, docResult.messageId, `[Documento: ${docFilename}]`, personaName);
+
+          messageSent = true;
+          log.info('Document sent via send_document action', { conversationId, filename: docFilename });
+          break;
+        }
       }
     } catch (err) {
       log.error(`Action ${action.type} failed`, {
@@ -1473,7 +1667,7 @@ async function autoSyncToCrm(supabase: SupabaseClient, contactId: string, person
 async function loadContactForCrm(supabase: SupabaseClient, contactId: string) {
   const { data } = await supabase
     .from('whatsapp_contacts')
-    .select('phone_number, display_name, profile_name, email, company, notes, crm_client_id, client_profile_id, follow_up_count, lead_stage')
+    .select('phone_number, display_name, profile_name, email, company, notes, crm_client_id, client_profile_id, follow_up_count, lead_stage, wa_id')
     .eq('id', contactId)
     .maybeSingle();
   return data;

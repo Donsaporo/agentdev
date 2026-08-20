@@ -151,6 +151,33 @@ export async function sendDocumentMessage(
   return sendWithRetry(recipient, payload);
 }
 
+export async function sendInteractiveButtons(
+  to: string,
+  bodyText: string,
+  buttons: { id: string; title: string }[],
+): Promise<SendResult> {
+  const recipient = to.replace(/[\s\-\+\(\)]/g, '');
+
+  const payload = {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to: recipient,
+    type: 'interactive',
+    interactive: {
+      type: 'button',
+      body: { text: bodyText },
+      action: {
+        buttons: buttons.map((b) => ({
+          type: 'reply',
+          reply: { id: b.id, title: b.title },
+        })),
+      },
+    },
+  };
+
+  return sendWithRetry(recipient, payload);
+}
+
 export async function setTypingIndicator(
   supabase: ReturnType<typeof import('../core/supabase.js').getSupabase>,
   conversationId: string,
