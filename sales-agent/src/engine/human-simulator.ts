@@ -6,23 +6,26 @@ const log = createLogger('human-simulator');
 export function calculateDelay(responseText: string, isShortReply = false): number {
   const wordCount = responseText.split(/\s+/).length;
 
+  // Short replies (confirmations, "ok", "dale") - quick response like a real person multitasking
   if (isShortReply || wordCount <= 5) {
-    const quick = 10_000 + Math.random() * 10_000;
+    const quick = 4_000 + Math.random() * 4_000;
     log.debug('Quick reply delay', { words: wordCount, delayMs: Math.round(quick) });
     return Math.round(quick);
   }
 
+  // Medium messages - thinking + typing
   if (wordCount <= 15) {
-    const medium = 15_000 + Math.random() * 12_000;
+    const medium = 6_000 + Math.random() * 6_000;
     log.debug('Medium reply delay', { words: wordCount, delayMs: Math.round(medium) });
     return Math.round(medium);
   }
 
-  const readTime = Math.min(wordCount * 150, 5_000);
-  const typingTime = Math.min(wordCount * 100, 4_000);
-  const thinkingTime = 8_000 + Math.random() * 5_000;
+  // Longer messages - reading client msg + thinking + typing
+  const readTime = Math.min(wordCount * 80, 3_000);
+  const typingTime = Math.min(wordCount * 60, 3_000);
+  const thinkingTime = 4_000 + Math.random() * 4_000;
 
-  const total = thinkingTime + readTime * 0.6 + typingTime * 0.5;
+  const total = thinkingTime + readTime * 0.5 + typingTime * 0.4;
 
   const jittered = total * (0.85 + Math.random() * 0.3);
 

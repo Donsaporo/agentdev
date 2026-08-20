@@ -55,9 +55,9 @@ export const config = {
   },
   agent: {
     heartbeatInterval: 60_000,
-    minResponseDelay: 18_000,
-    maxResponseDelay: 45_000,
-    messageBatchWindow: 20_000,
-    messageBatchExtraDelay: 15_000,
+    minResponseDelay: 6_000,
+    maxResponseDelay: 20_000,
+    messageBatchWindow: 12_000,
+    messageBatchExtraDelay: 8_000,
   },
 } as const;

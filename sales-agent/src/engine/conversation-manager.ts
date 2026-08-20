@@ -75,6 +75,30 @@ export async function handleIncomingMessage(
     return;
   }
 
+  // Check if this is a new contact that needs instant intro (no batching delay)
+  const { data: contactCheck } = await supabase
+    .from('whatsapp_contacts')
+    .select('intro_sent, is_imported')
+    .eq('id', msg.contactId)
+    .maybeSingle();
+
+  const needsInstantProcessing = contactCheck && !contactCheck.intro_sent && !contactCheck.is_imported;
+
+  // Also check if message is a button selection (needs immediate processing)
+  const buttonContent = (msg.content || '').trim().toLowerCase();
+  const isButtonSelection = BUTTON_TITLES.has(buttonContent);
+
+  if (needsInstantProcessing || isButtonSelection) {
+    log.info('Fast-track processing (new contact or button selection)', {
+      conversationId: msg.conversationId,
+      isNew: needsInstantProcessing,
+      isButton: isButtonSelection,
+    });
+    pendingMessages.set(msg.conversationId, { messages: [msg], timer: setTimeout(() => {}, 0) });
+    await processBatch(supabase, msg.conversationId);
+    return;
+  }
+
   pendingMessages.set(msg.conversationId, {
     messages: [msg],
     timer: setTimeout(() => {
@@ -220,6 +244,7 @@ async function processMessage(
     const needsIntro = !contact.intro_sent && !contact.is_imported;
     if (needsIntro) {
       await sendIntroMessage(supabase, msg.conversationId, msg.contactId, contact.wa_id || contact.phone_number, persona);
+      return; // Stop here - wait for button selection before AI responds
     }
 
     const buttonContent = (msg.content || '').trim().toLowerCase();
@@ -560,21 +585,11 @@ async function sendIntroMessage(
   conversationId: string,
   contactId: string,
   recipientPhone: string,
-  persona: { full_name: string; first_name: string }
+  _persona: { full_name: string; first_name: string }
 ) {
   try {
-    const introVariations = [
-      `Hola, bienvenido a la casa Obzide. Ofrecemos desde desarrollo de software hasta marketing digital. En breve ${persona.full_name} te atiende.`,
-      `Hola, bienvenido a Obzide. Somos Obzide Group, tenemos Obzide Tech y Obzide Marketing. ${persona.full_name} te responde en un momento.`,
-      `Hola, gracias por escribirnos a Obzide. Desarrollamos software y manejamos marketing digital. Te conecto con ${persona.full_name}, un momento.`,
-      `Hola, bienvenido a la casa Obzide. Desde paginas web y apps hasta marketing y redes sociales. ${persona.full_name} del equipo te atendera ahora.`,
-      `Hola, llegaste a Obzide. Hacemos desarrollo de software y marketing digital. Ya te conecto con ${persona.full_name}.`,
-    ];
-    const introText = introVariations[Math.floor(Math.random() * introVariations.length)];
-
-    await setTypingIndicator(supabase, conversationId, true);
-    await sleep(2_000 + Math.random() * 2_000);
-    await setTypingIndicator(supabase, conversationId, false);
+    // Intro is INSTANT - this is an automated system message, not a human
+    const introText = 'Hola! Bienvenido a Obzide. Somos expertos en desarrollo de software y marketing digital.';
 
     const result = await sendTextMessage(recipientPhone, introText);
     await recordOutbound(supabase, conversationId, contactId, result.messageId, introText, 'Obzide');
@@ -584,17 +599,14 @@ async function sendIntroMessage(
       .update({ intro_sent: true })
       .eq('id', contactId);
 
-    await sleep(10_000 + Math.random() * 6_000);
+    // Send buttons immediately after (1 second gap for WhatsApp delivery)
+    await sleep(1_000);
 
-    await setTypingIndicator(supabase, conversationId, true);
-    await sleep(1_500 + Math.random() * 1_500);
-    await setTypingIndicator(supabase, conversationId, false);
-
-    const buttonBody = 'Para orientarte mejor, cuento me que necesitas?';
+    const buttonBody = 'En que te podemos ayudar?';
     const buttonResult = await sendInteractiveButtons(recipientPhone, buttonBody, SERVICE_SELECTION_BUTTONS);
     await recordOutbound(supabase, conversationId, contactId, buttonResult.messageId, `${buttonBody}\n[Botones: ${SERVICE_SELECTION_BUTTONS.map((b) => b.title).join(' | ')}]`, 'Obzide');
 
-    log.info('Intro message and service selection buttons sent', { conversationId, persona: persona.full_name });
+    log.info('Intro + buttons sent instantly', { conversationId });
   } catch (err) {
     log.warn('Failed to send intro message', { error: err instanceof Error ? err.message : String(err) });
     await supabase
@@ -609,9 +621,10 @@ async function handleMarketingSelection(
   conversationId: string,
   contactId: string,
   recipientPhone: string,
-  persona: { full_name: string; first_name: string }
+  _persona: { full_name: string; first_name: string }
 ) {
   try {
+    // Assign Juliana as the persona for marketing conversations
     const { data: juliana } = await supabase
       .from('sales_agent_personas')
       .select('id, full_name, first_name')
@@ -622,7 +635,7 @@ async function handleMarketingSelection(
     if (juliana) {
       await supabase
         .from('whatsapp_conversations')
-        .update({ agent_persona_id: juliana.id })
+        .update({ agent_persona_id: juliana.id, category: 'marketing' })
         .eq('id', conversationId);
 
       const { data: assignment } = await supabase
@@ -641,48 +654,34 @@ async function handleMarketingSelection(
           .from('sales_agent_assignments')
           .insert({
             conversation_id: conversationId,
+            contact_id: contactId,
             persona_id: juliana.id,
             mode: 'ai',
           });
       }
 
-      log.info('Reassigned conversation to Juliana (marketing)', { conversationId, personaId: juliana.id });
+      log.info('Assigned Juliana for marketing', { conversationId, personaId: juliana.id });
     }
 
     const julianaName = juliana?.full_name || 'Juliana Ramirez';
 
+    // Human-like delay: persona is "taking over" the conversation
     await setTypingIndicator(supabase, conversationId, true);
-    await sleep(3_000 + Math.random() * 3_000);
+    await sleep(3_000 + Math.random() * 2_000);
     await setTypingIndicator(supabase, conversationId, false);
 
-    const introMsg = `Hola que tal? Soy ${julianaName} de Obzide Marketing. Me cuentas un poco de tu negocio y que buscas lograr?`;
+    // Only send ONE qualifying intro message - AI handles the rest
+    const introVariations = [
+      `Hola! Soy ${julianaName} del equipo de marketing. Que tipo de negocio manejas?`,
+      `Que tal! Soy ${julianaName}, marketing digital. Cuentame, que tipo de negocio tienes?`,
+      `Hola! ${julianaName} de Obzide Marketing. Para orientarte mejor, que tipo de negocio manejas?`,
+    ];
+    const introMsg = introVariations[Math.floor(Math.random() * introVariations.length)];
 
     const sendResult = await sendTextMessage(recipientPhone, introMsg);
     await recordOutbound(supabase, conversationId, contactId, sendResult.messageId, introMsg, julianaName);
 
-    await sleep(8_000 + Math.random() * 5_000);
-
-    await setTypingIndicator(supabase, conversationId, true);
-    await sleep(2_000 + Math.random() * 2_000);
-    await setTypingIndicator(supabase, conversationId, false);
-
-    const pdfCaption = 'Aqui te dejo nuestra propuesta general con los paquetes que manejamos. Es para que tengas una idea de precios y servicios. El plan final lo armamos personalizado segun tu negocio';
-
-    const docResult = await sendDocumentMessage(recipientPhone, MARKETING_PDF_URL, MARKETING_PDF_FILENAME, pdfCaption);
-    await recordOutbound(supabase, conversationId, contactId, docResult.messageId, `[Documento: ${MARKETING_PDF_FILENAME}]`, julianaName);
-
-    await sleep(6_000 + Math.random() * 4_000);
-
-    await setTypingIndicator(supabase, conversationId, true);
-    await sleep(2_000 + Math.random() * 2_000);
-    await setTypingIndicator(supabase, conversationId, false);
-
-    const followUpMsg = 'Que te parece? Teniendo en cuenta esos rangos, me cuentas un poco de tu negocio y que buscas lograr para armarte algo a tu medida?';
-
-    const followResult = await sendTextMessage(recipientPhone, followUpMsg);
-    await recordOutbound(supabase, conversationId, contactId, followResult.messageId, followUpMsg, julianaName);
-
-    log.info('Marketing flow completed - intro + PDF + follow-up sent', { conversationId });
+    log.info('Marketing intro sent - AI takes over for qualifying', { conversationId });
   } catch (err) {
     log.warn('Marketing selection handler failed', { error: err instanceof Error ? err.message : String(err) });
   }
@@ -697,10 +696,10 @@ async function handleBothSelection(
 ) {
   try {
     await setTypingIndicator(supabase, conversationId, true);
-    await sleep(3_000 + Math.random() * 3_000);
+    await sleep(3_000 + Math.random() * 2_000);
     await setTypingIndicator(supabase, conversationId, false);
 
-    const msg = `Genial, podemos ayudarte con ambas cosas. Software y marketing van de la mano. Me cuentas que necesitas y armamos algo integral?`;
+    const msg = `Genial! Software y marketing van de la mano. Cuentame, que tipo de negocio manejas y que necesitas?`;
 
     const sendResult = await sendTextMessage(recipientPhone, msg);
     await recordOutbound(supabase, conversationId, contactId, sendResult.messageId, msg, persona.full_name);
@@ -720,10 +719,15 @@ async function handleSoftwareSelection(
 ) {
   try {
     await setTypingIndicator(supabase, conversationId, true);
-    await sleep(3_000 + Math.random() * 3_000);
+    await sleep(3_000 + Math.random() * 2_000);
     await setTypingIndicator(supabase, conversationId, false);
 
-    const msg = `Dale, cuento me que necesitas? Paginas web, sistemas, CRMs, IA, automatizaciones, lo que sea de software lo armamos a tu medida`;
+    const variations = [
+      `Que tal! Soy ${persona.full_name}. Que tipo de proyecto necesitas? Pagina web, app, sistema, automatizacion?`,
+      `Hola! Soy ${persona.full_name} del equipo de desarrollo. Cuentame, que necesitas construir?`,
+      `Que tal! ${persona.full_name} de Obzide Tech. Que tipo de proyecto tienes en mente?`,
+    ];
+    const msg = variations[Math.floor(Math.random() * variations.length)];
 
     const sendResult = await sendTextMessage(recipientPhone, msg);
     await recordOutbound(supabase, conversationId, contactId, sendResult.messageId, msg, persona.full_name);
