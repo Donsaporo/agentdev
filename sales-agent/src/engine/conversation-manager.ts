@@ -588,31 +588,30 @@ async function sendIntroMessage(
   _persona: { full_name: string; first_name: string }
 ) {
   try {
-    // Intro is INSTANT - this is an automated system message, not a human
-    const introText = 'Hola! Bienvenido a Obzide. Somos expertos en desarrollo de software y marketing digital.';
+    const introBody = 'Hola! Bienvenido a Obzide. Somos expertos en desarrollo de software y marketing digital. En que te podemos ayudar?';
 
-    const result = await sendTextMessage(recipientPhone, introText);
-    await recordOutbound(supabase, conversationId, contactId, result.messageId, introText, 'Obzide');
+    const buttonResult = await sendInteractiveButtons(recipientPhone, introBody, SERVICE_SELECTION_BUTTONS);
+    await recordOutbound(
+      supabase,
+      conversationId,
+      contactId,
+      buttonResult.messageId,
+      `${introBody}\n[Botones: ${SERVICE_SELECTION_BUTTONS.map((b) => b.title).join(' | ')}]`,
+      'Obzide'
+    );
 
     await supabase
       .from('whatsapp_contacts')
       .update({ intro_sent: true })
       .eq('id', contactId);
 
-    // Send buttons immediately after (1 second gap for WhatsApp delivery)
-    await sleep(1_000);
-
-    const buttonBody = 'En que te podemos ayudar?';
-    const buttonResult = await sendInteractiveButtons(recipientPhone, buttonBody, SERVICE_SELECTION_BUTTONS);
-    await recordOutbound(supabase, conversationId, contactId, buttonResult.messageId, `${buttonBody}\n[Botones: ${SERVICE_SELECTION_BUTTONS.map((b) => b.title).join(' | ')}]`, 'Obzide');
-
-    log.info('Intro + buttons sent instantly', { conversationId });
+    log.info('Intro + buttons sent as single interactive message', { conversationId });
   } catch (err) {
-    log.warn('Failed to send intro message', { error: err instanceof Error ? err.message : String(err) });
-    await supabase
-      .from('whatsapp_contacts')
-      .update({ intro_sent: true })
-      .eq('id', contactId);
+    log.error('Failed to send intro + buttons (NOT marking intro_sent)', {
+      error: err instanceof Error ? err.message : String(err),
+      conversationId,
+      contactId,
+    });
   }
 }
 
