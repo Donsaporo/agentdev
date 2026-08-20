@@ -573,7 +573,7 @@ const MARKETING_PDF_FILENAME = 'Propuesta_general_marketing.pdf';
 const JULIANA_PERSONA_FIRST_NAME = 'Juliana';
 
 const SERVICE_SELECTION_BUTTONS = [
-  { id: 'software', title: 'Desarrollo de Software' },
+  { id: 'software', title: 'Desarrollo Software' },
   { id: 'marketing', title: 'Marketing Digital' },
   { id: 'ambos', title: 'Ambos' },
 ];
