@@ -68,13 +68,9 @@ function tryParseJson(text: string): Record<string, unknown> | null {
   try {
     return JSON.parse(text);
   } catch {
-    // Try progressively removing common issues
     let fixed = text;
 
-    // Replace single quotes with double quotes for JSON keys/values
-    fixed = fixed.replace(/'/g, '"');
-
-    // Remove trailing commas before } or ]
+    // Remove trailing commas before } or ] (safe structural fix)
     fixed = fixed.replace(/,\s*([\]}])/g, '$1');
 
     // Try to fix unescaped newlines inside string values
@@ -85,7 +81,14 @@ function tryParseJson(text: string): Record<string, unknown> | null {
     try {
       return JSON.parse(fixed);
     } catch {
-      return null;
+      // Last resort: try replacing single quotes ONLY for keys (not string values)
+      // This avoids corrupting Spanish text with apostrophes inside values
+      try {
+        const keyFixed = fixed.replace(/(\{|,)\s*'([^']+?)'\s*:/g, '$1 "$2":');
+        return JSON.parse(keyFixed);
+      } catch {
+        return null;
+      }
     }
   }
 }
@@ -100,6 +103,51 @@ function sanitizeJsonString(raw: string): string {
     return '';
   });
   return s;
+}
+
+const MARKETING_PDF_URL = 'https://vzjzmljlvzbxhjzemigg.supabase.co/storage/v1/object/public/media/marketing/Propuesta_general_marketing.pdf';
+const MARKETING_PDF_FILENAME = 'Propuesta_general_marketing.pdf';
+
+function extractSendDocumentFromText(rawText: string): AgentAction | null {
+  const hasMarketingPdf = rawText.includes('Propuesta_general_marketing.pdf')
+    || rawText.includes('marketing/Propuesta')
+    || (rawText.includes('send_document') && rawText.includes('marketing'));
+
+  if (!hasMarketingPdf) {
+    // Generic: try to extract url and filename from any send_document in the text
+    const urlMatch = rawText.match(/"url"\s*:\s*"([^"]+)"/);
+    const filenameMatch = rawText.match(/"filename"\s*:\s*"([^"]+)"/);
+    const captionMatch = rawText.match(/"caption"\s*:\s*"([^"]+)"/);
+    if (urlMatch && filenameMatch) {
+      return {
+        type: 'send_document',
+        params: {
+          url: urlMatch[1],
+          filename: filenameMatch[1],
+          caption: captionMatch?.[1] || '',
+        },
+      };
+    }
+    return null;
+  }
+
+  let url = MARKETING_PDF_URL;
+  let filename = MARKETING_PDF_FILENAME;
+  let caption = '';
+
+  const urlMatch = rawText.match(/"url"\s*:\s*"([^"]+)"/);
+  if (urlMatch) url = urlMatch[1];
+
+  const filenameMatch = rawText.match(/"filename"\s*:\s*"([^"]+)"/);
+  if (filenameMatch) filename = filenameMatch[1];
+
+  const captionMatch = rawText.match(/"caption"\s*:\s*"([^"]*)"/);
+  if (captionMatch) caption = captionMatch[1];
+
+  return {
+    type: 'send_document',
+    params: { url, filename, caption },
+  };
 }
 
 const INSIGHT_LABELS: Record<string, string> = {
@@ -720,7 +768,7 @@ export async function decide(
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const response = await callAI(systemPrompt, aiMessages, {
-      maxTokens: 1000,
+      maxTokens: 2500,
       temperature: attempt === 0 ? 0.7 : 0.2,
       tier: 'primary',
     });
@@ -734,11 +782,25 @@ export async function decide(
     const parsed = tryParseJson(cleaned);
 
     if (parsed && typeof parsed.response_text !== 'undefined') {
-      const actions = Array.isArray(parsed.actions)
+      let actions = Array.isArray(parsed.actions)
         ? parsed.actions.filter(
             (a: { type?: string }) => a && typeof a.type === 'string'
           )
         : [];
+
+      // Recovery: if actions are empty but the raw text contained send_document,
+      // the AI's JSON was likely truncated and the action was lost on retry.
+      // Extract send_document from the raw text to fulfill the promise to the client.
+      if (actions.length === 0 && lastRawText.includes('send_document')) {
+        const recoveredAction = extractSendDocumentFromText(lastRawText);
+        if (recoveredAction) {
+          actions = [recoveredAction];
+          log.warn('Recovered lost send_document action from raw AI text', {
+            contact: ctx.contactName,
+            filename: recoveredAction.params.filename,
+          });
+        }
+      }
 
       const decision: AgentDecision = {
         responseText: (parsed.response_text as string) || '',

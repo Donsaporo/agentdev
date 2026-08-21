@@ -326,6 +326,39 @@ async function processMessage(
         return;
       }
 
+      // Safety net: if the AI promised to send a document but no send_document
+      // action survived parsing, inject the marketing PDF action so the client
+      // never gets a broken promise.
+      const hasSendDocAction = decision.actions.some(a => a.type === 'send_document');
+      if (!hasSendDocAction) {
+        const lowerResponse = sanitized.text.toLowerCase();
+        const documentPromisePhrases = [
+          'te lo envio', 'te lo envío', 'te lo mando', 'te lo comparto',
+          'te envio', 'te envío', 'te mando', 'te comparto',
+          'aquí tienes', 'aqui tienes', 'te paso el', 'te paso la',
+        ];
+        const promisesDocument = documentPromisePhrases.some(phrase => lowerResponse.includes(phrase));
+        const isMarketingConv = context.conversationCategory === 'marketing'
+          || lowerResponse.includes('marketing')
+          || lowerResponse.includes('paquete')
+          || lowerResponse.includes('propuesta');
+
+        if (promisesDocument && isMarketingConv) {
+          log.warn('AI promised document but no send_document action - injecting marketing PDF', {
+            conversationId: msg.conversationId,
+            responsePreview: sanitized.text.slice(0, 100),
+          });
+          decision.actions.push({
+            type: 'send_document',
+            params: {
+              url: MARKETING_PDF_URL,
+              filename: MARKETING_PDF_FILENAME,
+              caption: 'Aqui tienes los paquetes y rangos generales. El plan final lo armamos a tu medida en la llamada.',
+            },
+          });
+        }
+      }
+
       const actionResult = await executeActions(supabase, msg.conversationId, msg.contactId, decision.actions, persona.full_name);
 
       if (actionResult.messageSent) {
