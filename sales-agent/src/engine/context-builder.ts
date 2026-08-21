@@ -333,7 +333,7 @@ async function loadContact(supabase: SupabaseClient, contactId: string) {
   return data;
 }
 
-async function loadRecentMessages(supabase: SupabaseClient, conversationId: string, limit = 30) {
+async function loadRecentMessages(supabase: SupabaseClient, conversationId: string, limit = 40) {
   const { data } = await supabase
     .from('whatsapp_messages')
     .select('direction, content, message_type, media_url, media_mime_type, created_at, wa_message_id, metadata')
