@@ -190,7 +190,7 @@ async function processMessage(
   try {
     const { data: conversation } = await supabase
       .from('whatsapp_conversations')
-      .select('agent_mode, contact_id')
+      .select('agent_mode, contact_id, category')
       .eq('id', msg.conversationId)
       .maybeSingle();
 
@@ -248,7 +248,8 @@ async function processMessage(
     }
 
     const buttonContent = (msg.content || '').trim().toLowerCase();
-    if (BUTTON_TITLES.has(buttonContent)) {
+    const serviceAlreadySelected = !!conversation?.category;
+    if (BUTTON_TITLES.has(buttonContent) && !serviceAlreadySelected) {
       log.info('Service selection button received', { conversationId: msg.conversationId, button: buttonContent });
 
       if (buttonContent === 'marketing digital') {
@@ -328,7 +329,8 @@ async function processMessage(
 
       // Safety net: if the AI promised to send a document but no send_document
       // action survived parsing, inject the marketing PDF action so the client
-      // never gets a broken promise.
+      // never gets a broken promise. Only applies if the conversation has enough
+      // qualifying exchanges (at least 6 messages in history).
       const hasSendDocAction = decision.actions.some(a => a.type === 'send_document');
       if (!hasSendDocAction) {
         const lowerResponse = sanitized.text.toLowerCase();
@@ -339,11 +341,14 @@ async function processMessage(
         ];
         const promisesDocument = documentPromisePhrases.some(phrase => lowerResponse.includes(phrase));
         const isMarketingConv = context.conversationCategory === 'marketing'
+          || context.conversationCategory === 'both'
           || lowerResponse.includes('marketing')
           || lowerResponse.includes('paquete')
           || lowerResponse.includes('propuesta');
 
-        if (promisesDocument && isMarketingConv) {
+        const hasEnoughContext = context.messageHistory.length >= 6;
+
+        if (promisesDocument && isMarketingConv && hasEnoughContext) {
           log.warn('AI promised document but no send_document action - injecting marketing PDF', {
             conversationId: msg.conversationId,
             responsePreview: sanitized.text.slice(0, 100),
@@ -353,8 +358,13 @@ async function processMessage(
             params: {
               url: MARKETING_PDF_URL,
               filename: MARKETING_PDF_FILENAME,
-              caption: 'Aqui tienes los paquetes y rangos generales. El plan final lo armamos a tu medida en la llamada.',
+              caption: 'Aqui tienes los paquetes y rangos generales de marketing. En base a tu caso, armamos el paquete a medida en una llamada corta.',
             },
+          });
+        } else if (promisesDocument && isMarketingConv && !hasEnoughContext) {
+          log.warn('AI tried to send PDF too early - blocking injection', {
+            conversationId: msg.conversationId,
+            messageCount: context.messageHistory.length,
           });
         }
       }
@@ -727,11 +737,21 @@ async function handleBothSelection(
   persona: { full_name: string; first_name: string }
 ) {
   try {
+    await supabase
+      .from('whatsapp_conversations')
+      .update({ category: 'both' })
+      .eq('id', conversationId);
+
     await setTypingIndicator(supabase, conversationId, true);
     await sleep(3_000 + Math.random() * 2_000);
     await setTypingIndicator(supabase, conversationId, false);
 
-    const msg = `Genial! Software y marketing van de la mano. Cuentame, que tipo de negocio manejas y que necesitas?`;
+    const variations = [
+      `Que tal! Soy ${persona.full_name}. Software y marketing se complementan bien. Cuentame, que tipo de negocio manejas?`,
+      `Hola! ${persona.full_name} de Obzide. Atendemos ambos servicios. Para orientarte, que tipo de negocio tienes?`,
+      `Genial! Soy ${persona.full_name}. Manejamos tanto desarrollo como marketing. Que tipo de proyecto tienes en mente?`,
+    ];
+    const msg = variations[Math.floor(Math.random() * variations.length)];
 
     const sendResult = await sendTextMessage(recipientPhone, msg);
     await recordOutbound(supabase, conversationId, contactId, sendResult.messageId, msg, persona.full_name);
@@ -750,6 +770,11 @@ async function handleSoftwareSelection(
   persona: { full_name: string; first_name: string }
 ) {
   try {
+    await supabase
+      .from('whatsapp_conversations')
+      .update({ category: 'software' })
+      .eq('id', conversationId);
+
     await setTypingIndicator(supabase, conversationId, true);
     await sleep(3_000 + Math.random() * 2_000);
     await setTypingIndicator(supabase, conversationId, false);
